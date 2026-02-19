@@ -823,7 +823,7 @@ def update_asset(asset_id: str, **kwargs) -> Optional[Dict[str, Any]]:
     """Update asset metadata."""
     db = get_db()
 
-    allowed = {'name', 'description', 'tags'}
+    allowed = {'name', 'description', 'tags', 'thumbnail_path'}
     updates = {k: v for k, v in kwargs.items() if k in allowed}
 
     if not updates:
@@ -857,6 +857,19 @@ def update_asset(asset_id: str, **kwargs) -> Optional[Dict[str, Any]]:
     return get_asset(asset_id)
 
 
+def update_asset_thumbnail(asset_id: str, thumbnail_data: bytes) -> bool:
+    """Update an asset's thumbnail image."""
+    asset = get_asset(asset_id)
+    if not asset:
+        return False
+
+    thumb_name = f"{asset_id}.png"
+    thumb_file = get_library_thumbnails_dir() / thumb_name
+    thumb_file.write_bytes(thumbnail_data)
+
+    return update_asset(asset_id, thumbnail_path=thumb_name) is not None
+
+
 def save_asset_version(
     asset_id: str,
     package_data: Dict[str, Any],
@@ -886,8 +899,40 @@ def save_asset_version(
     db = get_db()
     now = datetime.utcnow().isoformat()
 
-    # Update the package file
+    # Snapshot the current package file before overwriting
     file_path = get_library_assets_dir() / asset['file_path']
+    current_hash = asset.get('file_hash', '')
+
+    # Determine the current version label for the snapshot
+    latest_row = db.execute(
+        "SELECT version FROM asset_versions WHERE asset_id = ? ORDER BY created_at DESC LIMIT 1",
+        (asset_id,)
+    ).fetchone()
+    snapshot_version = "1.0.0"
+    if latest_row:
+        snapshot_version = latest_row[0] if isinstance(latest_row, (tuple, list)) else latest_row['version']
+    elif file_path.exists():
+        # First version up — snapshot current as 1.0.0
+        snapshot_name = f"{asset_id}_v1.0.0.sopdrop"
+        snapshot_path = get_library_assets_dir() / snapshot_name
+        if not snapshot_path.exists():
+            import shutil
+            shutil.copy2(str(file_path), str(snapshot_path))
+            # Create initial version record for the original
+            init_version_id = str(uuid.uuid4())
+            db.execute("""
+                INSERT OR IGNORE INTO asset_versions (id, asset_id, version, file_path, file_hash, file_size, node_count, changelog, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                init_version_id, asset_id, "1.0.0",
+                snapshot_name, current_hash, asset.get('file_size', 0),
+                asset.get('node_count', 0), "Initial version", asset.get('created_at', now),
+            ))
+    else:
+        # Edge case — check if there's a snapshot already
+        snapshot_version = "1.0.0"
+
+    # Write new package data
     package_json = json.dumps(package_data, separators=(',', ':'))
     file_path.write_text(package_json)
 
@@ -941,20 +986,24 @@ def save_asset_version(
     values = list(updates.values()) + [asset_id]
     db.execute(f"UPDATE library_assets SET {set_clause} WHERE id = ?", values)
 
-    # Create a version record in asset_versions table
+    # Create a version record with its own snapshot file
     try:
-        # Determine next version number
-        latest_row = db.execute(
+        # Re-check latest version (may have been created by snapshot above)
+        latest_row2 = db.execute(
             "SELECT version FROM asset_versions WHERE asset_id = ? ORDER BY created_at DESC LIMIT 1",
             (asset_id,)
         ).fetchone()
 
-        if latest_row:
-            latest_ver = latest_row[0] if isinstance(latest_row, (tuple, list)) else latest_row['version']
+        if latest_row2:
+            latest_ver = latest_row2[0] if isinstance(latest_row2, (tuple, list)) else latest_row2['version']
             next_version = _increment_version(latest_ver)
         else:
-            # First version record - check if asset already existed (so start at 1.1.0)
             next_version = "1.1.0"
+
+        # Save a snapshot file for this version
+        snapshot_name = f"{asset_id}_v{next_version}.sopdrop"
+        snapshot_path = get_library_assets_dir() / snapshot_name
+        snapshot_path.write_text(package_json)
 
         version_id = str(uuid.uuid4())
         db.execute("""
@@ -962,7 +1011,7 @@ def save_asset_version(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             version_id, asset_id, next_version,
-            str(asset.get('file_path', '')), file_hash, file_size,
+            snapshot_name, file_hash, file_size,
             metadata.get('node_count', 0), None, now,
         ))
     except Exception:
@@ -996,6 +1045,107 @@ def get_asset_versions(asset_id: str) -> List[Dict[str, Any]]:
         (asset_id,)
     ).fetchall()
     return [dict_from_row(r) for r in rows]
+
+
+def load_version_package(version_id: str) -> Optional[Dict[str, Any]]:
+    """Load the package data for a specific version."""
+    db = get_db()
+    row = db.execute("SELECT * FROM asset_versions WHERE id = ?", (version_id,)).fetchone()
+    if not row:
+        return None
+    version = dict_from_row(row)
+    file_path = get_library_assets_dir() / version['file_path']
+    if not file_path.exists():
+        # Fallback: try loading the current asset package
+        return load_asset_package(version['asset_id'])
+    return json.loads(file_path.read_text())
+
+
+def revert_to_version(asset_id: str, version_id: str) -> Optional[Dict[str, Any]]:
+    """Revert an asset to a previous version.
+
+    Copies the version's snapshot file back as the current package and
+    creates a new version record marking the revert.
+    """
+    import hashlib
+    import shutil
+
+    db = get_db()
+    asset = get_asset(asset_id)
+    if not asset:
+        return None
+
+    row = db.execute("SELECT * FROM asset_versions WHERE id = ?", (version_id,)).fetchone()
+    if not row:
+        return None
+    version = dict_from_row(row)
+
+    version_file = get_library_assets_dir() / version['file_path']
+    if not version_file.exists():
+        return None
+
+    # Snapshot current state before reverting
+    current_file = get_library_assets_dir() / asset['file_path']
+    now = datetime.utcnow().isoformat()
+
+    # Determine current latest version
+    latest_row = db.execute(
+        "SELECT version FROM asset_versions WHERE asset_id = ? ORDER BY created_at DESC LIMIT 1",
+        (asset_id,)
+    ).fetchone()
+    if latest_row:
+        cur_ver = latest_row[0] if isinstance(latest_row, (tuple, list)) else latest_row['version']
+    else:
+        cur_ver = "1.0.0"
+
+    # Copy the version snapshot to the current file
+    shutil.copy2(str(version_file), str(current_file))
+
+    # Read the restored package for metadata
+    package_data = json.loads(current_file.read_text())
+    metadata = package_data.get('metadata', {})
+    file_hash = hashlib.sha256(current_file.read_bytes()).hexdigest()
+    file_size = current_file.stat().st_size
+
+    # Update the asset record
+    updates = {
+        'file_hash': file_hash,
+        'file_size': file_size,
+        'node_count': metadata.get('node_count', 0),
+        'node_types': json.dumps(metadata.get('node_types', [])),
+        'node_names': json.dumps(metadata.get('node_names', [])),
+        'houdini_version': package_data.get('houdini_version', ''),
+        'metadata': json.dumps(metadata),
+        'updated_at': now,
+    }
+    set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
+    values = list(updates.values()) + [asset_id]
+    db.execute(f"UPDATE library_assets SET {set_clause} WHERE id = ?", values)
+
+    # Create a revert version record
+    try:
+        next_version = _increment_version(cur_ver)
+        snapshot_name = f"{asset_id}_v{next_version}.sopdrop"
+        snapshot_path = get_library_assets_dir() / snapshot_name
+        shutil.copy2(str(current_file), str(snapshot_path))
+
+        revert_id = str(uuid.uuid4())
+        db.execute("""
+            INSERT OR IGNORE INTO asset_versions (id, asset_id, version, file_path, file_hash, file_size, node_count, changelog, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            revert_id, asset_id, next_version,
+            snapshot_name, file_hash, file_size,
+            metadata.get('node_count', 0),
+            f"Reverted to v{version.get('version', '?')}",
+            now,
+        ))
+    except Exception:
+        pass
+
+    db.commit()
+    _trigger_menu_regenerate()
+    return get_asset(asset_id)
 
 
 def save_vex_snippet(

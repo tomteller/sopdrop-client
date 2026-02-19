@@ -2296,6 +2296,7 @@ class AssetCardWidget(QtWidgets.QFrame):
             coll_menu.addAction("+ New...").triggered.connect(self._create_and_add_collection)
 
         menu.addSeparator()
+        menu.addAction("\u25C9  View Details").triggered.connect(self._view_details)
         menu.addAction("\u270E  Edit Details").triggered.connect(lambda: self.edit_requested.emit(self.asset['id']))
 
         # Cloud actions
@@ -2367,6 +2368,17 @@ class AssetCardWidget(QtWidgets.QFrame):
                 else:
                     action.triggered.connect(
                         lambda checked=False, c=coll['id']: self._add_to_collection(c))
+
+    def _view_details(self):
+        """Open the asset detail viewer."""
+        # Refresh asset data for latest info
+        if SOPDROP_AVAILABLE:
+            fresh = library.get_asset(self.asset['id'])
+            if fresh:
+                self.asset = fresh
+        dialog = AssetDetailDialog(self.asset, self.window())
+        dialog.tag_clicked.connect(self.tag_clicked.emit)
+        dialog.exec_()
 
     def _open_on_website(self):
         """Open this asset on the website."""
@@ -6914,8 +6926,10 @@ class SettingsDialog(QtWidgets.QDialog):
 # Edit Asset Dialog
 # ==============================================================================
 
-class EditAssetDialog(QtWidgets.QDialog):
-    """Dialog for editing asset metadata."""
+class AssetDetailDialog(QtWidgets.QDialog):
+    """Read-only detail view of an asset — full name, description, thumbnail, tags, metadata."""
+
+    tag_clicked = QtCore.Signal(str)
 
     def __init__(self, asset, parent=None):
         super().__init__(parent)
@@ -6923,49 +6937,543 @@ class EditAssetDialog(QtWidgets.QDialog):
         self._setup_ui()
 
     def _setup_ui(self):
-        self.setWindowTitle("Edit Asset")
-        self.setFixedWidth(350)
+        self.setWindowTitle(self.asset.get('name', 'Asset Details'))
+        self.setMinimumSize(420, 360)
         self.setStyleSheet(STYLESHEET)
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # -- Thumbnail area (top, large) --
+        self.thumb_frame = QtWidgets.QFrame()
+        self.thumb_frame.setFixedHeight(200)
+        self.thumb_frame.setStyleSheet(f"background-color: {COLORS['bg_base']};")
+        thumb_layout = QtWidgets.QVBoxLayout(self.thumb_frame)
+        thumb_layout.setContentsMargins(0, 0, 0, 0)
+        thumb_layout.setAlignment(QtCore.Qt.AlignCenter)
+
+        self.thumb_label = QtWidgets.QLabel()
+        self.thumb_label.setAlignment(QtCore.Qt.AlignCenter)
+        thumb_layout.addWidget(self.thumb_label)
+        layout.addWidget(self.thumb_frame)
+
+        self._load_thumbnail()
+
+        # -- Info area --
+        info_widget = QtWidgets.QWidget()
+        info_layout = QtWidgets.QVBoxLayout(info_widget)
+        info_layout.setContentsMargins(16, 12, 16, 12)
+        info_layout.setSpacing(8)
+
+        # Name + context badge row
+        name_row = QtWidgets.QHBoxLayout()
+        name_row.setSpacing(8)
+        name_label = QtWidgets.QLabel(self.asset.get('name', 'Untitled'))
+        name_label.setStyleSheet(f"font-size: 16px; font-weight: 700; color: {COLORS['text_bright']};")
+        name_label.setWordWrap(True)
+        name_row.addWidget(name_label, 1)
+
+        context = self.asset.get('context', 'sop')
+        ctx_badge = QtWidgets.QLabel(context.upper())
+        ctx_badge.setStyleSheet(f"""
+            background-color: {get_context_color(context)};
+            color: white; font-size: 10px; font-weight: bold;
+            padding: 3px 8px; border-radius: 3px;
+        """)
+        name_row.addWidget(ctx_badge, 0, QtCore.Qt.AlignTop)
+
+        if self.asset.get('asset_type') == 'hda':
+            hda_badge = QtWidgets.QLabel("HDA")
+            hda_badge.setStyleSheet(f"""
+                background-color: rgba(224, 145, 192, 0.9);
+                color: white; font-size: 10px; font-weight: bold;
+                padding: 3px 8px; border-radius: 3px;
+            """)
+            name_row.addWidget(hda_badge, 0, QtCore.Qt.AlignTop)
+
+        info_layout.addLayout(name_row)
+
+        # Description
+        desc = self.asset.get('description', '')
+        if desc:
+            desc_label = QtWidgets.QLabel(desc)
+            desc_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 11px;")
+            desc_label.setWordWrap(True)
+            info_layout.addWidget(desc_label)
+
+        # Tags
+        tags = self.asset.get('tags', [])
+        if isinstance(tags, str):
+            import json as _json
+            try:
+                tags = _json.loads(tags)
+            except Exception:
+                tags = []
+        if tags:
+            tags_row = QtWidgets.QHBoxLayout()
+            tags_row.setSpacing(4)
+            for t in tags:
+                tag_btn = QtWidgets.QPushButton(t)
+                tag_btn.setCursor(QtCore.Qt.PointingHandCursor)
+                tag_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: rgba(255,255,255,0.1);
+                        color: {COLORS['text_secondary']};
+                        font-size: 10px; padding: 2px 8px;
+                        border-radius: 3px; border: none;
+                    }}
+                    QPushButton:hover {{
+                        background-color: rgba(255,255,255,0.25);
+                        color: {COLORS['text']};
+                    }}
+                """)
+                tag_btn.clicked.connect(
+                    lambda checked=False, tag=t: self._on_tag_clicked(tag)
+                )
+                tags_row.addWidget(tag_btn)
+            tags_row.addStretch()
+            info_layout.addLayout(tags_row)
+
+        # Separator
+        sep = QtWidgets.QFrame()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background-color: {COLORS['border']};")
+        info_layout.addWidget(sep)
+
+        # Metadata grid
+        meta_grid = QtWidgets.QGridLayout()
+        meta_grid.setSpacing(4)
+        meta_grid.setColumnStretch(1, 1)
+        row = 0
+
+        def add_meta(label, value):
+            nonlocal row
+            if not value:
+                return
+            lbl = QtWidgets.QLabel(label)
+            lbl.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px;")
+            val = QtWidgets.QLabel(str(value))
+            val.setStyleSheet(f"color: {COLORS['text']}; font-size: 10px;")
+            val.setWordWrap(True)
+            meta_grid.addWidget(lbl, row, 0, QtCore.Qt.AlignTop)
+            meta_grid.addWidget(val, row, 1)
+            row += 1
+
+        add_meta("Type", self.asset.get('asset_type', 'node').upper())
+        add_meta("Nodes", self.asset.get('node_count'))
+
+        node_types = self.asset.get('node_types', [])
+        if isinstance(node_types, str):
+            import json as _json
+            try:
+                node_types = _json.loads(node_types)
+            except Exception:
+                node_types = []
+        if node_types:
+            add_meta("Node Types", ', '.join(node_types[:8]))
+
+        add_meta("Houdini", self.asset.get('houdini_version'))
+
+        file_size = self.asset.get('file_size', 0)
+        if file_size:
+            if file_size > 1024 * 1024:
+                add_meta("Size", f"{file_size / (1024*1024):.1f} MB")
+            elif file_size > 1024:
+                add_meta("Size", f"{file_size / 1024:.0f} KB")
+            else:
+                add_meta("Size", f"{file_size} bytes")
+
+        add_meta("Used", f"{self.asset.get('use_count', 0)} times")
+
+        created = self.asset.get('created_at', '')
+        if created:
+            add_meta("Created", created[:10])
+
+        # Collections
+        if SOPDROP_AVAILABLE:
+            colls = library.get_asset_collections(self.asset['id'])
+            if colls:
+                add_meta("Collections", ', '.join(c['name'] for c in colls))
+
+        if self.asset.get('hda_type_name'):
+            add_meta("HDA Type", self.asset['hda_type_name'])
+
+        license_type = self.asset.get('license_type')
+        if license_type:
+            add_meta("License", license_type.title())
+
+        info_layout.addLayout(meta_grid)
+
+        # -- Version History --
+        if SOPDROP_AVAILABLE:
+            versions = library.get_asset_versions(self.asset['id'])
+            if versions:
+                ver_sep = QtWidgets.QFrame()
+                ver_sep.setFixedHeight(1)
+                ver_sep.setStyleSheet(f"background-color: {COLORS['border']};")
+                info_layout.addWidget(ver_sep)
+
+                ver_header = QtWidgets.QLabel(f"Version History ({len(versions)})")
+                ver_header.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px; font-weight: 600;")
+                info_layout.addWidget(ver_header)
+
+                for v in versions:
+                    ver_row = QtWidgets.QFrame()
+                    ver_row.setStyleSheet(f"""
+                        QFrame {{
+                            background-color: {COLORS['bg_medium']};
+                            border: 1px solid {COLORS['border']};
+                            border-radius: 3px;
+                        }}
+                    """)
+                    vr_layout = QtWidgets.QHBoxLayout(ver_row)
+                    vr_layout.setContentsMargins(8, 4, 8, 4)
+                    vr_layout.setSpacing(8)
+
+                    # Version label
+                    ver_label = QtWidgets.QLabel(f"v{v.get('version', '?')}")
+                    ver_label.setStyleSheet(f"color: {COLORS['accent']}; font-size: 11px; font-weight: 700; border: none; background: transparent;")
+                    vr_layout.addWidget(ver_label)
+
+                    # Changelog or metadata
+                    changelog = v.get('changelog', '')
+                    node_ct = v.get('node_count', 0)
+                    detail_parts = []
+                    if changelog:
+                        detail_parts.append(changelog)
+                    elif node_ct:
+                        detail_parts.append(f"{node_ct} nodes")
+                    created = v.get('created_at', '')
+                    if created:
+                        detail_parts.append(created[:10])
+                    detail_text = ' \u2022 '.join(detail_parts) if detail_parts else ''
+                    if detail_text:
+                        detail_label = QtWidgets.QLabel(detail_text)
+                        detail_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 10px; border: none; background: transparent;")
+                        vr_layout.addWidget(detail_label, 1)
+                    else:
+                        vr_layout.addStretch()
+
+                    # Action buttons
+                    ver_btn_style = f"""
+                        QPushButton {{
+                            background-color: {COLORS['bg_light']};
+                            border: 1px solid {COLORS['border']};
+                            border-radius: 2px; padding: 2px 8px;
+                            color: {COLORS['text']}; font-size: 9px;
+                        }}
+                        QPushButton:hover {{
+                            border-color: {COLORS['accent']};
+                            color: {COLORS['accent']};
+                        }}
+                    """
+
+                    paste_btn = QtWidgets.QPushButton("Paste")
+                    paste_btn.setFixedHeight(20)
+                    paste_btn.setCursor(QtCore.Qt.PointingHandCursor)
+                    paste_btn.setToolTip("Paste this version into the network")
+                    paste_btn.setStyleSheet(ver_btn_style)
+                    paste_btn.clicked.connect(
+                        lambda checked=False, vid=v['id']: self._paste_version(vid)
+                    )
+                    vr_layout.addWidget(paste_btn)
+
+                    revert_btn = QtWidgets.QPushButton("Revert")
+                    revert_btn.setFixedHeight(20)
+                    revert_btn.setCursor(QtCore.Qt.PointingHandCursor)
+                    revert_btn.setToolTip("Revert asset to this version")
+                    revert_btn.setStyleSheet(ver_btn_style)
+                    revert_btn.clicked.connect(
+                        lambda checked=False, vid=v['id'], vv=v.get('version', '?'): self._revert_version(vid, vv)
+                    )
+                    vr_layout.addWidget(revert_btn)
+
+                    info_layout.addWidget(ver_row)
+
+        info_layout.addStretch()
+
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(info_widget)
+        scroll.setStyleSheet("border: none;")
+        layout.addWidget(scroll, 1)
+
+        # Bottom buttons
+        btn_bar = QtWidgets.QHBoxLayout()
+        btn_bar.setContentsMargins(16, 8, 16, 12)
+        btn_bar.setSpacing(8)
+
+        edit_btn = QtWidgets.QPushButton("Edit Details")
+        edit_btn.setFixedHeight(26)
+        edit_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        edit_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_light']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 3px; padding: 4px 14px;
+                color: {COLORS['text']};
+            }}
+            QPushButton:hover {{
+                border-color: {COLORS['accent']};
+            }}
+        """)
+        edit_btn.clicked.connect(self._open_edit)
+        btn_bar.addWidget(edit_btn)
+
+        btn_bar.addStretch()
+
+        close_btn = QtWidgets.QPushButton("Close")
+        close_btn.setFixedHeight(26)
+        close_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['accent']};
+                border: none; border-radius: 3px;
+                padding: 4px 14px; color: white; font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['accent_hover']};
+            }}
+        """)
+        close_btn.clicked.connect(self.accept)
+        btn_bar.addWidget(close_btn)
+
+        layout.addLayout(btn_bar)
+
+    def _load_thumbnail(self):
+        thumb_path_str = self.asset.get('thumbnail_path')
+        if thumb_path_str and SOPDROP_AVAILABLE:
+            try:
+                thumb_dir = library.get_library_thumbnails_dir()
+                thumb_path = thumb_dir / thumb_path_str
+                if thumb_path.exists():
+                    pixmap = QtGui.QPixmap(str(thumb_path))
+                    if not pixmap.isNull():
+                        scaled = pixmap.scaled(
+                            400, 190, QtCore.Qt.KeepAspectRatio,
+                            QtCore.Qt.SmoothTransformation
+                        )
+                        self.thumb_label.setPixmap(scaled)
+                        return
+            except Exception:
+                pass
+        # Fallback placeholder
+        context = self.asset.get('context', 'sop')
+        self.thumb_label.setText(context.upper())
+        self.thumb_label.setStyleSheet(f"""
+            color: {get_context_color(context)};
+            font-size: 28px; font-weight: bold; opacity: 0.3;
+        """)
+
+    def _on_tag_clicked(self, tag):
+        self.tag_clicked.emit(tag)
+
+    def _paste_version(self, version_id):
+        """Paste a specific version into the current Houdini network."""
+        if not SOPDROP_AVAILABLE:
+            return
+        try:
+            package = library.load_version_package(version_id)
+            if not package:
+                try:
+                    hou.ui.displayMessage("Could not load version data")
+                except Exception:
+                    pass
+                return
+
+            pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
+            if not pane:
+                hou.ui.displayMessage("No network editor found")
+                return
+
+            target = pane.pwd()
+            cursor_pos = pane.cursorPosition()
+
+            from sopdrop.importer import import_items
+            import_items(package, target, position=cursor_pos)
+            self.accept()
+        except Exception as e:
+            try:
+                hou.ui.displayMessage(f"Failed to paste version: {e}")
+            except Exception:
+                pass
+
+    def _revert_version(self, version_id, version_label):
+        """Revert asset to a previous version."""
+        if not SOPDROP_AVAILABLE:
+            return
+        try:
+            result = hou.ui.displayMessage(
+                f"Revert this asset to v{version_label}?\n\n"
+                "The current version will be saved in version history.",
+                buttons=("Revert", "Cancel"),
+                default_choice=1,
+            )
+            if result == 1:
+                return
+
+            updated = library.revert_to_version(self.asset['id'], version_id)
+            if updated:
+                self.asset = updated
+                # Refresh the parent panel
+                parent = self.parent()
+                while parent and not isinstance(parent, LibraryPanel):
+                    parent = parent.parent()
+                if parent:
+                    parent._refresh_assets()
+                    parent.show_toast(f"Reverted to v{version_label}", 'success', 3000)
+                self.accept()
+            else:
+                hou.ui.displayMessage("Failed to revert — version file may be missing")
+        except Exception as e:
+            try:
+                hou.ui.displayMessage(f"Failed to revert: {e}")
+            except Exception:
+                pass
+
+    def _open_edit(self):
+        self.accept()
+        # Find parent panel and open edit dialog
+        parent = self.parent()
+        while parent and not isinstance(parent, LibraryPanel):
+            parent = parent.parent()
+        if parent:
+            parent._edit_asset(self.asset['id'])
+
+
+class EditAssetDialog(QtWidgets.QDialog):
+    """Dialog for editing asset metadata including thumbnail."""
+
+    def __init__(self, asset, parent=None):
+        super().__init__(parent)
+        self.asset = asset
+        self._new_thumbnail = None  # bytes if changed
+        self._setup_ui()
+
+    def _setup_ui(self):
+        self.setWindowTitle("Edit Asset")
+        self.setMinimumWidth(400)
+        self.setStyleSheet(STYLESHEET)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
 
         title = QtWidgets.QLabel("Edit Asset")
         title.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {COLORS['text_bright']};")
         layout.addWidget(title)
 
-        layout.addWidget(QtWidgets.QLabel("Name"))
+        # -- Thumbnail section --
+        thumb_section = QtWidgets.QFrame()
+        thumb_section.setStyleSheet(f"""
+            QFrame {{
+                background-color: {COLORS['bg_base']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 4px;
+            }}
+        """)
+        thumb_layout = QtWidgets.QHBoxLayout(thumb_section)
+        thumb_layout.setContentsMargins(10, 10, 10, 10)
+        thumb_layout.setSpacing(10)
+
+        # Current thumbnail preview
+        self.thumb_preview = QtWidgets.QLabel()
+        self.thumb_preview.setFixedSize(100, 75)
+        self.thumb_preview.setAlignment(QtCore.Qt.AlignCenter)
+        self.thumb_preview.setStyleSheet(f"""
+            background-color: {COLORS['bg_dark']};
+            border: 1px solid {COLORS['border']};
+            border-radius: 3px;
+        """)
+        self._load_current_thumbnail()
+        thumb_layout.addWidget(self.thumb_preview)
+
+        # Thumbnail actions
+        thumb_actions = QtWidgets.QVBoxLayout()
+        thumb_actions.setSpacing(4)
+
+        thumb_label = QtWidgets.QLabel("Thumbnail")
+        thumb_label.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px; font-weight: 600; border: none; background: transparent;")
+        thumb_actions.addWidget(thumb_label)
+
+        btn_style = f"""
+            QPushButton {{
+                background-color: {COLORS['bg_light']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 3px; padding: 3px 10px;
+                color: {COLORS['text']}; font-size: 10px;
+            }}
+            QPushButton:hover {{
+                border-color: {COLORS['accent']};
+            }}
+        """
+
+        screenshot_btn = QtWidgets.QPushButton("Screenshot")
+        screenshot_btn.setFixedHeight(22)
+        screenshot_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        screenshot_btn.setStyleSheet(btn_style)
+        screenshot_btn.clicked.connect(self._take_screenshot)
+        thumb_actions.addWidget(screenshot_btn)
+
+        paste_btn = QtWidgets.QPushButton("From Clipboard")
+        paste_btn.setFixedHeight(22)
+        paste_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        paste_btn.setStyleSheet(btn_style)
+        paste_btn.clicked.connect(self._paste_clipboard)
+        thumb_actions.addWidget(paste_btn)
+
+        browse_btn = QtWidgets.QPushButton("Browse File...")
+        browse_btn.setFixedHeight(22)
+        browse_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        browse_btn.setStyleSheet(btn_style)
+        browse_btn.clicked.connect(self._browse_image)
+        thumb_actions.addWidget(browse_btn)
+
+        thumb_actions.addStretch()
+        thumb_layout.addLayout(thumb_actions, 1)
+        layout.addWidget(thumb_section)
+
+        # -- Name --
+        name_label = QtWidgets.QLabel("Name")
+        name_label.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px;")
+        layout.addWidget(name_label)
         self.name_input = QtWidgets.QLineEdit()
         self.name_input.setText(self.asset.get('name', ''))
-        self.name_input.setFixedHeight(22)
+        self.name_input.setFixedHeight(24)
         layout.addWidget(self.name_input)
 
-        layout.addWidget(QtWidgets.QLabel("Description"))
+        # -- Description --
+        desc_label = QtWidgets.QLabel("Description")
+        desc_label.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px;")
+        layout.addWidget(desc_label)
         self.desc_input = QtWidgets.QTextEdit()
-        self.desc_input.setMaximumHeight(50)
+        self.desc_input.setMaximumHeight(60)
         self.desc_input.setText(self.asset.get('description', ''))
         layout.addWidget(self.desc_input)
 
-        layout.addWidget(QtWidgets.QLabel("Tags"))
+        # -- Tags --
+        tags_label = QtWidgets.QLabel("Tags")
+        tags_label.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px;")
+        layout.addWidget(tags_label)
         self.tags_widget = TagInputWidget()
         self.tags_widget.set_tags(self.asset.get('tags', []))
         layout.addWidget(self.tags_widget)
 
         layout.addStretch()
 
+        # -- Buttons --
         btns = QtWidgets.QHBoxLayout()
         btns.setSpacing(10)
 
         cancel = QtWidgets.QPushButton("Cancel")
-        cancel.setFixedHeight(24)
+        cancel.setFixedHeight(26)
         cancel.setCursor(QtCore.Qt.PointingHandCursor)
         cancel.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border']};
-                border-radius: 3px;
-                padding: 4px 12px;
+                border-radius: 3px; padding: 4px 12px;
                 color: {COLORS['text']};
             }}
             QPushButton:hover {{
@@ -6979,16 +7487,13 @@ class EditAssetDialog(QtWidgets.QDialog):
         btns.addStretch()
 
         save = QtWidgets.QPushButton("Save Changes")
-        save.setFixedHeight(24)
+        save.setFixedHeight(26)
         save.setCursor(QtCore.Qt.PointingHandCursor)
         save.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['accent']};
-                border: none;
-                border-radius: 3px;
-                padding: 4px 14px;
-                color: white;
-                font-weight: 600;
+                border: none; border-radius: 3px;
+                padding: 4px 14px; color: white; font-weight: 600;
             }}
             QPushButton:hover {{
                 background-color: {COLORS['accent_hover']};
@@ -6999,13 +7504,114 @@ class EditAssetDialog(QtWidgets.QDialog):
 
         layout.addLayout(btns)
 
+    def _load_current_thumbnail(self):
+        thumb_path_str = self.asset.get('thumbnail_path')
+        if thumb_path_str and SOPDROP_AVAILABLE:
+            try:
+                thumb_dir = library.get_library_thumbnails_dir()
+                thumb_path = thumb_dir / thumb_path_str
+                if thumb_path.exists():
+                    pixmap = QtGui.QPixmap(str(thumb_path))
+                    if not pixmap.isNull():
+                        scaled = pixmap.scaled(
+                            96, 71, QtCore.Qt.KeepAspectRatio,
+                            QtCore.Qt.SmoothTransformation
+                        )
+                        self.thumb_preview.setPixmap(scaled)
+                        return
+            except Exception:
+                pass
+        self.thumb_preview.setText("No thumbnail")
+        self.thumb_preview.setStyleSheet(
+            self.thumb_preview.styleSheet() +
+            f" color: {COLORS['text_dim']}; font-size: 9px;"
+        )
+
+    def _set_preview_from_image(self, image):
+        """Update preview from a QImage and store the data."""
+        if image.isNull():
+            return
+        ba = QtCore.QByteArray()
+        buf = QtCore.QBuffer(ba)
+        buf.open(QtCore.QIODevice.WriteOnly)
+        image.save(buf, "PNG")
+        buf.close()
+        self._new_thumbnail = bytes(ba)
+
+        pixmap = QtGui.QPixmap.fromImage(image)
+        scaled = pixmap.scaled(
+            96, 71, QtCore.Qt.KeepAspectRatio,
+            QtCore.Qt.SmoothTransformation
+        )
+        self.thumb_preview.setPixmap(scaled)
+
+    def _take_screenshot(self):
+        if not SNIPPING_AVAILABLE:
+            try:
+                hou.ui.displayMessage("Screenshot tool not available. Use 'From Clipboard' instead.")
+            except Exception:
+                pass
+            return
+        self.hide()
+        QtWidgets.QApplication.processEvents()
+        QtCore.QTimer.singleShot(200, self._show_snipping)
+
+    def _show_snipping(self):
+        try:
+            self.snip = SnippingTool()
+            self.snip.captured.connect(self._on_captured)
+            self.snip.show()
+            self.snip.raise_()
+            self.snip.activateWindow()
+        except Exception:
+            self.show()
+
+    def _on_captured(self, image):
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        if image and not image.isNull():
+            self._set_preview_from_image(image)
+
+    def _paste_clipboard(self):
+        try:
+            clip = QtWidgets.QApplication.clipboard()
+            if clip.mimeData().hasImage():
+                img = clip.image()
+                if not img.isNull():
+                    self._set_preview_from_image(img)
+                    return
+        except Exception:
+            pass
+        try:
+            hou.ui.displayMessage("No image in clipboard")
+        except Exception:
+            pass
+
+    def _browse_image(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Select Image", "",
+            "Images (*.png *.jpg *.jpeg *.bmp *.tiff);;All Files (*)"
+        )
+        if path:
+            img = QtGui.QImage(path)
+            if not img.isNull():
+                self._set_preview_from_image(img)
+
     def _save(self):
         name = self.name_input.text().strip()
         if not name:
             QtWidgets.QMessageBox.warning(self, "Error", "Please enter a name")
             return
         try:
-            library.update_asset(self.asset['id'], name=name, description=self.desc_input.toPlainText().strip(), tags=self.tags_widget.get_tags())
+            library.update_asset(
+                self.asset['id'],
+                name=name,
+                description=self.desc_input.toPlainText().strip(),
+                tags=self.tags_widget.get_tags()
+            )
+            if self._new_thumbnail:
+                library.update_asset_thumbnail(self.asset['id'], self._new_thumbnail)
             self.accept()
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed: {e}")
