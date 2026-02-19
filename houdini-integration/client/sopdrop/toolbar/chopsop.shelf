@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<shelfDocument>
+  <toolshelf name="sopdrop" label="Sopdrop">
+    <memberTool name="sopdrop_paste"/>
+    <memberTool name="sopdrop_publish"/>
+    <memberTool name="sopdrop_search"/>
+  </toolshelf>
+
+  <tool name="sopdrop_paste" label="Paste" icon="BUTTONS_copy">
+    <helpText><![CDATA[
+Paste asset from clipboard.
+
+1. Copy an asset from sopdrop.com (click the Copy button)
+2. Click this Paste button
+3. Nodes appear in your network
+
+The clipboard should contain: sopdrop.paste("user/asset")
+    ]]></helpText>
+    <script scriptType="python"><![CDATA[
+import sopdrop
+
+try:
+    sopdrop.paste_from_clipboard()
+except sopdrop.SopdropError as e:
+    hou.ui.displayMessage(str(e), title="Sopdrop", severity=hou.severityType.Error)
+except Exception as e:
+    hou.ui.displayMessage(f"Error: {e}", title="Sopdrop", severity=hou.severityType.Error)
+]]></script>
+  </tool>
+
+  <tool name="sopdrop_publish" label="Publish" icon="BUTTONS_upload">
+    <helpText><![CDATA[
+Publish selected nodes to Sopdrop.
+
+Select nodes in your network, then click this button to publish them.
+You'll be prompted for a name and description.
+    ]]></helpText>
+    <script scriptType="python"><![CDATA[
+import sopdrop
+
+try:
+    sopdrop.publish()
+except sopdrop.AuthError:
+    hou.ui.displayMessage(
+        "Please login first.\n\nRun in Python shell:\nimport sopdrop\nsopdrop.login()",
+        title="Sopdrop - Not Logged In",
+        severity=hou.severityType.Warning
+    )
+except sopdrop.SopdropError as e:
+    hou.ui.displayMessage(str(e), title="Sopdrop", severity=hou.severityType.Error)
+except Exception as e:
+    hou.ui.displayMessage(f"Error: {e}", title="Sopdrop", severity=hou.severityType.Error)
+]]></script>
+  </tool>
+
+  <tool name="sopdrop_search" label="Search" icon="BUTTONS_search">
+    <helpText><![CDATA[
+Search for assets on Sopdrop.
+
+Opens a dialog to search for assets. Select one to paste it.
+    ]]></helpText>
+    <script scriptType="python"><![CDATA[
+import sopdrop
+import hou
+
+# Prompt for search query
+result = hou.ui.readInput(
+    "Search Sopdrop:",
+    buttons=("Search", "Cancel"),
+    default_choice=0,
+    close_choice=1,
+    title="Sopdrop Search"
+)
+
+if result[0] == 1:  # Cancel
+    pass
+else:
+    query = result[1].strip()
+    if query:
+        try:
+            results = sopdrop.search(query)
+
+            if not results:
+                hou.ui.displayMessage(f"No results for '{query}'", title="Sopdrop")
+            else:
+                # Show results in a selection dialog
+                choices = []
+                slugs = []
+                for asset in results[:20]:  # Limit to 20 results
+                    slug = asset.get('slug', '')
+                    name = asset.get('name', slug)
+                    owner = asset.get('owner', {})
+                    owner_name = owner.get('username', '') if isinstance(owner, dict) else owner
+                    desc = asset.get('description', '')[:50]
+                    choices.append(f"{name} (@{owner_name}) - {desc}")
+                    slugs.append(slug)
+
+                selected = hou.ui.selectFromList(
+                    choices,
+                    exclusive=True,
+                    title="Search Results",
+                    message=f"Found {len(results)} results for '{query}':",
+                    column_header="Assets"
+                )
+
+                if selected:
+                    slug = slugs[selected[0]]
+                    sopdrop.paste(slug)
+
+        except sopdrop.SopdropError as e:
+            hou.ui.displayMessage(str(e), title="Sopdrop", severity=hou.severityType.Error)
+        except Exception as e:
+            hou.ui.displayMessage(f"Error: {e}", title="Sopdrop", severity=hou.severityType.Error)
+]]></script>
+  </tool>
+
+</shelfDocument>

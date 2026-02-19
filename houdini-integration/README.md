@@ -4,18 +4,26 @@ Shelf tools for integrating Sopdrop with Houdini.
 
 ## Installation
 
-### 1. Install the Python Client
+### Method A: Houdini Packages (Recommended)
 
-```bash
-# Using pip
-pip install sopdrop
+1. Copy the `sopdrop.json` file to your Houdini packages directory:
+   - **Windows:** `C:\Users\<username>\Documents\houdini20.5\packages\`
+   - **macOS:** `~/Library/Preferences/houdini/20.5/packages/`
+   - **Linux:** `~/houdini20.5/packages/`
 
-# Or from source
-cd packages/sopdrop-client
-pip install -e .
-```
+2. Edit `sopdrop.json` and change the `SOPDROP` path to point to this `houdini-integration` folder:
+   ```json
+   {
+       "env": [
+           { "SOPDROP": "F:/path/to/sopdrop-client/houdini-integration" },
+           { "SOPDROP_HOUDINI_PATH": "$SOPDROP" }
+       ]
+   }
+   ```
 
-### 2. Configure Houdini
+3. Restart Houdini.
+
+### Method B: houdini.env
 
 Add the following to your `houdini.env` file:
 
@@ -28,20 +36,40 @@ Add the following to your `houdini.env` file:
 
 ```bash
 # Sopdrop Integration
-SOPDROP_HOUDINI_PATH = "/path/to/sopdrop/packages/sopdrop-houdini"
+SOPDROP_HOUDINI_PATH = "/path/to/sopdrop-client/houdini-integration"
 HOUDINI_TOOLBAR_PATH = "$SOPDROP_HOUDINI_PATH/toolbar;&"
 HOUDINI_PYTHON_PANEL_PATH = "$SOPDROP_HOUDINI_PATH/python_panels;&"
 PYTHONPATH = "$SOPDROP_HOUDINI_PATH/scripts;$PYTHONPATH"
-
-# Optional: Set default server (defaults to https://sopdrop.com)
-# SOPDROP_SERVER_URL = "https://sopdrop.com"
 ```
 
-Replace `/path/to/sopdrop` with the actual path to your Sopdrop installation.
+Replace the path with the actual path to the `houdini-integration` folder.
 
-### 3. Restart Houdini
+### Method C: Automatic Installer
 
-After updating `houdini.env`, restart Houdini. You should see a new "Sopdrop" shelf tab.
+```bash
+python install.py
+```
+
+This auto-detects your Houdini preferences and configures `houdini.env`.
+
+### Install the Python Client
+
+The sopdrop Python client must be importable by Houdini's Python:
+
+```bash
+# Using Houdini's Python
+/path/to/houdini/python/bin/pip install sopdrop
+
+# Or from source
+cd sopdrop-client
+pip install -e .
+```
+
+If using Method A (packages), the `sopdrop.json` already adds the `client/` folder to PYTHONPATH, so the client is available without pip install as long as the folder structure is intact.
+
+### Restart Houdini
+
+After configuration, restart Houdini. You should see a new "Sopdrop" shelf tab.
 
 ## Shelf Tools
 
@@ -128,19 +156,18 @@ Add the environment variable to your `houdini.env` file and restart Houdini.
 ## File Structure
 
 ```
-sopdrop-houdini/
+houdini-integration/
+├── sopdrop.json               # Houdini package config
+├── install.py                 # Auto-installer for houdini.env
 ├── toolbar/
-│   └── sopdrop.shelf      # Shelf definition
+│   ├── sopdrop.shelf          # Main shelf (Library, Save, Settings, About)
+│   ├── sopdrop_library.shelf  # TAB menu tools (auto-generated)
+│   └── icons/                 # SVG icons for shelf tools
 ├── python_panels/
-│   └── sopdrop_browser.pypanel  # Embedded browser panel
+│   └── sopdrop_library.pypanel  # Library panel interface
 ├── scripts/
-│   ├── sopdrop_browser.py # Browser panel implementation
-│   ├── sopdrop_publish.py # Publish tool
-│   ├── sopdrop_paste.py   # Paste tool
-│   ├── sopdrop_search.py  # Search tool
-│   └── sopdrop_settings.py # Settings tool
-├── icons/                  # Custom icons (optional)
-└── README.md              # This file
+│   └── sopdrop_library_panel.py # Library panel implementation
+└── README.md
 ```
 
 ## Embedded Browser Panel

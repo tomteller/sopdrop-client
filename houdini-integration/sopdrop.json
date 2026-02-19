@@ -3,12 +3,28 @@
     "env": [
         {
             "SOPDROP": "/CHANGE/THIS/TO/YOUR/sopdrop"
+        },
+        {
+            "SOPDROP_HOUDINI_PATH": "$SOPDROP"
+        },
+        {
+            "PYTHONPATH": {
+                "value": "$SOPDROP/scripts",
+                "method": "prepend"
+            }
+        },
+        {
+            "PYTHONPATH": {
+                "value": "$SOPDROP/scripts/python",
+                "method": "prepend"
+            }
+        },
+        {
+            "PYTHONPATH": {
+                "value": "$SOPDROP/client",
+                "method": "prepend"
+            }
         }
     ],
-    "path": "$SOPDROP",
-    "pythonpath": [
-        "$SOPDROP/scripts",
-        "$SOPDROP/scripts/python",
-        "$SOPDROP/client"
-    ]
+    "path": "$SOPDROP"
 }
