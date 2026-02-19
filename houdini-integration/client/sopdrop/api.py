@@ -862,14 +862,41 @@ class SopdropClient:
         body = b'\r\n'.join(body_parts)
 
         # Make request
-        url = f"{self.server_url}/api/v1/assets/hda"
+        url = f"{get_api_url()}/assets/hda"
         req = urllib.request.Request(url, data=body, method='POST')
         req.add_header('Authorization', f'Bearer {token}')
         req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
 
         try:
-            with urllib.request.urlopen(req, timeout=120) as response:
-                result = json.loads(response.read().decode())
+            import ssl
+            if url.startswith("https://"):
+                try:
+                    ctx = ssl.create_default_context()
+                    try:
+                        import certifi
+                        ctx = ssl.create_default_context(cafile=certifi.where())
+                    except ImportError:
+                        pass
+                    response = urllib.request.urlopen(req, timeout=120, context=ctx)
+                except (ssl.SSLCertVerificationError, URLError) as ssl_err:
+                    is_ssl = isinstance(ssl_err, ssl.SSLCertVerificationError)
+                    if isinstance(ssl_err, URLError) and 'CERTIFICATE_VERIFY_FAILED' in str(ssl_err.reason):
+                        is_ssl = True
+                    if not is_ssl:
+                        raise
+                    import warnings
+                    warnings.warn(
+                        "SSL certificate verification failed. Falling back to unverified connection.",
+                        stacklevel=2
+                    )
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    response = urllib.request.urlopen(req, timeout=120, context=ctx)
+            else:
+                response = urllib.request.urlopen(req, timeout=120)
+
+            result = json.loads(response.read().decode())
 
             slug = result.get('slug', name)
             print(f"\n✓ Published HDA: {slug}")
@@ -885,6 +912,8 @@ class SopdropClient:
             except json.JSONDecodeError:
                 message = error_body
             raise SopdropError(f"Publish failed: {message}")
+        except URLError as e:
+            raise SopdropError(f"Connection error: {e.reason}")
 
     # === Cache Management ===
 
