@@ -1,0 +1,14 @@
+{
+    "recommends": "Houdini >= 19.5",
+    "env": [
+        {
+            "SOPDROP": "/CHANGE/THIS/TO/YOUR/sopdrop"
+        }
+    ],
+    "path": "$SOPDROP",
+    "pythonpath": [
+        "$SOPDROP/scripts",
+        "$SOPDROP/scripts/python",
+        "$SOPDROP/client"
+    ]
+}

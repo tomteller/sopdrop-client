@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<pythonPanelDocument>
+  <interface name="sopdrop_library" label="Sopdrop Library" icon="MISC_python" showNetworkNavigationBar="false" help_url="">
+    <script><![CDATA[
+"""
+Sopdrop Library Panel
+
+Native Houdini panel for browsing and managing your local asset library.
+Works offline - syncs manually with cloud when desired.
+"""
+
+import sys
+import os
+
+# Add the sopdrop scripts directory to path using the environment variable
+sopdrop_path = os.environ.get("SOPDROP_HOUDINI_PATH", "")
+if sopdrop_path:
+    scripts_dir = os.path.join(sopdrop_path, "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+
+from sopdrop_library_panel import create_panel
+
+def onCreateInterface():
+    """Called by Houdini to create the panel interface."""
+    return create_panel()
+]]></script>
+    <includeInToolbarMenu menu_position="101" create_separator="false"/>
+    <help><![CDATA[
+Sopdrop Library Panel
+
+Your local asset library, native in Houdini. Works offline.
+
+Features:
+- Save selected nodes to your local library
+- Organize with collections (folders)
+- Tag assets for easy filtering
+- Search by name, tags, or context
+- Double-click to paste into current network
+- Manual sync with sopdrop.com when desired
+
+Quick Start:
+1. Select some nodes in the network editor
+2. Click "Save Selection" in this panel
+3. Give it a name and optional tags
+4. Find it later with search or browse collections
+
+Keyboard Shortcuts:
+- Double-click asset: Paste into current network
+- Right-click asset: Context menu (edit, delete, publish)
+- Right-click collection: Rename, change color, delete
+    ]]></help>
+  </interface>
+</pythonPanelDocument>

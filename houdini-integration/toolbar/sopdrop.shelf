@@ -1,0 +1,297 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<shelfDocument>
+  <!-- This file contains definitions of shelves, toolbars, and tools.
+ It should not be hand-edited when it is being used by the application.
+ Note, that two definitions of the same element are not allowed in
+ a single file. -->
+
+  <toolshelf name="sopdrop" label="Sopdrop">
+    <memberTool name="sopdrop_library"/>
+    <memberTool name="sopdrop_save"/>
+    <memberTool name="sopdrop_website"/>
+    <memberTool name="sopdrop_settings"/>
+    <memberTool name="sopdrop_about"/>
+  </toolshelf>
+
+  <tool name="sopdrop_library" label="Library" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_library.svg">
+    <helpText><![CDATA[
+Open your local Sopdrop library.
+
+Browse, search, and paste from your personal asset collection.
+Works offline - no internet required.
+
+Features:
+- Organize assets into collections (folders)
+- Tag and search your assets
+- Double-click to paste into current network
+- Manual sync with sopdrop.com when desired
+
+Tip: Add this as a permanent pane via Windows > Python Panel > Sopdrop Library
+    ]]></helpText>
+    <script scriptType="python"><![CDATA[
+import hou
+
+# Open the Sopdrop Library panel in a floating window
+pane = hou.ui.curDesktop().createFloatingPaneTab(
+    hou.paneTabType.PythonPanel,
+    (400, 300),  # position
+    (600, 700),  # size
+)
+pane.setActiveInterface(hou.pypanel.interfaceByName("sopdrop_library"))
+    ]]></script>
+  </tool>
+
+  <tool name="sopdrop_save" label="+ Save Selected Nodes" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_save.svg">
+    <helpText><![CDATA[
+Save selected nodes to your library.
+
+Select nodes, network boxes, and sticky notes, then click this tool
+to save them. You can choose to:
+
+- Save Local: Store in your personal library (works offline)
+- Save & Publish: Save locally AND publish to sopdrop.com
+
+You can also update existing assets to create new versions.
+    ]]></helpText>
+    <script scriptType="python"><![CDATA[
+import sys
+import os
+import importlib
+
+sopdrop_houdini = os.environ.get("SOPDROP_HOUDINI_PATH", "")
+if sopdrop_houdini:
+    scripts_path = os.path.join(sopdrop_houdini, "scripts")
+    if scripts_path not in sys.path:
+        sys.path.insert(0, scripts_path)
+
+try:
+    import sopdrop_library_panel
+    importlib.reload(sopdrop_library_panel)
+
+    # Get selected items
+    pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
+    if not pane:
+        hou.ui.displayMessage("No network editor found", title="Sopdrop")
+    else:
+        items = pane.pwd().selectedItems()
+        if not items:
+            hou.ui.displayMessage("Please select some nodes first", title="Sopdrop")
+        else:
+            # Show save dialog
+            dialog = sopdrop_library_panel.SaveToLibraryDialog(items)
+            dialog.exec_()
+
+except ImportError as e:
+    import hou
+    hou.ui.displayMessage(
+        f"Failed to load Sopdrop library:\n{e}\n\n"
+        "Make sure SOPDROP_HOUDINI_PATH is set in houdini.env",
+        title="Sopdrop - Error",
+        severity=hou.severityType.Error
+    )
+except Exception as e:
+    import hou
+    import traceback
+    hou.ui.displayMessage(
+        f"Error in Sopdrop save:\n{e}\n\n{traceback.format_exc()}",
+        title="Sopdrop - Error",
+        severity=hou.severityType.Error
+    )
+    ]]></script>
+  </tool>
+
+  <tool name="sopdrop_website" label="Sopdrop" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_website.svg">
+    <helpText><![CDATA[
+Open the Sopdrop website in your browser.
+
+Browse the public registry, manage your profile, and discover
+shared assets from the community.
+    ]]></helpText>
+    <script scriptType="python"><![CDATA[
+import webbrowser
+
+try:
+    from sopdrop.config import get_config
+    config = get_config()
+    server_url = config.get('server_url', 'https://sopdrop.com')
+except Exception:
+    server_url = 'https://sopdrop.com'
+
+webbrowser.open(server_url)
+    ]]></script>
+  </tool>
+
+  <tool name="sopdrop_settings" label="Settings" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_settings.svg">
+    <helpText><![CDATA[
+Manage Sopdrop settings and account.
+
+- Log in or out
+- Configure team library
+- TAB menu settings
+- Change server URL
+    ]]></helpText>
+    <script scriptType="python"><![CDATA[
+import sys
+import os
+import importlib
+
+sopdrop_houdini = os.environ.get("SOPDROP_HOUDINI_PATH", "")
+if sopdrop_houdini:
+    scripts_path = os.path.join(sopdrop_houdini, "scripts")
+    if scripts_path not in sys.path:
+        sys.path.insert(0, scripts_path)
+
+try:
+    import sopdrop_library_panel
+    importlib.reload(sopdrop_library_panel)
+    dialog = sopdrop_library_panel.SettingsDialog(hou.qt.mainWindow())
+    dialog.exec_()
+except ImportError as e:
+    # Fall back to standalone settings if library panel not available
+    try:
+        import sopdrop_settings
+        importlib.reload(sopdrop_settings)
+        sopdrop_settings.main()
+    except ImportError:
+        import hou
+        hou.ui.displayMessage(
+            f"Failed to load Sopdrop settings:\n{e}\n\n"
+            "Make sure SOPDROP_HOUDINI_PATH is set in houdini.env",
+            title="Sopdrop - Error",
+            severity=hou.severityType.Error
+        )
+except Exception as e:
+    import hou
+    import traceback
+    hou.ui.displayMessage(
+        f"Error in Sopdrop settings:\n{e}\n\n{traceback.format_exc()}",
+        title="Sopdrop - Error",
+        severity=hou.severityType.Error
+    )
+    ]]></script>
+  </tool>
+
+  <tool name="sopdrop_about" label="About" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_about.svg">
+    <helpText><![CDATA[
+About Sopdrop - Houdini asset registry.
+    ]]></helpText>
+    <script scriptType="python"><![CDATA[
+import sys
+import os
+import webbrowser
+
+sopdrop_houdini = os.environ.get("SOPDROP_HOUDINI_PATH", "")
+if sopdrop_houdini:
+    scripts_path = os.path.join(sopdrop_houdini, "scripts")
+    if scripts_path not in sys.path:
+        sys.path.insert(0, scripts_path)
+
+try:
+    from PySide6 import QtCore, QtWidgets
+except ImportError:
+    from PySide2 import QtCore, QtWidgets
+
+# Get version
+try:
+    import sopdrop
+    version = getattr(sopdrop, '__version__', '0.1.0')
+except Exception:
+    version = '0.1.0'
+
+# Get server URL
+try:
+    from sopdrop.config import get_config
+    server_url = get_config().get('server_url', 'https://sopdrop.com')
+except Exception:
+    server_url = 'https://sopdrop.com'
+
+ACCENT = '#f97316'
+
+dialog = QtWidgets.QDialog(hou.qt.mainWindow())
+dialog.setWindowTitle("About Sopdrop")
+dialog.setFixedSize(320, 280)
+dialog.setStyleSheet(f"""
+    QDialog {{
+        background-color: #1a1a1a;
+        color: #cccccc;
+    }}
+    QLabel {{
+        color: #cccccc;
+        background: transparent;
+    }}
+    QPushButton {{
+        background-color: #333333;
+        border: 1px solid #3a3a3a;
+        border-radius: 3px;
+        padding: 6px 14px;
+        color: #cccccc;
+    }}
+    QPushButton:hover {{
+        border-color: {ACCENT};
+        color: white;
+    }}
+""")
+
+layout = QtWidgets.QVBoxLayout(dialog)
+layout.setContentsMargins(24, 24, 24, 24)
+layout.setSpacing(12)
+
+# Logo/name
+title = QtWidgets.QLabel("Sopdrop")
+title.setStyleSheet(f"font-size: 22px; font-weight: 700; color: {ACCENT};")
+title.setAlignment(QtCore.Qt.AlignCenter)
+layout.addWidget(title)
+
+# Version
+ver = QtWidgets.QLabel(f"v{version}")
+ver.setStyleSheet("font-size: 11px; color: #777777;")
+ver.setAlignment(QtCore.Qt.AlignCenter)
+layout.addWidget(ver)
+
+layout.addSpacing(8)
+
+# Description
+desc = QtWidgets.QLabel(
+    "Houdini asset registry for sharing, versioning,\n"
+    "and installing procedural nodes and HDAs."
+)
+desc.setStyleSheet("font-size: 11px; color: #999999;")
+desc.setAlignment(QtCore.Qt.AlignCenter)
+desc.setWordWrap(True)
+layout.addWidget(desc)
+
+layout.addSpacing(4)
+
+# Credit
+credit = QtWidgets.QLabel("By Frame48")
+credit.setStyleSheet(f"font-size: 11px; color: {ACCENT};")
+credit.setAlignment(QtCore.Qt.AlignCenter)
+layout.addWidget(credit)
+
+layout.addStretch()
+
+# Buttons
+btn_row = QtWidgets.QHBoxLayout()
+btn_row.setSpacing(8)
+
+web_btn = QtWidgets.QPushButton("Website")
+web_btn.setCursor(QtCore.Qt.PointingHandCursor)
+web_btn.clicked.connect(lambda: webbrowser.open(server_url))
+btn_row.addWidget(web_btn)
+
+docs_btn = QtWidgets.QPushButton("Docs")
+docs_btn.setCursor(QtCore.Qt.PointingHandCursor)
+docs_btn.clicked.connect(lambda: webbrowser.open(f"{server_url}/docs"))
+btn_row.addWidget(docs_btn)
+
+close_btn = QtWidgets.QPushButton("Close")
+close_btn.setCursor(QtCore.Qt.PointingHandCursor)
+close_btn.clicked.connect(dialog.accept)
+btn_row.addWidget(close_btn)
+
+layout.addLayout(btn_row)
+
+dialog.exec_()
+    ]]></script>
+  </tool>
+</shelfDocument>

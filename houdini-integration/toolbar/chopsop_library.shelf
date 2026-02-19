@@ -1,0 +1,445 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Sopdrop Library TAB Menu Tools
+  Auto-generated on 2026-02-14 11:39:02
+
+  This file is regenerated when your library changes.
+  Do not edit manually.
+-->
+<shelfDocument>
+
+  <tool name="sopdrop_lib_17ecfb38_f386_4812_a445_b4d982e7a499" label="Cube maker HDA (4)" icon="MISC_python">
+    <helpText><![CDATA[Paste Cube maker HDA from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Hda</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.paste_asset("17ecfb38-f386-4812-a445-b4d982e7a499")
+]]></script>
+    <keywordList>
+      <keyword>cube maker hda,sopdrop,lop,hda</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_e7141a81_117c_4f13_9305_f49277b8f667" label="Gold Shader (6)" icon="MISC_python">
+    <helpText><![CDATA[Paste Gold Shader from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>VOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.paste_asset("e7141a81-117c-4f13-9305-f49277b8f667")
+]]></script>
+    <keywordList>
+      <keyword>gold shader,sopdrop,vop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_2d71107d_74b4_46d5_a645_4119e993ca84" label="Lights (8)" icon="MISC_python">
+    <helpText><![CDATA[Paste Lights from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.paste_asset("2d71107d-74b4-46d5-a645-4119e993ca84")
+]]></script>
+    <keywordList>
+      <keyword>lights,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_c7fab7c7_9509_4f16_a3b8_b924d6523e53" label="Fill sphere with points (152)" icon="MISC_python">
+    <helpText><![CDATA[Paste Fill sphere with points from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Sops</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.paste_asset("c7fab7c7-9509-4f16-a3b8-b924d6523e53")
+]]></script>
+    <keywordList>
+      <keyword>fill sphere with points,sopdrop,sop,sops</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_06619576_f7d4_4a7c_9faa_97b2ef190ae5" label="test (38)" icon="MISC_python">
+    <helpText><![CDATA[Paste test from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Ch</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.paste_asset("06619576-f7d4-4a7c-9faa-97b2ef190ae5")
+]]></script>
+    <keywordList>
+      <keyword>test,sopdrop,lop,ch</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_81f4ea35_b782_445e_88b0_3a943fe8d333" label="2 (6)" icon="MISC_python">
+    <helpText><![CDATA[this is great]]></helpText>
+    <toolSubmenu>Sopdrop/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.paste_asset("81f4ea35-b782-445e-88b0-3a943fe8d333")
+]]></script>
+    <keywordList>
+      <keyword>2,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_9552f458_9e25_4f18_8d1a_b22729c08e6f" label="2 subnets :) (16)" icon="MISC_python">
+    <helpText><![CDATA[Paste 2 subnets :) from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.paste_asset("9552f458-9e25-4f18-8d1a-b22729c08e6f")
+]]></script>
+    <keywordList>
+      <keyword>2 subnets :),sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_1adc7fd7_2b41_40f0_be8b_7f7e1886ea55" label="testq23 (5)" icon="MISC_python">
+    <helpText><![CDATA[Paste testq23 from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>OBJ</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.paste_asset("1adc7fd7-2b41-40f0-be8b-7f7e1886ea55")
+]]></script>
+    <keywordList>
+      <keyword>testq23,sopdrop,obj</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_907e1739_bc72_41fb_82c5_0febf2684b20" label="Test boxes (6)" icon="MISC_python">
+    <helpText><![CDATA[Paste Test boxes from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.paste_asset("907e1739-bc72-41fb-82c5-0febf2684b20")
+]]></script>
+    <keywordList>
+      <keyword>test boxes,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_ce6f817e_490b_445b_b69e_ae87f5075427" label="lights (6)" icon="MISC_python">
+    <helpText><![CDATA[Paste lights from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.paste_asset("ce6f817e-490b-445b-b69e-ae87f5075427")
+]]></script>
+    <keywordList>
+      <keyword>lights,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_ea5660fe_290b_449b_9b85_157133754c8f" label="Box2 (4)" icon="MISC_python">
+    <helpText><![CDATA[Paste Box2 from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>OBJ</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.paste_asset("ea5660fe-290b-449b-9b85-157133754c8f")
+]]></script>
+    <keywordList>
+      <keyword>box2,sopdrop,obj</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_554f4e40_c5a0_4178_8934_04236054ba02" label="Box (5)" icon="MISC_python">
+    <helpText><![CDATA[box and stickynote]]></helpText>
+    <toolSubmenu>Sopdrop/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>OBJ</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.paste_asset("554f4e40-c5a0-4178-8934-04236054ba02")
+]]></script>
+    <keywordList>
+      <keyword>box,sopdrop,obj</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_0a3d4b38_f19f_4d79_84d7_d4178c12b4ea" label="dfsdfsdf (8)" icon="MISC_python">
+    <helpText><![CDATA[Paste dfsdfsdf from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.paste_asset("0a3d4b38-f19f-4d79-84d7-d4178c12b4ea")
+]]></script>
+    <keywordList>
+      <keyword>dfsdfsdf,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_3c54c7b4_cc07_49a9_aebb_c21e28defa5b" label="asdfasdf (11)" icon="MISC_python">
+    <helpText><![CDATA[Paste asdfasdf from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.paste_asset("3c54c7b4-cc07-49a9-aebb-c21e28defa5b")
+]]></script>
+    <keywordList>
+      <keyword>asdfasdf,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_2caae605_da7d_462f_bae7_c488a5c2bae2" label="Hands (10)" icon="MISC_python">
+    <helpText><![CDATA[these are hands]]></helpText>
+    <toolSubmenu>Sopdrop/Characters</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.paste_asset("2caae605-da7d-462f-bae7-c488a5c2bae2")
+]]></script>
+    <keywordList>
+      <keyword>hands,sopdrop,lop,characters</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_f8c8ff9e_9b23_43d9_81fc_be42fb91a3ae" label="These nodes (1)" icon="MISC_python">
+    <helpText><![CDATA[Paste These nodes from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.paste_asset("f8c8ff9e-9b23-43d9-81fc-be42fb91a3ae")
+]]></script>
+    <keywordList>
+      <keyword>these nodes,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_27abff38_1ef4_4d2f_89ee_b117f8c1ea0a" label="Light (1)" icon="MISC_python">
+    <helpText><![CDATA[Paste Light from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Lights</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.paste_asset("27abff38-1ef4-4d2f-89ee-b117f8c1ea0a")
+]]></script>
+    <keywordList>
+      <keyword>light,sopdrop,lop,lights</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_1ef487cd_6916_4581_963c_e612771ed592" label="Tommy light (10)" icon="MISC_python">
+    <helpText><![CDATA[test]]></helpText>
+    <toolSubmenu>Sopdrop/Characters</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.paste_asset("1ef487cd-6916-4581-963c-e612771ed592")
+]]></script>
+    <keywordList>
+      <keyword>tommy light,sopdrop,lop,characters</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_sop" label="Browse Library..." icon="MISC_python">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_vop" label="Browse Library..." icon="MISC_python">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>VOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_dop" label="Browse Library..." icon="MISC_python">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>DOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_cop" label="Browse Library..." icon="MISC_python">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>COP2</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_cop2" label="Browse Library..." icon="MISC_python">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>COP2</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_top" label="Browse Library..." icon="MISC_python">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>TOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_lop" label="Browse Library..." icon="MISC_python">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_chop" label="Browse Library..." icon="MISC_python">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>CHOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_obj" label="Browse Library..." icon="MISC_python">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>OBJ</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_rop" label="Browse Library..." icon="MISC_python">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>ROP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_out" label="Browse Library..." icon="MISC_python">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>ROP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+</shelfDocument>

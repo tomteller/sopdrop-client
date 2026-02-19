@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+  <!-- Paste/Download icon -->
+  <rect x="8" y="6" width="32" height="22" rx="3" fill="#2d2d2d" stroke="#f97316" stroke-width="2"/>
+  <path d="M24 38 L24 20" stroke="#f97316" stroke-width="3" stroke-linecap="round"/>
+  <path d="M17 31 L24 38 L31 31" stroke="#f97316" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="14" y="10" width="20" height="2" rx="1" fill="#f97316" opacity="0.5"/>
+  <rect x="14" y="14" width="14" height="2" rx="1" fill="#f97316" opacity="0.5"/>
+</svg>

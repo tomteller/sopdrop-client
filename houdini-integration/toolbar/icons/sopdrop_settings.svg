@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+  <!-- Settings/Gear icon -->
+  <circle cx="24" cy="24" r="8" fill="none" stroke="#f97316" stroke-width="3"/>
+  <circle cx="24" cy="24" r="3" fill="#f97316"/>
+  <!-- Gear teeth -->
+  <rect x="22" y="4" width="4" height="8" rx="1" fill="#f97316"/>
+  <rect x="22" y="36" width="4" height="8" rx="1" fill="#f97316"/>
+  <rect x="4" y="22" width="8" height="4" rx="1" fill="#f97316"/>
+  <rect x="36" y="22" width="8" height="4" rx="1" fill="#f97316"/>
+  <!-- Diagonal teeth -->
+  <rect x="8" y="8" width="4" height="8" rx="1" fill="#f97316" transform="rotate(45 10 12)"/>
+  <rect x="36" y="8" width="4" height="8" rx="1" fill="#f97316" transform="rotate(-45 38 12)"/>
+  <rect x="8" y="32" width="4" height="8" rx="1" fill="#f97316" transform="rotate(-45 10 36)"/>
+  <rect x="36" y="32" width="4" height="8" rx="1" fill="#f97316" transform="rotate(45 38 36)"/>
+</svg>
