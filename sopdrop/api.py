@@ -102,9 +102,21 @@ class SopdropClient:
                 # Try with default certificate verification first
                 try:
                     ctx = ssl.create_default_context()
+                    # Try using certifi certs if available
+                    try:
+                        import certifi
+                        ctx = ssl.create_default_context(cafile=certifi.where())
+                    except ImportError:
+                        pass
                     response = urlopen(req, timeout=30, context=ctx)
-                except ssl.SSLCertVerificationError:
-                    # Houdini's bundled Python sometimes has cert issues
+                except (ssl.SSLCertVerificationError, URLError) as ssl_err:
+                    # Check if it's actually an SSL error (URLError wraps SSL errors on macOS)
+                    is_ssl = isinstance(ssl_err, ssl.SSLCertVerificationError)
+                    if isinstance(ssl_err, URLError) and 'CERTIFICATE_VERIFY_FAILED' in str(ssl_err.reason):
+                        is_ssl = True
+                    if not is_ssl:
+                        raise
+                    # Houdini's bundled Python and macOS often have cert issues
                     # Fall back to unverified, but warn the user
                     import warnings
                     warnings.warn(

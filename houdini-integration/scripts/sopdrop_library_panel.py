@@ -2068,10 +2068,14 @@ class AssetCardWidget(QtWidgets.QFrame):
             painter.end()
             self.thumb_label.setPixmap(pixmap)
 
-    # -- Custom drag tracking (avoids QDrag which enters a native Cocoa loop
-    #    on macOS where Qt timers and stylesheet repaints don't work) ----------
+    # -- Drag tracking ---------------------------------------------------------
+    # macOS: grabMouse() approach (QDrag enters native Cocoa loop that blocks
+    #        Qt timers and stylesheet repaints)
+    # Windows/Linux: standard QDrag with mime data (works natively with
+    #        _DropAwareContainer's dragMoveEvent for live highlighting)
     _custom_drag_active = False
     _custom_drag_ids = []
+    _IS_MACOS = __import__('sys').platform == 'darwin'
 
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
@@ -2080,9 +2084,21 @@ class AssetCardWidget(QtWidgets.QFrame):
             # Don't emit clicked yet — wait for release to preserve multi-select during drag
         super().mousePressEvent(event)
 
+    def _get_drag_asset_ids(self):
+        """Get the list of asset IDs to drag (respects multi-select)."""
+        parent_grid = self.parent()
+        while parent_grid and not isinstance(parent_grid, AssetGridWidget):
+            parent_grid = parent_grid.parent()
+
+        asset_ids = [self.asset['id']]
+        if parent_grid and hasattr(parent_grid, '_selected_assets') and parent_grid._selected_assets:
+            if self.asset['id'] in parent_grid._selected_assets:
+                asset_ids = list(parent_grid._selected_assets)
+        return asset_ids
+
     def mouseMoveEvent(self, event):
-        """Custom drag: grabMouse() keeps us in Qt's normal event loop."""
-        # If custom drag is active, track cursor over collections
+        """Start drag when mouse moves beyond threshold."""
+        # macOS custom drag: track cursor over collections
         if AssetCardWidget._custom_drag_active:
             coll_widget = CollectionListWidget._active_instance
             if coll_widget:
@@ -2098,25 +2114,27 @@ class AssetCardWidget(QtWidgets.QFrame):
         if (event.pos() - self._drag_start_pos).manhattanLength() < QtWidgets.QApplication.startDragDistance():
             return
 
-        # Determine asset IDs to drag
-        parent_grid = self.parent()
-        while parent_grid and not isinstance(parent_grid, AssetGridWidget):
-            parent_grid = parent_grid.parent()
-
-        asset_ids = [self.asset['id']]
-        if parent_grid and hasattr(parent_grid, '_selected_assets') and parent_grid._selected_assets:
-            if self.asset['id'] in parent_grid._selected_assets:
-                asset_ids = list(parent_grid._selected_assets)
-
-        # Start custom drag (no QDrag — stays in Qt event loop)
+        asset_ids = self._get_drag_asset_ids()
         self._did_drag = True
-        AssetCardWidget._custom_drag_active = True
-        AssetCardWidget._custom_drag_ids = asset_ids
-        self.grabMouse()
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.DragMoveCursor)
+
+        if self._IS_MACOS:
+            # macOS: grabMouse keeps us in Qt's normal event loop
+            AssetCardWidget._custom_drag_active = True
+            AssetCardWidget._custom_drag_ids = asset_ids
+            self.grabMouse()
+            QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.DragMoveCursor)
+        else:
+            # Windows/Linux: standard QDrag — _DropAwareContainer handles highlighting
+            drag = QtGui.QDrag(self)
+            mime = QtCore.QMimeData()
+            mime.setData('application/x-sopdrop-assets',
+                         QtCore.QByteArray(','.join(asset_ids).encode()))
+            drag.setMimeData(mime)
+            drag.exec_(QtCore.Qt.MoveAction)
 
     def mouseReleaseEvent(self, event):
         if AssetCardWidget._custom_drag_active:
+            # macOS custom drag release
             AssetCardWidget._custom_drag_active = False
             self.releaseMouse()
             QtWidgets.QApplication.restoreOverrideCursor()

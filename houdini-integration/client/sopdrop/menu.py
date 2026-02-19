@@ -121,8 +121,15 @@ sopdrop.menu.paste_asset("{asset_id}")'''
     # Help text
     help_text = description if description else f"Paste {name} from Sopdrop library"
 
+    # Use asset's Houdini icon if set, otherwise fall back to sopdrop icon
+    asset_icon = asset.get('icon', '')
+    if asset_icon:
+        icon_attr = asset_icon  # Houdini icon name like "SOP_scatter"
+    else:
+        icon_attr = "$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_ramen.svg"
+
     return f'''
-  <tool name="{tool_name}" label="{escape(label)}" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_ramen.svg">
+  <tool name="{tool_name}" label="{escape(label)}" icon="{escape(icon_attr)}">
     <helpText><![CDATA[{escape(help_text)}]]></helpText>
     <toolSubmenu>{escape(submenu)}</toolSubmenu>
     <toolMenuContext name="network">
