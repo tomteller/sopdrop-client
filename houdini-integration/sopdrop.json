@@ -2,28 +2,10 @@
     "recommends": "Houdini >= 19.5",
     "env": [
         {
-            "SOPDROP": "/CHANGE/THIS/TO/YOUR/sopdrop"
+            "SOPDROP": "/path/to/sopdrop-client/houdini-integration"
         },
         {
             "SOPDROP_HOUDINI_PATH": "$SOPDROP"
-        },
-        {
-            "PYTHONPATH": {
-                "value": "$SOPDROP/scripts",
-                "method": "prepend"
-            }
-        },
-        {
-            "PYTHONPATH": {
-                "value": "$SOPDROP/scripts/python",
-                "method": "prepend"
-            }
-        },
-        {
-            "PYTHONPATH": {
-                "value": "$SOPDROP/client",
-                "method": "prepend"
-            }
         }
     ],
     "path": "$SOPDROP"

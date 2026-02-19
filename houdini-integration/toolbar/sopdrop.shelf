@@ -60,9 +60,10 @@ import importlib
 
 sopdrop_houdini = os.environ.get("SOPDROP_HOUDINI_PATH", "")
 if sopdrop_houdini:
-    scripts_path = os.path.join(sopdrop_houdini, "scripts")
-    if scripts_path not in sys.path:
-        sys.path.insert(0, scripts_path)
+    for _sd in ["scripts", "client"]:
+        _p = os.path.join(sopdrop_houdini, _sd)
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
 
 try:
     import sopdrop_library_panel
@@ -137,9 +138,10 @@ import importlib
 
 sopdrop_houdini = os.environ.get("SOPDROP_HOUDINI_PATH", "")
 if sopdrop_houdini:
-    scripts_path = os.path.join(sopdrop_houdini, "scripts")
-    if scripts_path not in sys.path:
-        sys.path.insert(0, scripts_path)
+    for _sd in ["scripts", "client"]:
+        _p = os.path.join(sopdrop_houdini, _sd)
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
 
 try:
     import sopdrop_library_panel
@@ -182,9 +184,10 @@ import webbrowser
 
 sopdrop_houdini = os.environ.get("SOPDROP_HOUDINI_PATH", "")
 if sopdrop_houdini:
-    scripts_path = os.path.join(sopdrop_houdini, "scripts")
-    if scripts_path not in sys.path:
-        sys.path.insert(0, scripts_path)
+    for _sd in ["scripts", "client"]:
+        _p = os.path.join(sopdrop_houdini, _sd)
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
 
 try:
     from PySide6 import QtCore, QtWidgets
