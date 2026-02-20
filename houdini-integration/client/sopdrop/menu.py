@@ -126,7 +126,7 @@ sopdrop.menu.paste_asset("{asset_id}")'''
     if asset_icon:
         icon_attr = asset_icon  # Houdini icon name like "SOP_scatter"
     else:
-        icon_attr = "$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_ramen.svg"
+        icon_attr = "$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg"
 
     return f'''
   <tool name="{tool_name}" label="{escape(label)}" icon="{escape(icon_attr)}">
@@ -150,7 +150,7 @@ def generate_browse_tool_xml(context: str) -> str:
     tool_name = f"sopdrop_browse_{context}"
 
     return f'''
-  <tool name="{tool_name}" label="Browse Library..." icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_ramen.svg">
+  <tool name="{tool_name}" label="Browse Library..." icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
     <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
     <toolSubmenu>Sopdrop</toolSubmenu>
     <toolMenuContext name="network">

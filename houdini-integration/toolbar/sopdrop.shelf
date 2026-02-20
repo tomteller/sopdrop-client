@@ -15,7 +15,7 @@
     <memberTool name="sopdrop_about"/>
   </toolshelf>
 
-  <tool name="sopdrop_library" label="Library" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_library.svg">
+  <tool name="sopdrop_library" label="Library" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
     <helpText><![CDATA[
 Open your local Sopdrop library.
 
@@ -43,7 +43,7 @@ pane.setActiveInterface(hou.pypanel.interfaceByName("sopdrop_library"))
     ]]></script>
   </tool>
 
-  <tool name="sopdrop_save" label="+ Save Selected Nodes" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_save.svg">
+  <tool name="sopdrop_save" label="Save Nodes" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_save.svg">
     <helpText><![CDATA[
 Save selected nodes to your library.
 
@@ -103,7 +103,7 @@ except Exception as e:
     ]]></script>
   </tool>
 
-  <tool name="sopdrop_share" label="Share" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_share.svg">
+  <tool name="sopdrop_share" label="Quick Share" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_share.svg">
     <helpText><![CDATA[
 Share selected nodes with a colleague.
 

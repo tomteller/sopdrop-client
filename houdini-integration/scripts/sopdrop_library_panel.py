@@ -2682,7 +2682,7 @@ class AssetGridWidget(QtWidgets.QWidget):
         self.empty_widget = QtWidgets.QWidget()
         empty_layout = QtWidgets.QVBoxLayout(self.empty_widget)
         empty_layout.setAlignment(QtCore.Qt.AlignCenter)
-        self.empty_label = QtWidgets.QLabel("No assets yet\nSave nodes using + Save Selected Nodes")
+        self.empty_label = QtWidgets.QLabel("No assets yet\nSave nodes using + Save Nodes")
         self.empty_label.setAlignment(QtCore.Qt.AlignCenter)
         self.empty_label.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 12px;")
         self.empty_label.setWordWrap(True)
@@ -3194,7 +3194,7 @@ class LibraryPanel(QtWidgets.QWidget):
         top_bar.addWidget(self.search_input, 1)
 
         # Save button
-        save_btn = QtWidgets.QPushButton("+ Save Selected Nodes")
+        save_btn = QtWidgets.QPushButton("+ Save Nodes")
         save_btn.setToolTip("Save selected nodes to library")
         save_btn.setFixedHeight(22)
         save_btn.setCursor(QtCore.Qt.PointingHandCursor)
@@ -3860,7 +3860,7 @@ class LibraryPanel(QtWidgets.QWidget):
             elif has_coll:
                 self.asset_grid.set_empty_message("This collection is empty\nDrag assets here to add them")
             else:
-                self.asset_grid.set_empty_message("No assets yet\nSave nodes using + Save Selected Nodes")
+                self.asset_grid.set_empty_message("No assets yet\nSave nodes using + Save Nodes")
 
         # Handle grouping by collection
         # Group when: (1) no collection selected, (2) multi-select, or (3) single collection with subs
