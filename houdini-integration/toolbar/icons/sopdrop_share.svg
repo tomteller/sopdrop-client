@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
-  <!-- Share/link icon -->
-  <path d="M20 28 L28 20" stroke="#f97316" stroke-width="3" stroke-linecap="round"/>
-  <path d="M25 15 L30 10 A7 7 0 0 1 40 10 L38 12 A7 7 0 0 1 38 22 L33 27" stroke="#f97316" stroke-width="3" stroke-linecap="round" fill="none"/>
-  <path d="M23 33 L18 38 A7 7 0 0 1 8 38 L10 36 A7 7 0 0 1 10 26 L15 21" stroke="#f97316" stroke-width="3" stroke-linecap="round" fill="none"/>
-</svg>

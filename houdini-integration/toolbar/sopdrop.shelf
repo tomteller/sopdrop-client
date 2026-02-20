@@ -8,14 +8,13 @@
   <toolshelf name="sopdrop" label="Sopdrop">
     <memberTool name="sopdrop_library"/>
     <memberTool name="sopdrop_save"/>
-    <memberTool name="sopdrop_share"/>
     <memberTool name="sopdrop_paste"/>
     <memberTool name="sopdrop_website"/>
     <memberTool name="sopdrop_settings"/>
     <memberTool name="sopdrop_about"/>
   </toolshelf>
 
-  <tool name="sopdrop_library" label="Library" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+  <tool name="sopdrop_library" label="Library" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_library.svg">
     <helpText><![CDATA[
 Open your local Sopdrop library.
 
@@ -43,7 +42,7 @@ pane.setActiveInterface(hou.pypanel.interfaceByName("sopdrop_library"))
     ]]></script>
   </tool>
 
-  <tool name="sopdrop_save" label="Save Nodes" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_save.svg">
+  <tool name="sopdrop_save" label="+ Save Selected Nodes" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_save.svg">
     <helpText><![CDATA[
 Save selected nodes to your library.
 
@@ -97,51 +96,6 @@ except Exception as e:
     import traceback
     hou.ui.displayMessage(
         f"Error in Sopdrop save:\n{e}\n\n{traceback.format_exc()}",
-        title="Sopdrop - Error",
-        severity=hou.severityType.Error
-    )
-    ]]></script>
-  </tool>
-
-  <tool name="sopdrop_share" label="Quick Share" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_share.svg">
-    <helpText><![CDATA[
-Share selected nodes with a colleague.
-
-Select nodes, click Share — a temporary link is created and
-copied to your clipboard. Send it to a colleague. They click
-Paste in Houdini and get the nodes.
-
-Shares expire after 24 hours.
-    ]]></helpText>
-    <script scriptType="python"><![CDATA[
-import sys
-import os
-import importlib
-
-sopdrop_houdini = os.environ.get("SOPDROP_HOUDINI_PATH", "")
-if sopdrop_houdini:
-    for _sd in ["scripts", "client"]:
-        _p = os.path.join(sopdrop_houdini, _sd)
-        if _p not in sys.path:
-            sys.path.insert(0, _p)
-
-try:
-    import sopdrop_share
-    importlib.reload(sopdrop_share)
-    sopdrop_share.main()
-except ImportError as e:
-    import hou
-    hou.ui.displayMessage(
-        f"Failed to load Sopdrop share:\n{e}\n\n"
-        "Make sure SOPDROP_HOUDINI_PATH is set in houdini.env",
-        title="Sopdrop - Error",
-        severity=hou.severityType.Error
-    )
-except Exception as e:
-    import hou
-    import traceback
-    hou.ui.displayMessage(
-        f"Error in Sopdrop share:\n{e}\n\n{traceback.format_exc()}",
         title="Sopdrop - Error",
         severity=hou.severityType.Error
     )

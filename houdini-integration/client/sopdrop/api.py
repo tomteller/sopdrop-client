@@ -10,7 +10,6 @@ import hashlib
 import tempfile
 import webbrowser
 import uuid
-import warnings
 from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode, quote
@@ -78,11 +77,6 @@ def _ssl_urlopen(req, timeout=30):
                 is_ssl = True
             if not is_ssl:
                 raise
-            warnings.warn(
-                "SSL certificate verification failed. Falling back to unverified connection. "
-                "Install certifi (`pip install certifi`) to fix this.",
-                stacklevel=2,
-            )
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
@@ -912,53 +906,6 @@ class SopdropClient:
             raise SopdropError(f"Publish failed: {message}")
         except URLError as e:
             raise SopdropError(f"Connection error: {e.reason}")
-
-    # === Sharing ===
-
-    def share(self, package, name=None):
-        """
-        Create a temporary share from a .sopdrop package.
-
-        Args:
-            package: Exported package dict
-            name: Optional display name
-
-        Returns:
-            Dict with shareCode, shareUrl, expiresAt
-        """
-        token = get_token()
-        if not token:
-            raise AuthError("Please login first: sopdrop.login()")
-
-        data = {"package": package}
-        if name:
-            data["name"] = name
-
-        return self._post("share", data=data, auth=True)
-
-    def fetch_share(self, code):
-        """
-        Download a shared .sopdrop package by share code.
-
-        Args:
-            code: Share code (e.g., 'TC-4B9X')
-
-        Returns:
-            Package dict ready for import
-        """
-        return self._get(f"share/{code}/download", auth=False)
-
-    def share_info(self, code):
-        """
-        Get metadata about a share without downloading.
-
-        Args:
-            code: Share code (e.g., 'TC-4B9X')
-
-        Returns:
-            Dict with shareCode, name, context, nodeCount, etc.
-        """
-        return self._get(f"share/{code}", auth=False)
 
     # === Cache Management ===
 

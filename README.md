@@ -4,9 +4,39 @@ Houdini asset registry client. Save, share, and install procedural nodes and HDA
 
 ## Installation
 
-```bash
-pip install sopdrop
-```
+Sopdrop uses Houdini's built-in package system. No pip, no terminal, no Python environments.
+
+1. **Download** the [latest release](https://github.com/tomteller/sopdrop-client/releases/latest) and extract it anywhere on your machine.
+
+2. **Copy** `sopdrop.json` from the release into your Houdini packages folder:
+
+   ```
+   # macOS
+   ~/Library/Preferences/houdini/20.5/packages/
+
+   # Windows
+   %USERPROFILE%/Documents/houdini20.5/packages/
+
+   # Linux
+   ~/houdini20.5/packages/
+   ```
+
+   Create the `packages` folder if it doesn't exist.
+
+3. **Edit** `sopdrop.json` and set the path to where you extracted the release:
+
+   ```json
+   {
+       "env": [
+           { "SOPDROP": "/path/to/sopdrop-houdini" }
+       ],
+       "path": "$SOPDROP"
+   }
+   ```
+
+4. **Restart Houdini.** The Sopdrop shelf and TAB menu entries appear automatically.
+
+That's it — no pip, no git, no Python path configuration.
 
 ## Quick Start
 

@@ -56,21 +56,20 @@ except ImportError:
 # ==============================================================================
 
 COLORS = {
-    # Backgrounds - layered depth (darker base, brighter cards)
-    'bg_base': '#191919',      # Deepest background (panel frame, sidebar)
-    'bg_dark': '#1e1e1e',      # Main background
-    'bg_medium': '#242424',    # Controls, inputs
-    'bg_light': '#2e2e2e',     # Elevated elements (buttons)
-    'bg_lighter': '#383838',   # Hover states
-    'bg_hover': '#424242',     # Active hover
+    # Backgrounds - Houdini-style grays
+    'bg_base': '#1a1a1a',      # Deepest background
+    'bg_dark': '#222222',      # Main background (Houdini network bg)
+    'bg_medium': '#2a2a2a',    # Cards, panels
+    'bg_light': '#333333',     # Elevated elements
+    'bg_lighter': '#3d3d3d',   # Hover states
+    'bg_hover': '#454545',     # Active hover
     'bg_selected': '#3d3020',  # Orange-tinted selection
-    'bg_card': '#2a2a2a',      # Card background (brighter than grid area)
-    'bg_card_hover': '#323232', # Card hover
-    'bg_grid': '#202020',      # Grid area background (between sidebar and cards)
+    'bg_card': '#262626',      # Card background
+    'bg_card_hover': '#303030', # Card hover
 
-    # Borders - subtle but present
-    'border': '#333333',       # Default borders
-    'border_light': '#444444', # More visible borders
+    # Borders - more visible for Houdini look
+    'border': '#3a3a3a',       # Default borders
+    'border_light': '#4a4a4a', # More visible borders
     'border_focus': '#f97316', # Focus state
 
     # Text hierarchy - better contrast
@@ -1307,7 +1306,7 @@ class CollectionListWidget(QtWidgets.QWidget):
         # Container (accepts drops — delegates to self for hit-testing)
         self.container = _DropAwareContainer(owner=self)
         self.container.setStyleSheet(f"""
-            background-color: {COLORS['bg_base']};
+            background-color: {COLORS['bg_dark']};
             border-radius: 3px;
         """)
         container_layout = QtWidgets.QVBoxLayout(self.container)
@@ -1544,21 +1543,16 @@ class CollectionListWidget(QtWidgets.QWidget):
             # Invisible spacer same width as arrow so names align across depth levels
             spacer = QtWidgets.QWidget()
             spacer.setFixedSize(14, 16)
-            spacer.setStyleSheet("background: transparent;")
             spacer.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
             inner.addWidget(spacer)
 
-        coll_color = coll.get('color', '') or COLORS['text_dim']
-        color_chip = QtWidgets.QWidget()
-        color_chip.setFixedSize(8, 8)
-        color_chip.setStyleSheet(f"""
-            background-color: {coll_color};
-            border-radius: 2px;
-        """)
-        color_chip.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-        inner.addWidget(color_chip)
-        inner.addSpacing(4)
-        name_label = QtWidgets.QLabel(coll['name'])
+        coll_color = coll.get('color', '')
+        if coll_color:
+            dot_html = f'<span style="color: {coll_color};">\u25AA</span>'
+        else:
+            dot_html = f'<span style="color: {COLORS["text_dim"]};">\u25AA</span>'
+        name_label = QtWidgets.QLabel(f'{dot_html} {coll["name"]}')
+        name_label.setTextFormat(QtCore.Qt.RichText)
         name_label.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px; background: transparent;")
         name_label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
         inner.addWidget(name_label)
@@ -1740,10 +1734,10 @@ class AssetCardWidget(QtWidgets.QFrame):
     def _setup_ui(self):
         self.setObjectName("assetCard")
 
-        # Card styling with border - brighter than grid bg for depth
+        # Card styling with border
         self.setStyleSheet(f"""
             QFrame#assetCard {{
-                background-color: {COLORS['bg_card']};
+                background-color: transparent;
                 border: 1px solid {COLORS['border']};
                 border-radius: 4px;
             }}
@@ -1933,16 +1927,13 @@ class AssetCardWidget(QtWidgets.QFrame):
         """Update card border based on selected/hovered state."""
         if self._selected:
             border = f"2px solid {COLORS['accent']}"
-            bg = COLORS['bg_card_hover']
         elif self._hovered:
             border = f"1px solid {COLORS['accent']}"
-            bg = COLORS['bg_card_hover']
         else:
             border = f"1px solid {COLORS['border']}"
-            bg = COLORS['bg_card']
         self.setStyleSheet(f"""
             QFrame#assetCard {{
-                background-color: {bg};
+                background-color: transparent;
                 border: {border};
                 border-radius: 4px;
             }}
@@ -2066,7 +2057,7 @@ class AssetCardWidget(QtWidgets.QFrame):
             path = QtGui.QPainterPath()
             path.addRoundedRect(0, 0, width, height, radius, radius)
             painter.setClipPath(path)
-            painter.fillRect(0, 0, width, height, QtGui.QColor(COLORS['bg_medium']))
+            painter.fillRect(0, 0, width, height, QtGui.QColor(COLORS['bg_dark']))
 
             # Draw context letter or VEX code icon
             is_vex = self.asset.get('asset_type') == 'vex' or context == 'vex'
@@ -2655,18 +2646,18 @@ class AssetGridWidget(QtWidgets.QWidget):
         self.scroll = QtWidgets.QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.scroll.setStyleSheet(f"border: none; background-color: {COLORS['bg_grid']};")
+        self.scroll.setStyleSheet("border: none; background: transparent;")
 
         # Main container with vertical layout to allow proper alignment
         self.container = QtWidgets.QWidget()
-        self.container.setStyleSheet(f"background-color: {COLORS['bg_grid']};")
+        self.container.setStyleSheet("background: transparent;")
         container_layout = QtWidgets.QVBoxLayout(self.container)
-        container_layout.setContentsMargins(6, 6, 6, 6)
+        container_layout.setContentsMargins(2, 2, 2, 2)
         container_layout.setSpacing(0)
 
         # Grid widget inside container
         self.grid_widget = QtWidgets.QWidget()
-        self.grid_widget.setStyleSheet(f"background-color: {COLORS['bg_grid']};")
+        self.grid_widget.setStyleSheet("background: transparent;")
         self.grid_layout = QtWidgets.QGridLayout(self.grid_widget)
         self.grid_layout.setContentsMargins(0, 0, 0, 0)
         self.grid_layout.setSpacing(6)
@@ -2682,7 +2673,7 @@ class AssetGridWidget(QtWidgets.QWidget):
         self.empty_widget = QtWidgets.QWidget()
         empty_layout = QtWidgets.QVBoxLayout(self.empty_widget)
         empty_layout.setAlignment(QtCore.Qt.AlignCenter)
-        self.empty_label = QtWidgets.QLabel("No assets yet\nSave nodes using + Save Nodes")
+        self.empty_label = QtWidgets.QLabel("No assets yet\nSave nodes using + Save Selected Nodes")
         self.empty_label.setAlignment(QtCore.Qt.AlignCenter)
         self.empty_label.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 12px;")
         self.empty_label.setWordWrap(True)
@@ -3194,7 +3185,7 @@ class LibraryPanel(QtWidgets.QWidget):
         top_bar.addWidget(self.search_input, 1)
 
         # Save button
-        save_btn = QtWidgets.QPushButton("+ Save Nodes")
+        save_btn = QtWidgets.QPushButton("+ Save Selected Nodes")
         save_btn.setToolTip("Save selected nodes to library")
         save_btn.setFixedHeight(22)
         save_btn.setCursor(QtCore.Qt.PointingHandCursor)
@@ -3580,7 +3571,7 @@ class LibraryPanel(QtWidgets.QWidget):
         self.active_filter_bar.setFixedHeight(20)
         self.active_filter_bar.setStyleSheet(f"""
             QFrame {{
-                background-color: {COLORS['bg_base']};
+                background-color: {COLORS['bg_dark']};
                 border: none;
                 border-bottom: 1px solid {COLORS['border']};
             }}
@@ -3659,7 +3650,7 @@ class LibraryPanel(QtWidgets.QWidget):
         self.info_footer.setFixedHeight(24)
         self.info_footer.setStyleSheet(f"""
             QFrame {{
-                background-color: {COLORS['bg_base']};
+                background-color: {COLORS['bg_dark']};
                 border-top: 1px solid {COLORS['border']};
             }}
         """)
@@ -3860,7 +3851,7 @@ class LibraryPanel(QtWidgets.QWidget):
             elif has_coll:
                 self.asset_grid.set_empty_message("This collection is empty\nDrag assets here to add them")
             else:
-                self.asset_grid.set_empty_message("No assets yet\nSave nodes using + Save Nodes")
+                self.asset_grid.set_empty_message("No assets yet\nSave nodes using + Save Selected Nodes")
 
         # Handle grouping by collection
         # Group when: (1) no collection selected, (2) multi-select, or (3) single collection with subs
@@ -4408,14 +4399,23 @@ class LibraryPanel(QtWidgets.QWidget):
         self.filter_icon_label.setVisible(has_filters)
         self.clear_all_filters_btn.setVisible(has_filters)
 
-        # Keep bar styling consistent — chips already indicate active filters
-        self.active_filter_bar.setStyleSheet(f"""
-            QFrame {{
-                background-color: {COLORS['bg_base']};
-                border: none;
-                border-bottom: 1px solid {COLORS['border']};
-            }}
-        """)
+        # Update bar styling: subtle accent tint when filters active
+        if has_filters:
+            self.active_filter_bar.setStyleSheet(f"""
+                QFrame {{
+                    background-color: {COLORS['bg_dark']};
+                    border: none;
+                    border-bottom: 1px solid {COLORS['accent']};
+                }}
+            """)
+        else:
+            self.active_filter_bar.setStyleSheet(f"""
+                QFrame {{
+                    background-color: {COLORS['bg_dark']};
+                    border: none;
+                    border-bottom: 1px solid {COLORS['border']};
+                }}
+            """)
 
     # Backwards compat alias
     def _update_tag_chips(self):
