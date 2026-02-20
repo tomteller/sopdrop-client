@@ -706,7 +706,7 @@ class PublishDialog(QtWidgets.QDialog):
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {token}",
-                "User-Agent": "sopdrop-houdini/0.1.0",
+                "User-Agent": "sopdrop-houdini/0.1.2",
             }
 
             # Choose endpoint based on mode

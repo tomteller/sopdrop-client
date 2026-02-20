@@ -1788,7 +1788,7 @@ def pull_from_cloud(slug: str, version: str = None, collection_id: str = None,
 
             # Create request with headers
             headers = {
-                "User-Agent": "sopdrop-client/0.1.0",
+                "User-Agent": "sopdrop-client/0.1.2",
                 "Accept": "image/*",
             }
             req = Request(thumb_url, headers=headers)

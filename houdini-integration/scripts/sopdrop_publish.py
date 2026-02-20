@@ -378,7 +378,7 @@ class PublishDialog:
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {token}",
-            "User-Agent": "sopdrop-houdini/0.1.0",
+            "User-Agent": "sopdrop-houdini/0.1.2",
         }
 
         # Build request body
@@ -512,7 +512,7 @@ def publish_from_library(package, name="", description="", tags=None, thumbnail_
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {token}",
-                "User-Agent": "sopdrop-houdini/0.1.0",
+                "User-Agent": "sopdrop-houdini/0.1.2",
             }
 
             # Include pre-filled metadata

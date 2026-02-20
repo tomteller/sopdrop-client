@@ -107,7 +107,7 @@ class SopdropClient:
 
         headers = {
             "Accept": "application/json",
-            "User-Agent": "sopdrop-client/0.1.0",
+            "User-Agent": "sopdrop-client/0.1.2",
         }
 
         if auth:
@@ -245,7 +245,7 @@ class SopdropClient:
         download_url = f"{get_api_url()}/assets/{asset_slug}/download/{version}"
 
         headers = {
-            "User-Agent": "sopdrop-client/0.1.0",
+            "User-Agent": "sopdrop-client/0.1.2",
             "Accept": "application/json",
         }
         token = get_token()
