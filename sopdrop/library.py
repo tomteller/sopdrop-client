@@ -1019,6 +1019,11 @@ def save_asset_version(
 
     db.commit()
 
+    # Mark as modified if this asset is cloud-synced
+    asset_after = get_asset(asset_id)
+    if asset_after and asset_after.get('sync_status') in ('synced', 'modified') and asset_after.get('remote_slug'):
+        mark_asset_modified(asset_id)
+
     # Trigger menu regeneration
     _trigger_menu_regenerate()
 
@@ -1637,6 +1642,91 @@ def get_sync_status() -> Dict[str, List[Dict[str, Any]]]:
     return result
 
 
+def reset_syncing_status(asset_id: str):
+    """Reset a 'syncing' asset back to 'local_only' (e.g., after publish failure)."""
+    db = get_db()
+    db.execute("""
+        UPDATE library_assets
+        SET sync_status = 'local_only',
+            metadata = json_remove(COALESCE(metadata, '{}'), '$.draft_id')
+        WHERE id = ? AND sync_status = 'syncing'
+    """, (asset_id,))
+    db.commit()
+
+
+def verify_cloud_status(asset_id: str) -> str:
+    """
+    Verify an asset's cloud status by checking the server.
+
+    Returns the verified status: 'synced', 'local_only', or 'error'.
+    Also updates the local database to match reality.
+    """
+    db = get_db()
+    row = db.execute(
+        "SELECT remote_slug, sync_status FROM library_assets WHERE id = ?",
+        (asset_id,)
+    ).fetchone()
+
+    if not row:
+        return 'error'
+
+    asset = dict_from_row(row)
+    remote_slug = asset.get('remote_slug')
+    current_status = asset.get('sync_status', 'local_only')
+
+    # If local_only and no remote slug, nothing to verify
+    if current_status == 'local_only' and not remote_slug:
+        return 'local_only'
+
+    # If 'syncing' with no remote_slug, it was a failed publish attempt
+    if current_status == 'syncing' and not remote_slug:
+        reset_syncing_status(asset_id)
+        return 'local_only'
+
+    # Check server for the asset
+    if remote_slug:
+        try:
+            from .api import SopdropClient, NotFoundError
+            client = SopdropClient()
+            client._get(f"assets/{remote_slug}", auth=False)
+            # Asset exists on server — mark as synced
+            if current_status != 'synced':
+                db.execute(
+                    "UPDATE library_assets SET sync_status = 'synced' WHERE id = ?",
+                    (asset_id,)
+                )
+                db.commit()
+            return 'synced'
+        except NotFoundError:
+            # Asset no longer exists on server
+            db.execute("""
+                UPDATE library_assets
+                SET sync_status = 'local_only', remote_slug = NULL,
+                    remote_version = NULL, synced_at = NULL
+                WHERE id = ?
+            """, (asset_id,))
+            db.commit()
+            return 'local_only'
+        except Exception:
+            # Network error — can't verify, keep current status
+            return current_status
+
+    return current_status
+
+
+def cleanup_stale_syncing():
+    """Reset any assets stuck in 'syncing' status (drafts expire after 24h)."""
+    db = get_db()
+    db.execute("""
+        UPDATE library_assets
+        SET sync_status = 'local_only',
+            metadata = json_remove(COALESCE(metadata, '{}'), '$.draft_id')
+        WHERE sync_status = 'syncing'
+          AND updated_at < datetime('now', '-24 hours')
+    """)
+    db.commit()
+
+
 # ==============================================================================
 # Cloud Sync Operations
 # ==============================================================================
@@ -1815,6 +1905,98 @@ def push_to_cloud(asset_id: str) -> Dict[str, Any]:
     }
 
 
+def push_version_to_cloud(asset_id: str) -> Dict[str, Any]:
+    """
+    Push a new version of a cloud-synced asset.
+
+    Uses the /drafts/version endpoint to create a version draft,
+    then opens the browser for the user to set the version number and confirm.
+
+    Args:
+        asset_id: The local asset ID (must have a remote_slug)
+
+    Returns:
+        Dict with 'draft_id' and 'complete_url'
+    """
+    import json
+    import ssl
+    import webbrowser
+    from urllib.request import Request, urlopen
+    from urllib.error import HTTPError
+
+    from .config import get_api_url, get_token
+
+    asset = get_asset(asset_id)
+    if not asset:
+        raise ValueError(f"Asset not found: {asset_id}")
+
+    remote_slug = asset.get('remote_slug')
+    if not remote_slug:
+        raise ValueError("Asset is not synced to cloud. Use Publish instead.")
+
+    package = load_asset_package(asset_id)
+    if not package:
+        raise ValueError("Failed to load asset package")
+
+    token = get_token()
+    if not token:
+        raise ValueError("Not logged in. Please log in first.")
+
+    # We need the server-side asset_id (UUID), not the local ID.
+    # Fetch from the server using the slug.
+    from .api import SopdropClient
+    client = SopdropClient()
+    try:
+        server_asset = client._get(f"assets/{remote_slug}", auth=False)
+        server_asset_id = server_asset.get('assetId') or server_asset.get('asset_id')
+        if not server_asset_id:
+            raise ValueError("Could not get server asset ID")
+    except Exception as e:
+        raise ValueError(f"Failed to look up cloud asset: {e}")
+
+    # Upload as version draft
+    url = f"{get_api_url()}/drafts/version"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "sopdrop-library/0.1.0",
+    }
+
+    body = json.dumps({
+        "package": package,
+        "assetId": server_asset_id,
+    }).encode('utf-8')
+
+    req = Request(url, data=body, headers=headers, method="POST")
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    try:
+        response = urlopen(req, timeout=120, context=ctx)
+        result = json.loads(response.read().decode('utf-8'))
+    except HTTPError as e:
+        error_body = e.read().decode('utf-8')
+        reset_syncing_status(asset_id)
+        raise ValueError(f"Upload failed: {error_body}")
+
+    # Open browser to set version number and confirm
+    complete_url = result.get('completeUrl')
+    if complete_url:
+        webbrowser.open(complete_url)
+
+    # Mark as syncing until browser confirmation completes
+    draft_id = result.get('draftId', '')
+    mark_asset_syncing(asset_id, draft_id)
+
+    return {
+        'draft_id': draft_id,
+        'complete_url': complete_url,
+        'message': 'Version draft created. Set the version number in your browser.',
+    }
+
+
 def import_from_cache(slug: str, version: str = None, collection_id: str = None) -> Optional[Dict[str, Any]]:
     """
     Import an already-cached cloud asset into the local library.
@@ -1864,9 +2046,10 @@ def import_from_cache(slug: str, version: str = None, collection_id: str = None)
 
 def get_cloud_saved_assets() -> List[Dict[str, Any]]:
     """
-    Fetch user's saved assets from the cloud.
+    Fetch user's saved and published assets from the cloud.
 
-    Returns a list of cloud saved assets (not downloaded yet).
+    Combines the saved/bookmarked list with the user's own published assets
+    to ensure all cloud assets are available for pull.
     """
     from .api import SopdropClient
     from .config import get_token
@@ -1874,13 +2057,44 @@ def get_cloud_saved_assets() -> List[Dict[str, Any]]:
     if not get_token():
         return []
 
+    client = SopdropClient()
+    seen_slugs = set()
+    all_assets = []
+
+    # Fetch saved/bookmarked assets
     try:
-        client = SopdropClient()
         result = client._get("saved?limit=100")
-        return result.get('assets', [])
+        for asset in result.get('assets', []):
+            slug = asset.get('slug', '')
+            if slug and slug not in seen_slugs:
+                seen_slugs.add(slug)
+                all_assets.append(asset)
     except Exception as e:
-        print(f"[Sopdrop] Failed to fetch cloud saved assets: {e}")
-        return []
+        print(f"[Sopdrop] Failed to fetch saved assets: {e}")
+
+    # Also fetch user's own published assets
+    try:
+        result = client._get("users/me/assets")
+        for asset in result.get('assets', []):
+            slug = asset.get('slug', '')
+            if slug and slug not in seen_slugs:
+                seen_slugs.add(slug)
+                # Normalize field names to match saved format
+                all_assets.append({
+                    'name': asset.get('name', ''),
+                    'slug': slug,
+                    'description': asset.get('description', ''),
+                    'type': asset.get('assetType', 'node'),
+                    'context': asset.get('houdiniContext', 'sop'),
+                    'tags': asset.get('tags', []),
+                    'latestVersion': asset.get('latestVersion', '1.0.0'),
+                    'thumbnailUrl': asset.get('thumbnailUrl', ''),
+                    'source': 'published',
+                })
+    except Exception as e:
+        print(f"[Sopdrop] Failed to fetch published assets: {e}")
+
+    return all_assets
 
 
 def sync_saved_assets(collection_name: str = "Cloud Library") -> Dict[str, Any]:

@@ -57,6 +57,33 @@ class NotFoundError(SopdropError):
     """Asset not found."""
     pass
 
+
+def _ssl_urlopen(req, timeout=30):
+    """urlopen with SSL fallback for Houdini's bundled Python."""
+    import ssl
+    url = req.full_url if hasattr(req, 'full_url') else str(req)
+    if url.startswith("https://"):
+        try:
+            ctx = ssl.create_default_context()
+            try:
+                import certifi
+                ctx = ssl.create_default_context(cafile=certifi.where())
+            except ImportError:
+                pass
+            return urlopen(req, timeout=timeout, context=ctx)
+        except (ssl.SSLCertVerificationError, URLError) as e:
+            is_ssl = isinstance(e, ssl.SSLCertVerificationError)
+            if isinstance(e, URLError) and 'CERTIFICATE_VERIFY_FAILED' in str(e.reason):
+                is_ssl = True
+            if not is_ssl:
+                raise
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return urlopen(req, timeout=timeout, context=ctx)
+    return urlopen(req, timeout=timeout)
+
+
 class SopdropClient:
     """Sopdrop API client."""
 
@@ -96,42 +123,7 @@ class SopdropClient:
         req = Request(url, data=body, headers=headers, method=method)
 
         try:
-            # Handle SSL for HTTPS
-            import ssl
-            if url.startswith("https://"):
-                # Try with default certificate verification first
-                try:
-                    ctx = ssl.create_default_context()
-                    # Try using certifi certs if available
-                    try:
-                        import certifi
-                        ctx = ssl.create_default_context(cafile=certifi.where())
-                    except ImportError:
-                        pass
-                    response = urlopen(req, timeout=30, context=ctx)
-                except (ssl.SSLCertVerificationError, URLError) as ssl_err:
-                    # Check if it's actually an SSL error (URLError wraps SSL errors on macOS)
-                    is_ssl = isinstance(ssl_err, ssl.SSLCertVerificationError)
-                    if isinstance(ssl_err, URLError) and 'CERTIFICATE_VERIFY_FAILED' in str(ssl_err.reason):
-                        is_ssl = True
-                    if not is_ssl:
-                        raise
-                    # Houdini's bundled Python and macOS often have cert issues
-                    # Fall back to unverified, but warn the user
-                    import warnings
-                    warnings.warn(
-                        "SSL certificate verification failed. "
-                        "Falling back to unverified connection. "
-                        "Consider updating your CA certificates.",
-                        stacklevel=2
-                    )
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
-                    response = urlopen(req, timeout=30, context=ctx)
-            else:
-                response = urlopen(req, timeout=30)
-
+            response = _ssl_urlopen(req, timeout=30)
             content = response.read().decode("utf-8")
             if content:
                 return json.loads(content)
@@ -263,7 +255,7 @@ class SopdropClient:
         req = Request(download_url, headers=headers)
 
         try:
-            response = urlopen(req, timeout=60)
+            response = _ssl_urlopen(req, timeout=60)
             content_type = response.headers.get("Content-Type", "")
 
             if "application/json" in content_type:

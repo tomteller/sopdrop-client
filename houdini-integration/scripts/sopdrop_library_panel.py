@@ -1727,6 +1727,7 @@ class AssetCardWidget(QtWidgets.QFrame):
         self.library_type = library_type
         self.display_settings = display_settings or {'name': True, 'context': True, 'tags': False}
         self._hovered = False
+        self._selected = False
         self._original_pixmap = None  # Store original for resizing
         self._setup_ui()
 
@@ -1833,7 +1834,7 @@ class AssetCardWidget(QtWidgets.QFrame):
                 sync_icon.setToolTip("Syncing...")
             else:
                 sync_icon.setStyleSheet(f"color: {COLORS['warning']}; font-size: 8px; background: transparent;")
-                sync_icon.setToolTip("Modified locally")
+                sync_icon.setToolTip("Modified locally \u2014 right-click to push update")
             top_layout.addWidget(sync_icon)
 
         # Bottom overlay - gradient for text (hidden when name display is off)
@@ -1922,16 +1923,26 @@ class AssetCardWidget(QtWidgets.QFrame):
         self._hover_timer.setInterval(400)
         self._hover_timer.timeout.connect(self._show_popover)
 
-    def enterEvent(self, event):
-        """Hover enter - highlight border and start popover timer."""
-        self._hovered = True
+    def _update_border(self):
+        """Update card border based on selected/hovered state."""
+        if self._selected:
+            border = f"2px solid {COLORS['accent']}"
+        elif self._hovered:
+            border = f"1px solid {COLORS['accent']}"
+        else:
+            border = f"1px solid {COLORS['border']}"
         self.setStyleSheet(f"""
             QFrame#assetCard {{
                 background-color: transparent;
-                border: 1px solid {COLORS['accent']};
+                border: {border};
                 border-radius: 4px;
             }}
         """)
+
+    def enterEvent(self, event):
+        """Hover enter - highlight border and start popover timer."""
+        self._hovered = True
+        self._update_border()
         self._hover_timer.start()
         self.hovered.emit(self.asset)
         super().enterEvent(event)
@@ -1941,13 +1952,7 @@ class AssetCardWidget(QtWidgets.QFrame):
         self._hovered = False
         self._hover_timer.stop()
         AssetPopover.hide_popover()
-        self.setStyleSheet(f"""
-            QFrame#assetCard {{
-                background-color: transparent;
-                border: 1px solid {COLORS['border']};
-                border-radius: 4px;
-            }}
-        """)
+        self._update_border()
         self.hovered.emit(None)
         super().leaveEvent(event)
 
@@ -2242,24 +2247,23 @@ class AssetCardWidget(QtWidgets.QFrame):
 
     def set_selected(self, selected):
         """Set visual selection state."""
-        if selected:
-            self.setStyleSheet(f"""
-                QFrame#assetCard {{
-                    background-color: transparent;
-                    border: 2px solid {COLORS['accent']};
-                    border-radius: 4px;
-                }}
-            """)
-        else:
-            self.setStyleSheet(f"""
-                QFrame#assetCard {{
-                    background-color: transparent;
-                    border: 1px solid {COLORS['border']};
-                    border-radius: 4px;
-                }}
-            """)
+        self._selected = selected
+        self._update_border()
+
+    def _get_selected_asset_ids(self):
+        """Get all selected asset IDs from the parent grid, or just this asset."""
+        parent_grid = self.parent()
+        while parent_grid and not isinstance(parent_grid, AssetGridWidget):
+            parent_grid = parent_grid.parent()
+        if parent_grid and hasattr(parent_grid, '_selected_assets') and parent_grid._selected_assets:
+            if self.asset['id'] in parent_grid._selected_assets:
+                return list(parent_grid._selected_assets)
+        return [self.asset['id']]
 
     def contextMenuEvent(self, event):
+        selected_ids = self._get_selected_asset_ids()
+        multi = len(selected_ids) > 1
+
         menu = QtWidgets.QMenu(self)
         menu.setStyleSheet(f"""
             QMenu {{
@@ -2284,61 +2288,70 @@ class AssetCardWidget(QtWidgets.QFrame):
             }}
         """)
 
-        # Different actions based on asset type
+        # Different actions based on asset type (single-item actions)
         is_hda = self.asset.get('asset_type') == 'hda'
         is_vex = self.asset.get('asset_type') == 'vex' or self.asset.get('context') == 'vex'
 
-        if is_vex:
-            menu.addAction("\u25B6  Copy Code").triggered.connect(self._copy_vex_to_clipboard)
-            menu.addAction("\u270E  Edit Code...").triggered.connect(lambda: self._edit_vex_code())
-            menu.addSeparator()
-        elif is_hda:
-            menu.addAction("\u25B6  Place HDA").triggered.connect(lambda: self.paste_requested.emit(self.asset['id']))
-            menu.addSeparator()
-        else:
-            menu.addAction("\u25B6  Paste into Network").triggered.connect(lambda: self.paste_requested.emit(self.asset['id']))
-            menu.addSeparator()
+        if not multi:
+            if is_vex:
+                menu.addAction("\u25B6  Copy Code").triggered.connect(self._copy_vex_to_clipboard)
+                menu.addAction("\u270E  Edit Code...").triggered.connect(lambda: self._edit_vex_code())
+                menu.addSeparator()
+            elif is_hda:
+                menu.addAction("\u25B6  Place HDA").triggered.connect(lambda: self.paste_requested.emit(self.asset['id']))
+                menu.addSeparator()
+            else:
+                menu.addAction("\u25B6  Paste into Network").triggered.connect(lambda: self.paste_requested.emit(self.asset['id']))
+                menu.addSeparator()
 
-        # Update with current selection (not for HDAs or VEX)
-        if not is_hda and not is_vex:
-            menu.addAction("\u2191  Version Up with Selection...").triggered.connect(lambda: self.update_requested.emit(self.asset['id']))
+            # Update with current selection (not for HDAs or VEX)
+            if not is_hda and not is_vex:
+                menu.addAction("\u2191  Version Up with Selection...").triggered.connect(lambda: self.update_requested.emit(self.asset['id']))
 
-        # Collections submenu (with nested children)
-        coll_menu = menu.addMenu("\u25A3  Add to Collection")
+        # Collections submenu — works on all selected
+        count_label = f" ({len(selected_ids)})" if multi else ""
+        coll_menu = menu.addMenu(f"\u25A3  Add to Collection{count_label}")
         if SOPDROP_AVAILABLE:
             tree = library.get_collection_tree()
             current = set(c['id'] for c in self.asset.get('collections', []))
-            self._build_collection_submenu(coll_menu, tree, current)
+            self._build_collection_submenu_bulk(coll_menu, tree, current, selected_ids)
             if tree:
                 coll_menu.addSeparator()
-            coll_menu.addAction("+ New...").triggered.connect(self._create_and_add_collection)
+            coll_menu.addAction("+ New...").triggered.connect(
+                lambda checked=False, ids=selected_ids: self._create_and_add_collection_bulk(ids))
 
         menu.addSeparator()
-        menu.addAction("\u25C9  View Details").triggered.connect(self._view_details)
-        menu.addAction("\u270E  Edit Details").triggered.connect(lambda: self.edit_requested.emit(self.asset['id']))
+        if not multi:
+            menu.addAction("\u25C9  View Details").triggered.connect(self._view_details)
+            menu.addAction("\u270E  Edit Details").triggered.connect(lambda: self.edit_requested.emit(self.asset['id']))
 
-        # Cloud actions
-        remote_slug = self.asset.get('remote_slug')
-        if remote_slug:
-            menu.addAction("\u2197  View on Website").triggered.connect(self._open_on_website)
-        elif self.asset.get('sync_status', 'local_only') == 'local_only':
-            menu.addAction("\u2601  Publish to Cloud...").triggered.connect(lambda: self.publish_requested.emit(self.asset['id']))
+            # Cloud actions
+            remote_slug = self.asset.get('remote_slug')
+            sync_status = self.asset.get('sync_status', 'local_only')
+            if remote_slug:
+                menu.addAction("\u2197  View on Website").triggered.connect(self._open_on_website)
+                if sync_status == 'modified':
+                    menu.addAction("\u2191  Push Update to Cloud...").triggered.connect(self._push_version_to_cloud)
+            elif sync_status == 'local_only':
+                menu.addAction("\u2601  Publish to Cloud...").triggered.connect(lambda: self.publish_requested.emit(self.asset['id']))
 
-        # Cross-library copy/move
+        # Cross-library copy/move — works on all selected
         if SOPDROP_AVAILABLE:
             other_lib = library.get_other_library_type()
             if other_lib:
                 menu.addSeparator()
                 lib_name = "Team Library" if other_lib == "team" else "Personal Library"
-                menu.addAction(f"\u2295  Copy to {lib_name}").triggered.connect(
-                    lambda checked=False, t=other_lib: self._copy_to_library(t)
+                menu.addAction(f"\u2295  Copy to {lib_name}{count_label}").triggered.connect(
+                    lambda checked=False, t=other_lib, ids=selected_ids: self._copy_to_library_bulk(t, ids)
                 )
-                menu.addAction(f"\u2192  Move to {lib_name}").triggered.connect(
-                    lambda checked=False, t=other_lib: self._move_to_library(t)
+                menu.addAction(f"\u2192  Move to {lib_name}{count_label}").triggered.connect(
+                    lambda checked=False, t=other_lib, ids=selected_ids: self._move_to_library_bulk(t, ids)
                 )
 
         menu.addSeparator()
-        menu.addAction("\u2715  Delete").triggered.connect(lambda: self.delete_requested.emit(self.asset['id']))
+        delete_label = f"\u2715  Delete ({len(selected_ids)})" if multi else "\u2715  Delete"
+        menu.addAction(delete_label).triggered.connect(
+            lambda checked=False, ids=selected_ids: self._delete_bulk(ids))
 
         menu.exec_(event.globalPos())
 
@@ -2358,6 +2371,110 @@ class AssetCardWidget(QtWidgets.QFrame):
             coll = library.create_collection(name)
             library.add_asset_to_collection(self.asset['id'], coll['id'])
             self.collection_changed.emit()
+
+    # -- Bulk action methods for multi-select context menu -----------------------
+
+    def _add_to_collection_bulk(self, cid, asset_ids):
+        if SOPDROP_AVAILABLE:
+            for aid in asset_ids:
+                library.add_asset_to_collection(aid, cid)
+            self.collection_changed.emit()
+
+    def _remove_from_collection_bulk(self, cid, asset_ids):
+        if SOPDROP_AVAILABLE:
+            for aid in asset_ids:
+                library.remove_asset_from_collection(aid, cid)
+            self.collection_changed.emit()
+
+    def _create_and_add_collection_bulk(self, asset_ids):
+        name, ok = QtWidgets.QInputDialog.getText(self, "New Collection", "Name:")
+        if ok and name and SOPDROP_AVAILABLE:
+            coll = library.create_collection(name)
+            for aid in asset_ids:
+                library.add_asset_to_collection(aid, coll['id'])
+            self.collection_changed.emit()
+
+    def _build_collection_submenu_bulk(self, parent_menu, tree, current_ids, asset_ids):
+        """Build collection submenu that operates on all selected assets."""
+        for coll in tree:
+            has_children = bool(coll.get('children'))
+            is_in = coll['id'] in current_ids
+
+            if has_children:
+                prefix = "\u2713 " if is_in else "    "
+                sub = parent_menu.addMenu(prefix + coll['name'])
+                sub.addAction("Add here").triggered.connect(
+                    lambda checked=False, c=coll['id'], ids=asset_ids: self._add_to_collection_bulk(c, ids))
+                sub.addAction("Remove from here").triggered.connect(
+                    lambda checked=False, c=coll['id'], ids=asset_ids: self._remove_from_collection_bulk(c, ids))
+                sub.addSeparator()
+                self._build_collection_submenu_bulk(sub, coll['children'], current_ids, asset_ids)
+            else:
+                prefix = "\u2713 " if is_in else "    "
+                action = parent_menu.addAction(prefix + coll['name'])
+                if is_in:
+                    action.triggered.connect(
+                        lambda checked=False, c=coll['id'], ids=asset_ids: self._remove_from_collection_bulk(c, ids))
+                else:
+                    action.triggered.connect(
+                        lambda checked=False, c=coll['id'], ids=asset_ids: self._add_to_collection_bulk(c, ids))
+
+    def _delete_bulk(self, asset_ids):
+        """Delete all selected assets via the panel's bulk delete."""
+        parent = self.parent()
+        while parent and not isinstance(parent, LibraryPanel):
+            parent = parent.parent()
+        if parent and hasattr(parent, '_delete_assets_bulk'):
+            parent._delete_assets_bulk(asset_ids)
+        else:
+            # Fallback: emit one by one
+            for aid in asset_ids:
+                self.delete_requested.emit(aid)
+
+    def _copy_to_library_bulk(self, target_library, asset_ids):
+        """Copy all selected assets to another library."""
+        if not SOPDROP_AVAILABLE:
+            return
+        lib_name = "Team Library" if target_library == "team" else "Personal Library"
+        count = 0
+        for aid in asset_ids:
+            try:
+                QtWidgets.QApplication.processEvents()
+                result = library.copy_asset_to_library(aid, target_library)
+                if result:
+                    count += 1
+            except Exception as e:
+                print(f"[Sopdrop] Failed to copy asset {aid}: {e}")
+        parent = self.parent()
+        while parent and not isinstance(parent, LibraryPanel):
+            parent = parent.parent()
+        if parent and hasattr(parent, 'show_toast'):
+            parent.show_toast(f"Copied {count} assets to {lib_name}", 'success', 2000)
+
+    def _move_to_library_bulk(self, target_library, asset_ids):
+        """Move all selected assets to another library."""
+        if not SOPDROP_AVAILABLE:
+            return
+        lib_name = "Team Library" if target_library == "team" else "Personal Library"
+        reply = QtWidgets.QMessageBox.question(
+            self, "Move Assets",
+            f"Move {len(asset_ids)} assets to {lib_name}?\n\n"
+            "This will remove them from the current library.")
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+        count = 0
+        for aid in asset_ids:
+            try:
+                result = library.move_asset_to_library(aid, target_library)
+                if result:
+                    count += 1
+            except Exception as e:
+                print(f"[Sopdrop] Failed to move asset {aid}: {e}")
+        parent = self.parent()
+        while parent and not isinstance(parent, LibraryPanel):
+            parent = parent.parent()
+        if parent and hasattr(parent, 'show_toast'):
+            parent.show_toast(f"Moved {count} assets to {lib_name}", 'success', 2000)
 
     def _build_collection_submenu(self, parent_menu, tree, current_ids):
         """Recursively build the collection submenu with nested children."""
@@ -2408,6 +2525,29 @@ class AssetCardWidget(QtWidgets.QFrame):
             base_url = config.get('server_url', 'https://sopdrop.com').rstrip('/')
             url = f"{base_url}/assets/{remote_slug}"
             webbrowser.open(url)
+
+    def _push_version_to_cloud(self):
+        """Push a new version of this asset to the cloud."""
+        if not SOPDROP_AVAILABLE:
+            return
+
+        parent = self.parent()
+        while parent and not isinstance(parent, LibraryPanel):
+            parent = parent.parent()
+
+        try:
+            result = library.push_version_to_cloud(self.asset['id'])
+            if parent and hasattr(parent, 'show_toast'):
+                parent.show_toast("Version draft created — complete in browser", 'success', 4000)
+            if parent:
+                parent._refresh_assets()
+        except Exception as e:
+            if parent and hasattr(parent, 'show_toast'):
+                parent.show_toast(f"Push failed: {e}", 'error', 5000)
+            else:
+                print(f"[Sopdrop] Push version failed: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _copy_to_library(self, target_library):
         """Copy this asset to another library."""
@@ -2824,6 +2964,206 @@ class AssetGridWidget(QtWidgets.QWidget):
             self.asset_selected.emit(self._selected_asset)
         else:
             self.asset_selected.emit(asset)
+
+
+# ==============================================================================
+# Sync Worker Thread
+# ==============================================================================
+
+class SyncWorker(QtCore.QThread):
+    """Background thread for cloud sync operations."""
+
+    progress = QtCore.Signal(int, int, str)  # current, total, message
+    finished_sync = QtCore.Signal(dict)  # result summary
+
+    def __init__(self, is_team=False, team_slug=None, parent=None):
+        super().__init__(parent)
+        self._is_team = is_team
+        self._team_slug = team_slug
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            result = self._do_sync()
+            self.finished_sync.emit(result)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.finished_sync.emit({'error': str(e), 'synced': 0, 'skipped': 0})
+
+    def _do_sync(self):
+        from sopdrop import library as lib
+        from sopdrop.config import get_token
+
+        if not get_token():
+            return {'error': 'Not logged in', 'synced': 0, 'skipped': 0}
+
+        # Step 1: Cleanup stale syncing (fast, single DB query)
+        self.progress.emit(0, 0, "Cleaning up stale sync states...")
+        lib.cleanup_stale_syncing()
+
+        if self._cancelled:
+            return {'error': 'Cancelled', 'synced': 0, 'skipped': 0}
+
+        # Step 2: Fetch cloud asset list
+        self.progress.emit(0, 0, "Fetching cloud library...")
+        if self._is_team:
+            cloud_assets = lib.get_team_saved_assets(self._team_slug)
+        else:
+            cloud_assets = lib.get_cloud_saved_assets()
+
+        if not cloud_assets:
+            return {'synced': 0, 'skipped': 0, 'total': 0, 'no_assets': True}
+
+        if self._cancelled:
+            return {'error': 'Cancelled', 'synced': 0, 'skipped': 0}
+
+        # Step 3: Figure out which assets are new
+        db = lib.get_db()
+        local_slugs = set()
+        rows = db.execute("SELECT remote_slug FROM library_assets WHERE remote_slug IS NOT NULL").fetchall()
+        for row in rows:
+            local_slugs.add(row[0])
+
+        new_assets = [a for a in cloud_assets if a.get('slug') and a['slug'] not in local_slugs]
+        skip_count = len(cloud_assets) - len(new_assets)
+
+        if not new_assets:
+            # Still need to ensure collection membership for existing assets
+            self.progress.emit(0, 0, "Updating collections...")
+            self._ensure_collections(cloud_assets, local_slugs, db)
+            return {'synced': 0, 'skipped': skip_count, 'total': len(cloud_assets)}
+
+        total = len(new_assets)
+        self.progress.emit(0, total, f"Downloading {total} new assets...")
+
+        if self._cancelled:
+            return {'error': 'Cancelled', 'synced': 0, 'skipped': skip_count}
+
+        # Step 4: Prepare collections for folders
+        folder_to_collection = self._prepare_collections(cloud_assets, db)
+
+        # Step 5: Download new assets one by one with progress
+        synced = 0
+        errors = []
+
+        for i, cloud_asset in enumerate(new_assets):
+            if self._cancelled:
+                break
+
+            slug = cloud_asset.get('slug', '')
+            name = cloud_asset.get('name', slug.split('/')[-1] if slug else '?')
+            self.progress.emit(i, total, f"Pulling: {name}")
+
+            folder = cloud_asset.get('folder') or '__default__'
+            collection_id = folder_to_collection.get(folder)
+
+            try:
+                thumb_url = (
+                    cloud_asset.get('thumbnailUrl') or
+                    cloud_asset.get('thumbnail_url') or
+                    cloud_asset.get('thumbnail')
+                )
+                asset_info = {
+                    'name': name,
+                    'description': cloud_asset.get('description', ''),
+                    'tags': cloud_asset.get('tags', []),
+                    'latestVersion': cloud_asset.get('latestVersion') or cloud_asset.get('latest_version'),
+                    'thumbnailUrl': thumb_url,
+                }
+                lib.pull_from_cloud(
+                    slug=slug,
+                    version=cloud_asset.get('savedVersion') or cloud_asset.get('latestVersion'),
+                    collection_id=collection_id,
+                    thumbnail_url=thumb_url,
+                    cloud_asset_info=asset_info,
+                )
+                synced += 1
+            except Exception as e:
+                errors.append(f"{slug}: {e}")
+                print(f"[Sopdrop] Failed to sync {slug}: {e}")
+
+        # Also ensure existing assets are in right collections
+        self._ensure_collections(cloud_assets, local_slugs, db)
+
+        # Trigger menu regeneration
+        if synced > 0:
+            try:
+                lib._trigger_menu_regenerate()
+            except Exception:
+                pass
+
+        self.progress.emit(total, total, "Done")
+
+        return {
+            'synced': synced,
+            'skipped': skip_count,
+            'total': len(cloud_assets),
+            'errors': errors if errors else None,
+        }
+
+    def _prepare_collections(self, cloud_assets, db):
+        """Create/find collections for cloud folders."""
+        from sopdrop import library as lib
+
+        assets_by_folder = {}
+        for asset in cloud_assets:
+            folder = asset.get('folder') or '__default__'
+            assets_by_folder.setdefault(folder, [])
+
+        existing_collections = {c['name']: c for c in lib.list_collections()}
+        folder_to_collection = {}
+
+        for folder_name in assets_by_folder.keys():
+            coll_name = "Cloud Library" if folder_name == '__default__' else folder_name
+            if coll_name in existing_collections:
+                coll = existing_collections[coll_name]
+                if coll.get('source') != 'cloud':
+                    db.execute("UPDATE collections SET source = 'cloud' WHERE id = ?", (coll['id'],))
+                    db.commit()
+                folder_to_collection[folder_name] = coll['id']
+            else:
+                new_coll = lib.create_collection(coll_name, color='#6366f1')
+                db.execute("UPDATE collections SET source = 'cloud' WHERE id = ?", (new_coll['id'],))
+                db.commit()
+                folder_to_collection[folder_name] = new_coll['id']
+
+        return folder_to_collection
+
+    def _ensure_collections(self, cloud_assets, local_slugs, db):
+        """Make sure existing local assets are in their correct cloud folder collections."""
+        from sopdrop import library as lib
+        from datetime import datetime
+
+        assets_by_folder = {}
+        for asset in cloud_assets:
+            slug = asset.get('slug', '')
+            if slug in local_slugs:
+                folder = asset.get('folder') or '__default__'
+                assets_by_folder.setdefault(folder, []).append(slug)
+
+        if not assets_by_folder:
+            return
+
+        existing_collections = {c['name']: c for c in lib.list_collections()}
+
+        for folder_name, slugs in assets_by_folder.items():
+            coll_name = "Cloud Library" if folder_name == '__default__' else folder_name
+            coll = existing_collections.get(coll_name)
+            if not coll:
+                continue
+            for slug in slugs:
+                row = db.execute("SELECT id FROM library_assets WHERE remote_slug = ?", (slug,)).fetchone()
+                if row:
+                    now = datetime.now().isoformat()
+                    db.execute("""
+                        INSERT OR IGNORE INTO collection_assets (collection_id, asset_id, added_at)
+                        VALUES (?, ?, ?)
+                    """, (coll['id'], row[0], now))
+            db.commit()
 
 
 # ==============================================================================
@@ -3584,6 +3924,12 @@ class LibraryPanel(QtWidgets.QWidget):
             self.asset_grid.set_assets([])
             return
 
+        # Clean up stale 'syncing' statuses (drafts expire after 24h)
+        try:
+            library.cleanup_stale_syncing()
+        except Exception:
+            pass
+
         self.asset_grid.set_loading(True)
         QtWidgets.QApplication.processEvents()
 
@@ -3669,10 +4015,13 @@ class LibraryPanel(QtWidgets.QWidget):
         else:
             assets = library.search_assets(**kwargs)
 
-        # Hide pending-delete assets
+        # Hide pending-delete assets (single and bulk)
         pending_id = getattr(self, '_pending_delete_id', None)
+        pending_bulk = set(getattr(self, '_pending_bulk_delete_ids', []))
         if pending_id:
-            assets = [a for a in assets if a.get('id') != pending_id]
+            pending_bulk.add(pending_id)
+        if pending_bulk:
+            assets = [a for a in assets if a.get('id') not in pending_bulk]
 
         # Apply sorting
         sort_key = self.sort_combo.currentData()
@@ -4616,6 +4965,51 @@ class LibraryPanel(QtWidgets.QWidget):
             self._pending_delete_id = None
             self.collections.refresh()
 
+    def _delete_assets_bulk(self, asset_ids):
+        """Delete multiple assets with a single undo toast."""
+        if not SOPDROP_AVAILABLE or not asset_ids:
+            return
+
+        # Finalize any pending single delete first
+        if hasattr(self, '_pending_delete_timer') and self._pending_delete_timer and self._pending_delete_timer.isActive():
+            self._pending_delete_timer.stop()
+            if self._pending_delete_id:
+                library.delete_asset(self._pending_delete_id)
+                self._pending_delete_id = None
+
+        # Store pending bulk delete
+        if not hasattr(self, '_pending_bulk_delete_ids'):
+            self._pending_bulk_delete_ids = []
+        self._pending_bulk_delete_ids = list(asset_ids)
+
+        timer = QtCore.QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(5000)
+        timer.timeout.connect(lambda ids=list(asset_ids): self._finalize_bulk_delete(ids))
+        self._pending_bulk_delete_timer = timer
+        timer.start()
+
+        # Hide from grid immediately
+        self._refresh_assets()
+
+        count = len(asset_ids)
+
+        def undo_bulk():
+            if hasattr(self, '_pending_bulk_delete_timer') and self._pending_bulk_delete_timer:
+                self._pending_bulk_delete_timer.stop()
+            self._pending_bulk_delete_ids = []
+            self._refresh_assets()
+
+        self.show_toast(f"Deleted {count} assets", 'warning', 5000, action_text="Undo", action_callback=undo_bulk)
+
+    def _finalize_bulk_delete(self, asset_ids):
+        """Actually delete bulk assets after undo period."""
+        if hasattr(self, '_pending_bulk_delete_ids') and self._pending_bulk_delete_ids == asset_ids:
+            for aid in asset_ids:
+                library.delete_asset(aid)
+            self._pending_bulk_delete_ids = []
+            self.collections.refresh()
+
     def _update_asset(self, asset_id):
         """Update an existing asset with currently selected nodes."""
         if not SOPDROP_AVAILABLE:
@@ -4754,7 +5148,7 @@ class LibraryPanel(QtWidgets.QWidget):
         self._refresh_assets()
 
     def _sync_from_cloud(self):
-        """Sync saved assets from cloud to local library."""
+        """Sync saved assets from cloud to local library (threaded with progress)."""
         if not SOPDROP_AVAILABLE:
             hou.ui.displayMessage("Sopdrop library not available")
             return
@@ -4764,7 +5158,10 @@ class LibraryPanel(QtWidgets.QWidget):
             hou.ui.displayMessage("Please log in first using the Settings tool")
             return
 
-        # Check if we're in team mode
+        # Prevent double-click
+        if hasattr(self, '_sync_worker') and self._sync_worker and self._sync_worker.isRunning():
+            return
+
         is_team_mode = get_active_library() == "team"
         team_slug = get_team_slug() if is_team_mode else None
 
@@ -4776,69 +5173,95 @@ class LibraryPanel(QtWidgets.QWidget):
             )
             return
 
-        # First check what's available
-        try:
-            if is_team_mode:
-                cloud_assets = library.get_team_saved_assets(team_slug)
-                source_name = f"team '{team_slug}'"
-            else:
-                cloud_assets = library.get_cloud_saved_assets()
-                source_name = "your cloud library"
+        # Create progress dialog
+        self._sync_progress = QtWidgets.QProgressDialog(
+            "Connecting to cloud...", "Cancel", 0, 0, self)
+        self._sync_progress.setWindowTitle("Pull from Cloud")
+        self._sync_progress.setWindowModality(QtCore.Qt.WindowModal)
+        self._sync_progress.setMinimumWidth(350)
+        self._sync_progress.setMinimumDuration(0)
+        self._sync_progress.setStyleSheet(f"""
+            QProgressDialog {{
+                background-color: {COLORS['bg']};
+                color: {COLORS['text']};
+            }}
+            QLabel {{
+                color: {COLORS['text']};
+                font-size: 12px;
+                padding: 4px;
+            }}
+            QProgressBar {{
+                border: 1px solid {COLORS['border']};
+                border-radius: 3px;
+                background-color: {COLORS['bg_light']};
+                text-align: center;
+                color: {COLORS['text']};
+                height: 18px;
+            }}
+            QProgressBar::chunk {{
+                background-color: {COLORS['accent']};
+                border-radius: 2px;
+            }}
+            QPushButton {{
+                background-color: {COLORS['bg_light']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 3px;
+                padding: 4px 16px;
+                color: {COLORS['text']};
+            }}
+            QPushButton:hover {{
+                border-color: {COLORS['accent']};
+            }}
+        """)
+        self._sync_progress.show()
 
-            if not cloud_assets:
-                if is_team_mode:
-                    hou.ui.displayMessage(
-                        f"No saved assets found in team '{team_slug}'.\n\n"
-                        "Add assets to your team library on sopdrop.com first!",
-                        title="Team Sync"
-                    )
-                else:
-                    hou.ui.displayMessage(
-                        "No saved assets found in your cloud library.\n\n"
-                        "Save assets on sopdrop.com first!",
-                        title="Cloud Sync"
-                    )
-                return
+        # Launch worker thread
+        self._sync_worker = SyncWorker(is_team_mode, team_slug, self)
+        self._sync_worker.progress.connect(self._on_sync_progress)
+        self._sync_worker.finished_sync.connect(self._on_sync_finished)
+        self._sync_progress.canceled.connect(self._sync_worker.cancel)
+        self._sync_worker.start()
 
-            title = "Team Sync" if is_team_mode else "Cloud Sync"
-            reply = QtWidgets.QMessageBox.question(
-                self, title,
-                f"Found {len(cloud_assets)} saved assets in {source_name}.\n\n"
-                "Download them to your local library?"
-            )
-            if reply != QtWidgets.QMessageBox.Yes:
-                return
-
-        except Exception as e:
-            hou.ui.displayMessage(f"Failed to check cloud library: {e}")
+    def _on_sync_progress(self, current, total, message):
+        """Update progress dialog from sync worker."""
+        if not hasattr(self, '_sync_progress') or not self._sync_progress:
             return
+        if total > 0:
+            self._sync_progress.setMaximum(total)
+            self._sync_progress.setValue(current)
+        else:
+            # Indeterminate
+            self._sync_progress.setMaximum(0)
+            self._sync_progress.setValue(0)
+        self._sync_progress.setLabelText(message)
 
-        try:
-            # Sync saved assets (each cloud folder becomes a local collection)
-            if is_team_mode:
-                result = library.sync_team_library(team_slug)
+    def _on_sync_finished(self, result):
+        """Handle sync completion."""
+        if hasattr(self, '_sync_progress') and self._sync_progress:
+            self._sync_progress.close()
+            self._sync_progress = None
+        self._sync_worker = None
+
+        if result.get('no_assets'):
+            from sopdrop.config import get_active_library
+            if get_active_library() == "team":
+                self.show_toast("No assets found in team library", 'warning', 3000)
             else:
-                result = library.sync_saved_assets_with_folders()
-
-            if result.get('error'):
+                self.show_toast("No assets found in cloud library", 'warning', 3000)
+        elif result.get('error'):
+            if result['error'] != 'Cancelled':
                 self.show_toast(f"Sync failed: {result['error']}", 'error', 5000)
-            else:
-                msg = f"Synced {result['synced']} assets"
-                if result['skipped']:
-                    msg += f" ({result['skipped']} already local)"
-                self.show_toast(msg, 'success')
-                if result.get('errors'):
-                    # Show detailed errors in console
-                    for err in result['errors'][:5]:
-                        print(f"[Sopdrop] Sync error: {err}")
+        else:
+            msg = f"Synced {result['synced']} new assets"
+            if result.get('skipped'):
+                msg += f" ({result['skipped']} already local)"
+            self.show_toast(msg, 'success')
+            if result.get('errors'):
+                for err in result['errors'][:5]:
+                    print(f"[Sopdrop] Sync error: {err}")
 
-            self.collections.refresh()
-            self._refresh_assets()
-
-        except Exception as e:
-            self.show_toast(f"Sync failed: {e}", 'error', 5000)
-            import traceback
-            traceback.print_exc()
+        self.collections.refresh()
+        self._refresh_assets()
 
     def _publish_asset(self, asset_id):
         """Publish a local asset to the cloud, pre-filling with existing data."""
@@ -4887,6 +5310,11 @@ class LibraryPanel(QtWidgets.QWidget):
                 title="Publish to Cloud"
             )
         except Exception as e:
+            # Reset sync status since publish failed
+            try:
+                library.reset_syncing_status(asset_id)
+            except Exception:
+                pass
             hou.ui.displayMessage(f"Publish failed: {e}")
 
 
@@ -5562,8 +5990,6 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
 
         layout.addLayout(btns)
 
-        self._check_clipboard()
-
         # If updating, try to load existing thumbnail and icon
         if is_update:
             if self.existing_asset.get('thumbnail_path'):
@@ -5690,16 +6116,6 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         self.activateWindow()
         if image and not image.isNull():
             self._add_screenshot(image)
-
-    def _check_clipboard(self):
-        try:
-            clip = QtWidgets.QApplication.clipboard()
-            if clip.mimeData().hasImage():
-                img = clip.image()
-                if not img.isNull() and img.width() > 50:
-                    self._add_screenshot(img)
-        except:
-            pass
 
     def _paste_clipboard(self):
         try:
@@ -6058,6 +6474,11 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
                         library_asset_id=asset_id,
                     )
             except Exception as e:
+                # Reset sync status since publish failed
+                try:
+                    library.reset_syncing_status(asset_id)
+                except Exception:
+                    pass
                 hou.ui.displayMessage(
                     f"Asset saved locally but publish failed:\n\n{e}\n\n"
                     "You can try publishing later from the library.",

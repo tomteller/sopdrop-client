@@ -295,7 +295,11 @@ def _import_v1(
     target_node=None,
     position: Optional[Tuple[float, float]] = None,
 ) -> List:
-    """Import v1 format (code-based) - legacy support."""
+    """Import v1 format (code-based, license-neutral).
+
+    Used for packages exported from non-commercial Houdini (asCode output)
+    and legacy packages. The code is plain Python with no license flags.
+    """
     import hou
 
     # Get target node
@@ -319,6 +323,16 @@ def _import_v1(
     if not code:
         raise ImportError("Package contains no code")
 
+    # Verify checksum if present
+    expected_checksum = package.get("checksum")
+    if expected_checksum:
+        actual_checksum = hashlib.sha256(code.encode('utf-8')).hexdigest()
+        if actual_checksum != expected_checksum:
+            raise ChecksumError(
+                "Package checksum verification failed. "
+                "The data may be corrupted or tampered with."
+            )
+
     # Track items before import
     items_before = set(target_node.allItems())
 
@@ -335,20 +349,82 @@ def _import_v1(
     items_after = set(target_node.allItems())
     new_items = list(items_after - items_before)
 
-    # Reposition if requested
-    if position and new_items:
-        _reposition_items(new_items, position)
+    # Separate items by type (same approach as v2 import)
+    new_nodes = []
+    new_netboxes = []
+    new_stickies = []
+
+    for item in new_items:
+        if isinstance(item, hou.NetworkBox):
+            new_netboxes.append(item)
+        elif isinstance(item, hou.StickyNote):
+            new_stickies.append(item)
+        elif isinstance(item, hou.Node):
+            if item.parent() == target_node:
+                new_nodes.append(item)
+
+    # Find nodes inside network boxes to avoid double-moving
+    nodes_in_boxes = set()
+    for netbox in new_netboxes:
+        try:
+            for n in netbox.nodes():
+                nodes_in_boxes.add(n.path())
+        except Exception:
+            pass
+
+    nodes_to_move = [n for n in new_nodes if n.path() not in nodes_in_boxes]
+
+    # Capture netbox data for proper repositioning
+    netbox_data = {}
+    for netbox in new_netboxes:
+        try:
+            pos = netbox.position()
+            size = netbox.size()
+            netbox_data[id(netbox)] = {
+                'pos': (pos[0], pos[1]),
+                'size': (size[0], size[1]),
+                'comment': netbox.comment() or 'unnamed',
+            }
+        except Exception:
+            pass
+
+    # Capture sticky data and separate loose stickies from box-contained ones
+    sticky_data = {}
+    stickies_to_move = []
+    for sticky in new_stickies:
+        try:
+            parent_box = sticky.parentNetworkBox()
+            if parent_box is None:
+                stickies_to_move.append(sticky)
+                pos = sticky.position()
+                size = sticky.size()
+                sticky_data[id(sticky)] = {
+                    'pos': (pos[0], pos[1]),
+                    'size': (size[0], size[1]),
+                    'text': (sticky.text() or '')[:20],
+                }
+        except Exception:
+            stickies_to_move.append(sticky)
+
+    # Reposition: move loose nodes + loose stickies individually,
+    # move network boxes separately (which moves their contents too)
+    items_to_move = nodes_to_move + stickies_to_move
+    if position and (items_to_move or new_netboxes):
+        _reposition_items(items_to_move, position, new_netboxes, netbox_data, sticky_data)
+
+    # All top-level items for selection
+    all_top_level = new_nodes + new_netboxes + new_stickies
 
     # Clear existing selection, then select the new items
     target_node.setSelected(False, clear_all_selected=True)
-    for item in new_items:
+    for item in all_top_level:
         try:
             if hasattr(item, 'setSelected'):
                 item.setSelected(True, clear_all_selected=False)
         except Exception:
             pass
 
-    return new_items
+    return all_top_level
 
 
 def import_at_cursor(package: Dict[str, Any]) -> List:

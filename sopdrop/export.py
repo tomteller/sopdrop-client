@@ -16,12 +16,30 @@ from typing import List, Dict, Any, Optional
 CHOP_FORMAT_VERSION = "sopdrop-v2"
 
 
+def _is_non_commercial() -> bool:
+    """Check if running a non-commercial Houdini license."""
+    try:
+        import hou
+        # hou.isApprentice() returns True for Apprentice (free non-commercial)
+        if hasattr(hou, 'isApprentice') and hou.isApprentice():
+            return True
+        # Also check license category for NC (Non-Commercial) licenses
+        if hasattr(hou, 'licenseCategory'):
+            cat = hou.licenseCategory()
+            if cat in (hou.licenseCategoryType.Apprentice,):
+                return True
+        return False
+    except Exception:
+        return False
+
+
 def export_items(items) -> Dict[str, Any]:
     """
     Export selected Houdini items as a .sopdrop package.
 
-    Uses Houdini's native saveItemsToFile() for reliable serialization
-    of nodes, network boxes, sticky notes, and all their connections.
+    Uses saveItemsToFile() (v2/cpio) for commercial licenses, and
+    asCode() (v1/python) for non-commercial licenses to avoid
+    embedding the NC license flag in the binary data.
 
     Args:
         items: List of hou.NetworkMovableItem (nodes, network boxes, sticky notes)
@@ -77,7 +95,16 @@ def export_items(items) -> Dict[str, Any]:
     # Capture node graph data (positions, connections, types)
     node_graph = _capture_node_graph(nodes)
 
-    # Serialize using Houdini's native method
+    # Non-commercial Houdini: use asCode() (v1 format) to avoid
+    # embedding the NC license flag in .cpio binary data
+    if _is_non_commercial():
+        return _export_as_code(
+            items, nodes, network_boxes, sticky_notes,
+            parent, context, node_types, node_names,
+            all_node_count, dependencies, node_graph
+        )
+
+    # Commercial: use saveItemsToFile (v2/cpio) for full fidelity
     with tempfile.NamedTemporaryFile(suffix='.cpio', delete=False) as f:
         temp_path = f.name
 
@@ -121,6 +148,143 @@ def export_items(items) -> Dict[str, Any]:
     }
 
     return package
+
+
+def _export_as_code(items, nodes, network_boxes, sticky_notes,
+                    parent, context, node_types, node_names,
+                    all_node_count, dependencies, node_graph) -> Dict[str, Any]:
+    """
+    Export using asCode() — produces license-neutral Python code.
+
+    Used for non-commercial Houdini to avoid the NC flag in .cpio data.
+    The v1 format stores executable Python that recreates the node network.
+
+    Sticky notes and network boxes are serialized manually (not via asCode)
+    to ensure correct relative positioning when imported.
+    """
+    import hou
+    import re
+
+    parent_path = parent.path()
+    # Escape parent path for regex (handles special chars in node names)
+    parent_path_escaped = re.escape(parent_path)
+
+    code_parts = []
+
+    # Export each node via asCode, with unique variable prefix per node
+    # to avoid variable name collisions between multiple asCode outputs
+    for idx, node in enumerate(nodes):
+        code = node.asCode(
+            brief=True,
+            save_box_membership=False,
+            save_outgoing_wires=True,
+        )
+        # Prefix variable names to avoid collisions between nodes.
+        # asCode uses: hou_node, hou_parm, hou_parm_template, hou_parm_template_group
+        # Use regex word boundaries (\b) to match exact names only,
+        # so 'hou_parm' won't accidentally match inside 'hou_parm_template'.
+        for var in ['hou_parm_template_group', 'hou_parm_template', 'hou_parm', 'hou_node']:
+            code = re.sub(r'\b' + var + r'\b', f'{var}_{idx}', code)
+        code_parts.append(code)
+
+    # Export network boxes with explicit creation code
+    for i, netbox in enumerate(network_boxes):
+        pos = netbox.position()
+        size = netbox.size()
+        color = netbox.color()
+        comment = netbox.comment()
+        name = netbox.name()
+        code_parts.append(f"""
+# Network box: {name}
+hou_netbox_{i} = hou_parent.createNetworkBox("{name}")
+hou_netbox_{i}.setPosition(hou.Vector2({pos[0]}, {pos[1]}))
+hou_netbox_{i}.setSize(hou.Vector2({size[0]}, {size[1]}))
+hou_netbox_{i}.setColor(hou.Color(({color.rgb()[0]}, {color.rgb()[1]}, {color.rgb()[2]})))
+hou_netbox_{i}.setComment({repr(comment)})""")
+        # Add contained items by name
+        for item in netbox.items():
+            item_name = item.name()
+            code_parts.append(
+                f'try:\n'
+                f'    _item = hou_parent.item("{item_name}")\n'
+                f'    if _item: hou_netbox_{i}.addItem(_item)\n'
+                f'except: pass'
+            )
+
+    # Export sticky notes with explicit creation code to preserve positions
+    for i, sticky in enumerate(sticky_notes):
+        pos = sticky.position()
+        size = sticky.size()
+        text = sticky.text()
+        text_size = sticky.textSize()
+        draw_bg = sticky.drawBackground()
+        try:
+            text_color = sticky.textColor()
+            tc_rgb = text_color.rgb()
+        except Exception:
+            tc_rgb = (1.0, 1.0, 1.0)
+        try:
+            bg_color = sticky.color()
+            bg_rgb = bg_color.rgb()
+        except Exception:
+            bg_rgb = (0.3, 0.3, 0.3)
+
+        code_parts.append(f"""
+# Sticky note {i}
+hou_sticky_{i} = hou_parent.createStickyNote()
+hou_sticky_{i}.setPosition(hou.Vector2({pos[0]}, {pos[1]}))
+hou_sticky_{i}.setSize(hou.Vector2({size[0]}, {size[1]}))
+hou_sticky_{i}.setText({repr(text)})
+hou_sticky_{i}.setTextSize({text_size})
+hou_sticky_{i}.setDrawBackground({draw_bg})
+hou_sticky_{i}.setTextColor(hou.Color(({tc_rgb[0]}, {tc_rgb[1]}, {tc_rgb[2]})))
+hou_sticky_{i}.setColor(hou.Color(({bg_rgb[0]}, {bg_rgb[1]}, {bg_rgb[2]})))""")
+
+    # Join all code
+    raw_code = "\n".join(code_parts)
+
+    # Normalize paths:
+    # 1. hou.node('/parent/path/child') → hou_parent.node('child')
+    # 2. hou.node('/parent/path/child/grandchild') → hou_parent.node('child/grandchild')
+    # 3. hou.node('/parent/path') → hou_parent
+    # Must do child paths BEFORE parent path (longer match first)
+    normalized = re.sub(
+        r'''hou\.node\(['"]''' + parent_path_escaped + r'''/([^'"]+)['"]\)''',
+        r"hou_parent.node('\1')",
+        raw_code
+    )
+    # Then replace exact parent path references
+    normalized = normalized.replace(
+        f"hou.node('{parent_path}')",
+        "hou_parent"
+    )
+    normalized = normalized.replace(
+        f'hou.node("{parent_path}")',
+        "hou_parent"
+    )
+
+    # Generate checksum from the code text
+    code_bytes = normalized.encode('utf-8')
+    checksum = hashlib.sha256(code_bytes).hexdigest()
+
+    return {
+        "format": "sopdrop-v1",
+        "context": context,
+        "houdini_version": hou.applicationVersionString(),
+        "metadata": {
+            "node_count": all_node_count,
+            "top_level_count": len(nodes),
+            "node_types": list(set(node_types)),
+            "node_names": node_names,
+            "network_boxes": len(network_boxes),
+            "sticky_notes": len(sticky_notes),
+            "has_hda_dependencies": len(dependencies) > 0,
+            "node_graph": node_graph,
+        },
+        "dependencies": dependencies,
+        "code": normalized,
+        "checksum": checksum,
+    }
 
 
 def _get_context(parent) -> str:
