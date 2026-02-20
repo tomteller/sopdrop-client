@@ -8,6 +8,8 @@
   <toolshelf name="sopdrop" label="Sopdrop">
     <memberTool name="sopdrop_library"/>
     <memberTool name="sopdrop_save"/>
+    <memberTool name="sopdrop_share"/>
+    <memberTool name="sopdrop_paste"/>
     <memberTool name="sopdrop_website"/>
     <memberTool name="sopdrop_settings"/>
     <memberTool name="sopdrop_about"/>
@@ -95,6 +97,97 @@ except Exception as e:
     import traceback
     hou.ui.displayMessage(
         f"Error in Sopdrop save:\n{e}\n\n{traceback.format_exc()}",
+        title="Sopdrop - Error",
+        severity=hou.severityType.Error
+    )
+    ]]></script>
+  </tool>
+
+  <tool name="sopdrop_share" label="Share" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_share.svg">
+    <helpText><![CDATA[
+Share selected nodes with a colleague.
+
+Select nodes, click Share — a temporary link is created and
+copied to your clipboard. Send it to a colleague. They click
+Paste in Houdini and get the nodes.
+
+Shares expire after 24 hours.
+    ]]></helpText>
+    <script scriptType="python"><![CDATA[
+import sys
+import os
+import importlib
+
+sopdrop_houdini = os.environ.get("SOPDROP_HOUDINI_PATH", "")
+if sopdrop_houdini:
+    for _sd in ["scripts", "client"]:
+        _p = os.path.join(sopdrop_houdini, _sd)
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
+
+try:
+    import sopdrop_share
+    importlib.reload(sopdrop_share)
+    sopdrop_share.main()
+except ImportError as e:
+    import hou
+    hou.ui.displayMessage(
+        f"Failed to load Sopdrop share:\n{e}\n\n"
+        "Make sure SOPDROP_HOUDINI_PATH is set in houdini.env",
+        title="Sopdrop - Error",
+        severity=hou.severityType.Error
+    )
+except Exception as e:
+    import hou
+    import traceback
+    hou.ui.displayMessage(
+        f"Error in Sopdrop share:\n{e}\n\n{traceback.format_exc()}",
+        title="Sopdrop - Error",
+        severity=hou.severityType.Error
+    )
+    ]]></script>
+  </tool>
+
+  <tool name="sopdrop_paste" label="Paste" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_paste.svg">
+    <helpText><![CDATA[
+Paste nodes from Sopdrop into your current network.
+
+Works with:
+- Copied assets from sopdrop.com (copies a paste command to clipboard)
+- Direct slug entry (e.g., username/asset-name)
+- Previously pasted assets (cached locally)
+
+Pastes directly at your cursor position without adding to your library.
+    ]]></helpText>
+    <script scriptType="python"><![CDATA[
+import sys
+import os
+import importlib
+
+sopdrop_houdini = os.environ.get("SOPDROP_HOUDINI_PATH", "")
+if sopdrop_houdini:
+    for _sd in ["scripts", "client"]:
+        _p = os.path.join(sopdrop_houdini, _sd)
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
+
+try:
+    import sopdrop_paste
+    importlib.reload(sopdrop_paste)
+    sopdrop_paste.main()
+except ImportError as e:
+    import hou
+    hou.ui.displayMessage(
+        f"Failed to load Sopdrop paste:\n{e}\n\n"
+        "Make sure SOPDROP_HOUDINI_PATH is set in houdini.env",
+        title="Sopdrop - Error",
+        severity=hou.severityType.Error
+    )
+except Exception as e:
+    import hou
+    import traceback
+    hou.ui.displayMessage(
+        f"Error in Sopdrop paste:\n{e}\n\n{traceback.format_exc()}",
         title="Sopdrop - Error",
         severity=hou.severityType.Error
     )

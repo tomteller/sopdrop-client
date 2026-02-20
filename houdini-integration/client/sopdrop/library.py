@@ -19,6 +19,7 @@ import json
 import uuid
 import shutil
 import sqlite3
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -1796,9 +1797,18 @@ def pull_from_cloud(slug: str, version: str = None, collection_id: str = None,
             # Handle SSL (Houdini's Python often has cert issues)
             if thumb_url.startswith("https://"):
                 ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                response = urlopen(req, timeout=15, context=ctx)
+                try:
+                    import certifi
+                    ctx = ssl.create_default_context(cafile=certifi.where())
+                except ImportError:
+                    pass
+                try:
+                    response = urlopen(req, timeout=15, context=ctx)
+                except (ssl.SSLCertVerificationError, URLError):
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    response = urlopen(req, timeout=15, context=ctx)
             else:
                 response = urlopen(req, timeout=15)
 
@@ -1881,13 +1891,31 @@ def push_to_cloud(asset_id: str) -> Dict[str, Any]:
 
     req = Request(url, data=body, headers=headers, method="POST")
 
-    # Handle SSL
+    # Handle SSL with fallback for Houdini's Python
     ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        pass
 
     try:
         response = urlopen(req, timeout=120, context=ctx)
+    except (ssl.SSLCertVerificationError, URLError) as e:
+        is_ssl = isinstance(e, ssl.SSLCertVerificationError) or (
+            isinstance(e, URLError) and 'CERTIFICATE_VERIFY_FAILED' in str(e.reason))
+        if not is_ssl:
+            raise
+        warnings.warn(
+            "SSL verification failed for publish. Install certifi to fix.",
+            stacklevel=2,
+        )
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        response = urlopen(req, timeout=120, context=ctx)
+
+    try:
         result = json.loads(response.read().decode('utf-8'))
     except HTTPError as e:
         error_body = e.read().decode('utf-8')
@@ -1969,12 +1997,31 @@ def push_version_to_cloud(asset_id: str) -> Dict[str, Any]:
 
     req = Request(url, data=body, headers=headers, method="POST")
 
+    # Handle SSL with fallback for Houdini's Python
     ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        pass
 
     try:
         response = urlopen(req, timeout=120, context=ctx)
+    except (ssl.SSLCertVerificationError, URLError) as e:
+        is_ssl = isinstance(e, ssl.SSLCertVerificationError) or (
+            isinstance(e, URLError) and 'CERTIFICATE_VERIFY_FAILED' in str(e.reason))
+        if not is_ssl:
+            raise
+        warnings.warn(
+            "SSL verification failed for version upload. Install certifi to fix.",
+            stacklevel=2,
+        )
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        response = urlopen(req, timeout=120, context=ctx)
+
+    try:
         result = json.loads(response.read().decode('utf-8'))
     except HTTPError as e:
         error_body = e.read().decode('utf-8')

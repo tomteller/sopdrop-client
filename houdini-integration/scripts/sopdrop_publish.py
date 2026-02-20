@@ -165,49 +165,6 @@ def login():
             )
 
 
-def capture_screenshot_from_clipboard():
-    """
-    Get screenshot from clipboard if available.
-
-    Returns the screenshot as base64-encoded PNG data, or None if not available.
-    """
-    try:
-        # Try to import Qt
-        try:
-            from PySide6 import QtWidgets, QtCore
-        except ImportError:
-            try:
-                from PySide2 import QtWidgets, QtCore
-            except ImportError:
-                print("[Sopdrop] PySide not available for clipboard access")
-                return None
-
-        clipboard = QtWidgets.QApplication.clipboard()
-        mime_data = clipboard.mimeData()
-
-        if mime_data.hasImage():
-            image = clipboard.image()
-            if not image.isNull() and image.width() > 50 and image.height() > 50:
-                # Convert QImage to PNG bytes
-                byte_array = QtCore.QByteArray()
-                buffer = QtCore.QBuffer(byte_array)
-                buffer.open(QtCore.QIODevice.WriteOnly)
-                image.save(buffer, "PNG")
-                buffer.close()
-
-                image_data = bytes(byte_array)
-                if len(image_data) > 100:
-                    print(f"[Sopdrop] Screenshot from clipboard: {len(image_data)} bytes ({image.width()}x{image.height()})")
-                    return base64.b64encode(image_data).decode('ascii')
-
-        print("[Sopdrop] No screenshot in clipboard")
-        return None
-
-    except Exception as e:
-        print(f"[Sopdrop] Clipboard screenshot failed: {e}")
-        return None
-
-
 class PublishDialog:
     """Dialog for publishing to Sopdrop."""
 
@@ -256,8 +213,7 @@ class PublishDialog:
         # Confirm upload
         result = hou.ui.displayMessage(
             f"Ready to publish to Sopdrop\n\n{summary}\n\n"
-            "TIP: Take a screenshot of your nodes (Cmd+Shift+4 on Mac, Win+Shift+S on Windows)\n"
-            "and copy it to clipboard before clicking Upload. You can also add one in the browser.",
+            "You can add a thumbnail on the website after uploading.",
             buttons=("Upload & Continue in Browser", "Cancel"),
             default_choice=0,
             close_choice=1,
@@ -315,13 +271,7 @@ class PublishDialog:
                 # Export the package
                 package = export_items(self.items)
 
-            # Capture screenshot
-            print("Capturing screenshot...")
-            screenshot_data = capture_screenshot_from_clipboard()
-            if screenshot_data:
-                print(f"Screenshot captured: {len(screenshot_data)} bytes")
-            else:
-                print("Screenshot capture failed, will need manual upload")
+            screenshot_data = None
 
             with hou.InterruptableOperation(
                 "Uploading to Sopdrop...",
@@ -340,15 +290,14 @@ class PublishDialog:
                 raise Exception("Server did not return a completion URL")
 
             # Success - open browser
-            has_screenshot = "with screenshot" if screenshot_data else "without screenshot"
             hou.ui.displayMessage(
-                f"Package uploaded {has_screenshot}!\n\n"
-                f"Opening browser to complete your listing...\n\n"
-                f"You'll need to:\n"
-                f"• Enter a name and description\n"
-                f"• Review/replace the thumbnail if needed\n"
-                f"• Click Publish\n\n"
-                f"Draft expires in 24 hours.",
+                "Package uploaded!\n\n"
+                "Opening browser to complete your listing...\n\n"
+                "You'll need to:\n"
+                "• Enter a name and description\n"
+                "• Add a thumbnail (paste or upload)\n"
+                "• Click Publish\n\n"
+                "Draft expires in 24 hours.",
                 title="Sopdrop - Upload Complete",
             )
 
@@ -492,10 +441,6 @@ def publish_from_library(package, name="", description="", tags=None, thumbnail_
         except Exception as e:
             print(f"[Sopdrop] Failed to convert additional images: {e}")
 
-    # If no thumbnail from library, check clipboard
-    if not screenshot_data:
-        screenshot_data = capture_screenshot_from_clipboard()
-
     try:
         with hou.InterruptableOperation(
             "Uploading to Sopdrop...",
@@ -559,11 +504,12 @@ def publish_from_library(package, name="", description="", tags=None, thumbnail_
             except Exception as e:
                 print(f"[Sopdrop] Could not mark asset as syncing: {e}")
 
-        has_screenshot = "with screenshot" if screenshot_data else "without screenshot"
+        has_screenshot = "with thumbnail" if screenshot_data else "without thumbnail"
         hou.ui.displayMessage(
             f"Package uploaded {has_screenshot}!\n\n"
             f"Opening browser to complete your listing...\n\n"
             f"The name, description, and tags have been pre-filled.\n"
+            f"You can paste or upload a thumbnail on the website.\n"
             f"Review and click Publish when ready.\n\n"
             f"Draft expires in 24 hours.",
             title="Sopdrop - Upload Complete",

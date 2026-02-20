@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <pythonPanelDocument>
-  <interface name="sopdrop_library" label="Sopdrop Library" icon="MISC_python" showNetworkNavigationBar="false" help_url="">
+  <interface name="sopdrop_library" label="Sopdrop Library" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_library.svg" showNetworkNavigationBar="false" help_url="">
     <script><![CDATA[
 """
 Sopdrop Library Panel
@@ -26,7 +26,7 @@ def onCreateInterface():
     """Called by Houdini to create the panel interface."""
     return create_panel()
 ]]></script>
-    <includeInToolbarMenu menu_position="101" create_separator="false"/>
+    <includeInPaneTabMenu menu_position="101" create_separator="false"/>
     <help><![CDATA[
 Sopdrop Library Panel
 

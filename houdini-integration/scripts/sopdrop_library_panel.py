@@ -56,20 +56,21 @@ except ImportError:
 # ==============================================================================
 
 COLORS = {
-    # Backgrounds - Houdini-style grays
-    'bg_base': '#1a1a1a',      # Deepest background
-    'bg_dark': '#222222',      # Main background (Houdini network bg)
-    'bg_medium': '#2a2a2a',    # Cards, panels
-    'bg_light': '#333333',     # Elevated elements
-    'bg_lighter': '#3d3d3d',   # Hover states
-    'bg_hover': '#454545',     # Active hover
+    # Backgrounds - layered depth (darker base, brighter cards)
+    'bg_base': '#191919',      # Deepest background (panel frame, sidebar)
+    'bg_dark': '#1e1e1e',      # Main background
+    'bg_medium': '#242424',    # Controls, inputs
+    'bg_light': '#2e2e2e',     # Elevated elements (buttons)
+    'bg_lighter': '#383838',   # Hover states
+    'bg_hover': '#424242',     # Active hover
     'bg_selected': '#3d3020',  # Orange-tinted selection
-    'bg_card': '#262626',      # Card background
-    'bg_card_hover': '#303030', # Card hover
+    'bg_card': '#2a2a2a',      # Card background (brighter than grid area)
+    'bg_card_hover': '#323232', # Card hover
+    'bg_grid': '#202020',      # Grid area background (between sidebar and cards)
 
-    # Borders - more visible for Houdini look
-    'border': '#3a3a3a',       # Default borders
-    'border_light': '#4a4a4a', # More visible borders
+    # Borders - subtle but present
+    'border': '#333333',       # Default borders
+    'border_light': '#444444', # More visible borders
     'border_focus': '#f97316', # Focus state
 
     # Text hierarchy - better contrast
@@ -1306,7 +1307,7 @@ class CollectionListWidget(QtWidgets.QWidget):
         # Container (accepts drops — delegates to self for hit-testing)
         self.container = _DropAwareContainer(owner=self)
         self.container.setStyleSheet(f"""
-            background-color: {COLORS['bg_dark']};
+            background-color: {COLORS['bg_base']};
             border-radius: 3px;
         """)
         container_layout = QtWidgets.QVBoxLayout(self.container)
@@ -1543,16 +1544,21 @@ class CollectionListWidget(QtWidgets.QWidget):
             # Invisible spacer same width as arrow so names align across depth levels
             spacer = QtWidgets.QWidget()
             spacer.setFixedSize(14, 16)
+            spacer.setStyleSheet("background: transparent;")
             spacer.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
             inner.addWidget(spacer)
 
-        coll_color = coll.get('color', '')
-        if coll_color:
-            dot_html = f'<span style="color: {coll_color};">\u25AA</span>'
-        else:
-            dot_html = f'<span style="color: {COLORS["text_dim"]};">\u25AA</span>'
-        name_label = QtWidgets.QLabel(f'{dot_html} {coll["name"]}')
-        name_label.setTextFormat(QtCore.Qt.RichText)
+        coll_color = coll.get('color', '') or COLORS['text_dim']
+        color_chip = QtWidgets.QWidget()
+        color_chip.setFixedSize(8, 8)
+        color_chip.setStyleSheet(f"""
+            background-color: {coll_color};
+            border-radius: 2px;
+        """)
+        color_chip.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        inner.addWidget(color_chip)
+        inner.addSpacing(4)
+        name_label = QtWidgets.QLabel(coll['name'])
         name_label.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px; background: transparent;")
         name_label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
         inner.addWidget(name_label)
@@ -1734,10 +1740,10 @@ class AssetCardWidget(QtWidgets.QFrame):
     def _setup_ui(self):
         self.setObjectName("assetCard")
 
-        # Card styling with border
+        # Card styling with border - brighter than grid bg for depth
         self.setStyleSheet(f"""
             QFrame#assetCard {{
-                background-color: transparent;
+                background-color: {COLORS['bg_card']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 4px;
             }}
@@ -1927,13 +1933,16 @@ class AssetCardWidget(QtWidgets.QFrame):
         """Update card border based on selected/hovered state."""
         if self._selected:
             border = f"2px solid {COLORS['accent']}"
+            bg = COLORS['bg_card_hover']
         elif self._hovered:
             border = f"1px solid {COLORS['accent']}"
+            bg = COLORS['bg_card_hover']
         else:
             border = f"1px solid {COLORS['border']}"
+            bg = COLORS['bg_card']
         self.setStyleSheet(f"""
             QFrame#assetCard {{
-                background-color: transparent;
+                background-color: {bg};
                 border: {border};
                 border-radius: 4px;
             }}
@@ -2057,7 +2066,7 @@ class AssetCardWidget(QtWidgets.QFrame):
             path = QtGui.QPainterPath()
             path.addRoundedRect(0, 0, width, height, radius, radius)
             painter.setClipPath(path)
-            painter.fillRect(0, 0, width, height, QtGui.QColor(COLORS['bg_dark']))
+            painter.fillRect(0, 0, width, height, QtGui.QColor(COLORS['bg_medium']))
 
             # Draw context letter or VEX code icon
             is_vex = self.asset.get('asset_type') == 'vex' or context == 'vex'
@@ -2646,18 +2655,18 @@ class AssetGridWidget(QtWidgets.QWidget):
         self.scroll = QtWidgets.QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.scroll.setStyleSheet("border: none; background: transparent;")
+        self.scroll.setStyleSheet(f"border: none; background-color: {COLORS['bg_grid']};")
 
         # Main container with vertical layout to allow proper alignment
         self.container = QtWidgets.QWidget()
-        self.container.setStyleSheet("background: transparent;")
+        self.container.setStyleSheet(f"background-color: {COLORS['bg_grid']};")
         container_layout = QtWidgets.QVBoxLayout(self.container)
-        container_layout.setContentsMargins(2, 2, 2, 2)
+        container_layout.setContentsMargins(6, 6, 6, 6)
         container_layout.setSpacing(0)
 
         # Grid widget inside container
         self.grid_widget = QtWidgets.QWidget()
-        self.grid_widget.setStyleSheet("background: transparent;")
+        self.grid_widget.setStyleSheet(f"background-color: {COLORS['bg_grid']};")
         self.grid_layout = QtWidgets.QGridLayout(self.grid_widget)
         self.grid_layout.setContentsMargins(0, 0, 0, 0)
         self.grid_layout.setSpacing(6)
@@ -2964,206 +2973,6 @@ class AssetGridWidget(QtWidgets.QWidget):
             self.asset_selected.emit(self._selected_asset)
         else:
             self.asset_selected.emit(asset)
-
-
-# ==============================================================================
-# Sync Worker Thread
-# ==============================================================================
-
-class SyncWorker(QtCore.QThread):
-    """Background thread for cloud sync operations."""
-
-    progress = QtCore.Signal(int, int, str)  # current, total, message
-    finished_sync = QtCore.Signal(dict)  # result summary
-
-    def __init__(self, is_team=False, team_slug=None, parent=None):
-        super().__init__(parent)
-        self._is_team = is_team
-        self._team_slug = team_slug
-        self._cancelled = False
-
-    def cancel(self):
-        self._cancelled = True
-
-    def run(self):
-        try:
-            result = self._do_sync()
-            self.finished_sync.emit(result)
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self.finished_sync.emit({'error': str(e), 'synced': 0, 'skipped': 0})
-
-    def _do_sync(self):
-        from sopdrop import library as lib
-        from sopdrop.config import get_token
-
-        if not get_token():
-            return {'error': 'Not logged in', 'synced': 0, 'skipped': 0}
-
-        # Step 1: Cleanup stale syncing (fast, single DB query)
-        self.progress.emit(0, 0, "Cleaning up stale sync states...")
-        lib.cleanup_stale_syncing()
-
-        if self._cancelled:
-            return {'error': 'Cancelled', 'synced': 0, 'skipped': 0}
-
-        # Step 2: Fetch cloud asset list
-        self.progress.emit(0, 0, "Fetching cloud library...")
-        if self._is_team:
-            cloud_assets = lib.get_team_saved_assets(self._team_slug)
-        else:
-            cloud_assets = lib.get_cloud_saved_assets()
-
-        if not cloud_assets:
-            return {'synced': 0, 'skipped': 0, 'total': 0, 'no_assets': True}
-
-        if self._cancelled:
-            return {'error': 'Cancelled', 'synced': 0, 'skipped': 0}
-
-        # Step 3: Figure out which assets are new
-        db = lib.get_db()
-        local_slugs = set()
-        rows = db.execute("SELECT remote_slug FROM library_assets WHERE remote_slug IS NOT NULL").fetchall()
-        for row in rows:
-            local_slugs.add(row[0])
-
-        new_assets = [a for a in cloud_assets if a.get('slug') and a['slug'] not in local_slugs]
-        skip_count = len(cloud_assets) - len(new_assets)
-
-        if not new_assets:
-            # Still need to ensure collection membership for existing assets
-            self.progress.emit(0, 0, "Updating collections...")
-            self._ensure_collections(cloud_assets, local_slugs, db)
-            return {'synced': 0, 'skipped': skip_count, 'total': len(cloud_assets)}
-
-        total = len(new_assets)
-        self.progress.emit(0, total, f"Downloading {total} new assets...")
-
-        if self._cancelled:
-            return {'error': 'Cancelled', 'synced': 0, 'skipped': skip_count}
-
-        # Step 4: Prepare collections for folders
-        folder_to_collection = self._prepare_collections(cloud_assets, db)
-
-        # Step 5: Download new assets one by one with progress
-        synced = 0
-        errors = []
-
-        for i, cloud_asset in enumerate(new_assets):
-            if self._cancelled:
-                break
-
-            slug = cloud_asset.get('slug', '')
-            name = cloud_asset.get('name', slug.split('/')[-1] if slug else '?')
-            self.progress.emit(i, total, f"Pulling: {name}")
-
-            folder = cloud_asset.get('folder') or '__default__'
-            collection_id = folder_to_collection.get(folder)
-
-            try:
-                thumb_url = (
-                    cloud_asset.get('thumbnailUrl') or
-                    cloud_asset.get('thumbnail_url') or
-                    cloud_asset.get('thumbnail')
-                )
-                asset_info = {
-                    'name': name,
-                    'description': cloud_asset.get('description', ''),
-                    'tags': cloud_asset.get('tags', []),
-                    'latestVersion': cloud_asset.get('latestVersion') or cloud_asset.get('latest_version'),
-                    'thumbnailUrl': thumb_url,
-                }
-                lib.pull_from_cloud(
-                    slug=slug,
-                    version=cloud_asset.get('savedVersion') or cloud_asset.get('latestVersion'),
-                    collection_id=collection_id,
-                    thumbnail_url=thumb_url,
-                    cloud_asset_info=asset_info,
-                )
-                synced += 1
-            except Exception as e:
-                errors.append(f"{slug}: {e}")
-                print(f"[Sopdrop] Failed to sync {slug}: {e}")
-
-        # Also ensure existing assets are in right collections
-        self._ensure_collections(cloud_assets, local_slugs, db)
-
-        # Trigger menu regeneration
-        if synced > 0:
-            try:
-                lib._trigger_menu_regenerate()
-            except Exception:
-                pass
-
-        self.progress.emit(total, total, "Done")
-
-        return {
-            'synced': synced,
-            'skipped': skip_count,
-            'total': len(cloud_assets),
-            'errors': errors if errors else None,
-        }
-
-    def _prepare_collections(self, cloud_assets, db):
-        """Create/find collections for cloud folders."""
-        from sopdrop import library as lib
-
-        assets_by_folder = {}
-        for asset in cloud_assets:
-            folder = asset.get('folder') or '__default__'
-            assets_by_folder.setdefault(folder, [])
-
-        existing_collections = {c['name']: c for c in lib.list_collections()}
-        folder_to_collection = {}
-
-        for folder_name in assets_by_folder.keys():
-            coll_name = "Cloud Library" if folder_name == '__default__' else folder_name
-            if coll_name in existing_collections:
-                coll = existing_collections[coll_name]
-                if coll.get('source') != 'cloud':
-                    db.execute("UPDATE collections SET source = 'cloud' WHERE id = ?", (coll['id'],))
-                    db.commit()
-                folder_to_collection[folder_name] = coll['id']
-            else:
-                new_coll = lib.create_collection(coll_name, color='#6366f1')
-                db.execute("UPDATE collections SET source = 'cloud' WHERE id = ?", (new_coll['id'],))
-                db.commit()
-                folder_to_collection[folder_name] = new_coll['id']
-
-        return folder_to_collection
-
-    def _ensure_collections(self, cloud_assets, local_slugs, db):
-        """Make sure existing local assets are in their correct cloud folder collections."""
-        from sopdrop import library as lib
-        from datetime import datetime
-
-        assets_by_folder = {}
-        for asset in cloud_assets:
-            slug = asset.get('slug', '')
-            if slug in local_slugs:
-                folder = asset.get('folder') or '__default__'
-                assets_by_folder.setdefault(folder, []).append(slug)
-
-        if not assets_by_folder:
-            return
-
-        existing_collections = {c['name']: c for c in lib.list_collections()}
-
-        for folder_name, slugs in assets_by_folder.items():
-            coll_name = "Cloud Library" if folder_name == '__default__' else folder_name
-            coll = existing_collections.get(coll_name)
-            if not coll:
-                continue
-            for slug in slugs:
-                row = db.execute("SELECT id FROM library_assets WHERE remote_slug = ?", (slug,)).fetchone()
-                if row:
-                    now = datetime.now().isoformat()
-                    db.execute("""
-                        INSERT OR IGNORE INTO collection_assets (collection_id, asset_id, added_at)
-                        VALUES (?, ?, ?)
-                    """, (coll['id'], row[0], now))
-            db.commit()
 
 
 # ==============================================================================
@@ -3771,7 +3580,7 @@ class LibraryPanel(QtWidgets.QWidget):
         self.active_filter_bar.setFixedHeight(20)
         self.active_filter_bar.setStyleSheet(f"""
             QFrame {{
-                background-color: {COLORS['bg_dark']};
+                background-color: {COLORS['bg_base']};
                 border: none;
                 border-bottom: 1px solid {COLORS['border']};
             }}
@@ -3850,7 +3659,7 @@ class LibraryPanel(QtWidgets.QWidget):
         self.info_footer.setFixedHeight(24)
         self.info_footer.setStyleSheet(f"""
             QFrame {{
-                background-color: {COLORS['bg_dark']};
+                background-color: {COLORS['bg_base']};
                 border-top: 1px solid {COLORS['border']};
             }}
         """)
@@ -4599,23 +4408,14 @@ class LibraryPanel(QtWidgets.QWidget):
         self.filter_icon_label.setVisible(has_filters)
         self.clear_all_filters_btn.setVisible(has_filters)
 
-        # Update bar styling: subtle accent tint when filters active
-        if has_filters:
-            self.active_filter_bar.setStyleSheet(f"""
-                QFrame {{
-                    background-color: {COLORS['bg_dark']};
-                    border: none;
-                    border-bottom: 1px solid {COLORS['accent']};
-                }}
-            """)
-        else:
-            self.active_filter_bar.setStyleSheet(f"""
-                QFrame {{
-                    background-color: {COLORS['bg_dark']};
-                    border: none;
-                    border-bottom: 1px solid {COLORS['border']};
-                }}
-            """)
+        # Keep bar styling consistent — chips already indicate active filters
+        self.active_filter_bar.setStyleSheet(f"""
+            QFrame {{
+                background-color: {COLORS['bg_base']};
+                border: none;
+                border-bottom: 1px solid {COLORS['border']};
+            }}
+        """)
 
     # Backwards compat alias
     def _update_tag_chips(self):
@@ -5148,7 +4948,7 @@ class LibraryPanel(QtWidgets.QWidget):
         self._refresh_assets()
 
     def _sync_from_cloud(self):
-        """Sync saved assets from cloud to local library (threaded with progress)."""
+        """Sync saved assets from cloud to local library."""
         if not SOPDROP_AVAILABLE:
             hou.ui.displayMessage("Sopdrop library not available")
             return
@@ -5156,10 +4956,6 @@ class LibraryPanel(QtWidgets.QWidget):
         from sopdrop.config import get_token, get_active_library, get_team_slug
         if not get_token():
             hou.ui.displayMessage("Please log in first using the Settings tool")
-            return
-
-        # Prevent double-click
-        if hasattr(self, '_sync_worker') and self._sync_worker and self._sync_worker.isRunning():
             return
 
         is_team_mode = get_active_library() == "team"
@@ -5173,92 +4969,38 @@ class LibraryPanel(QtWidgets.QWidget):
             )
             return
 
-        # Create progress dialog
-        self._sync_progress = QtWidgets.QProgressDialog(
-            "Connecting to cloud...", "Cancel", 0, 0, self)
-        self._sync_progress.setWindowTitle("Pull from Cloud")
-        self._sync_progress.setWindowModality(QtCore.Qt.WindowModal)
-        self._sync_progress.setMinimumWidth(350)
-        self._sync_progress.setMinimumDuration(0)
-        self._sync_progress.setStyleSheet(f"""
-            QProgressDialog {{
-                background-color: {COLORS['bg']};
-                color: {COLORS['text']};
-            }}
-            QLabel {{
-                color: {COLORS['text']};
-                font-size: 12px;
-                padding: 4px;
-            }}
-            QProgressBar {{
-                border: 1px solid {COLORS['border']};
-                border-radius: 3px;
-                background-color: {COLORS['bg_light']};
-                text-align: center;
-                color: {COLORS['text']};
-                height: 18px;
-            }}
-            QProgressBar::chunk {{
-                background-color: {COLORS['accent']};
-                border-radius: 2px;
-            }}
-            QPushButton {{
-                background-color: {COLORS['bg_light']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 3px;
-                padding: 4px 16px;
-                color: {COLORS['text']};
-            }}
-            QPushButton:hover {{
-                border-color: {COLORS['accent']};
-            }}
-        """)
-        self._sync_progress.show()
+        # Show a toast immediately so the user knows something is happening
+        self.show_toast("Pulling from cloud...", 'info', 30000)
+        QtWidgets.QApplication.processEvents()
 
-        # Launch worker thread
-        self._sync_worker = SyncWorker(is_team_mode, team_slug, self)
-        self._sync_worker.progress.connect(self._on_sync_progress)
-        self._sync_worker.finished_sync.connect(self._on_sync_finished)
-        self._sync_progress.canceled.connect(self._sync_worker.cancel)
-        self._sync_worker.start()
+        try:
+            # Cleanup stale syncing (fast DB query)
+            library.cleanup_stale_syncing()
 
-    def _on_sync_progress(self, current, total, message):
-        """Update progress dialog from sync worker."""
-        if not hasattr(self, '_sync_progress') or not self._sync_progress:
-            return
-        if total > 0:
-            self._sync_progress.setMaximum(total)
-            self._sync_progress.setValue(current)
-        else:
-            # Indeterminate
-            self._sync_progress.setMaximum(0)
-            self._sync_progress.setValue(0)
-        self._sync_progress.setLabelText(message)
-
-    def _on_sync_finished(self, result):
-        """Handle sync completion."""
-        if hasattr(self, '_sync_progress') and self._sync_progress:
-            self._sync_progress.close()
-            self._sync_progress = None
-        self._sync_worker = None
-
-        if result.get('no_assets'):
-            from sopdrop.config import get_active_library
-            if get_active_library() == "team":
-                self.show_toast("No assets found in team library", 'warning', 3000)
+            # Use the existing working sync functions
+            if is_team_mode:
+                result = library.sync_team_library(team_slug)
             else:
-                self.show_toast("No assets found in cloud library", 'warning', 3000)
-        elif result.get('error'):
-            if result['error'] != 'Cancelled':
+                result = library.sync_saved_assets_with_folders()
+
+            if result.get('error'):
                 self.show_toast(f"Sync failed: {result['error']}", 'error', 5000)
-        else:
-            msg = f"Synced {result['synced']} new assets"
-            if result.get('skipped'):
-                msg += f" ({result['skipped']} already local)"
-            self.show_toast(msg, 'success')
-            if result.get('errors'):
-                for err in result['errors'][:5]:
-                    print(f"[Sopdrop] Sync error: {err}")
+            elif result.get('synced', 0) == 0 and result.get('skipped', 0) == 0:
+                source = f"team '{team_slug}'" if is_team_mode else "cloud"
+                self.show_toast(f"No assets found in {source}", 'warning', 3000)
+            else:
+                msg = f"Synced {result['synced']} new assets"
+                if result.get('skipped'):
+                    msg += f" ({result['skipped']} already local)"
+                self.show_toast(msg, 'success')
+                if result.get('errors'):
+                    for err in result['errors'][:5]:
+                        print(f"[Sopdrop] Sync error: {err}")
+
+        except Exception as e:
+            self.show_toast(f"Sync failed: {e}", 'error', 5000)
+            import traceback
+            traceback.print_exc()
 
         self.collections.refresh()
         self._refresh_assets()
