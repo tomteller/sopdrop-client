@@ -30,7 +30,7 @@ Usage in Houdini Python shell:
     # Or: sopdrop.preview_export() to see what would be exported
 """
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 from .api import SopdropClient, SopdropError, AuthError, NotFoundError
 from .config import get_config, set_server_url, get_clipboard, set_clipboard, clear_clipboard
@@ -86,13 +86,84 @@ def paste(asset_ref=None, force=False, trust=False):
     Paste an asset into current Houdini network.
 
     Args:
-        asset_ref: Asset to paste (e.g., 'user/scatter-points@1.0.0')
+        asset_ref: Asset to paste (e.g., 'user/scatter-points@1.0.0' or 's/TC-4B9X')
         force: Skip context mismatch check
         trust: Skip security warning for untrusted assets
 
+    If asset_ref starts with 's/', treats it as a temporary share code.
     If asset_ref is None, pastes from Houdini clipboard.
     """
+    if asset_ref and asset_ref.startswith("s/"):
+        return paste_share(asset_ref[2:], trust=trust)
     return _get_client().paste(asset_ref, force=force, trust=trust)
+
+
+def share(items=None):
+    """
+    Share selected nodes via a temporary link (expires in 24h).
+
+    Exports selected items as a .sopdrop package and uploads it
+    as a temporary share. Returns the share code and URL.
+
+    Args:
+        items: Houdini items to share (default: selected items)
+
+    Returns:
+        Dict with shareCode, shareUrl, expiresAt
+
+    Example:
+        result = sopdrop.share()
+        # Share result['shareUrl'] with a colleague
+        # They paste with: sopdrop.paste("s/TC-4B9X")
+    """
+    client = _get_client()
+    hou = client.hou
+    from .export import export_items
+
+    if items is None:
+        pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
+        if pane:
+            items = list(pane.pwd().selectedItems())
+
+    if not items:
+        raise SopdropError("No items selected. Select nodes to share.")
+
+    package = export_items(items)
+    result = client.share(package)
+
+    code = result.get("shareCode", "")
+    url = result.get("shareUrl", "")
+    print(f"Shared: {code}")
+    print(f"URL: {url}")
+    print(f"Paste: sopdrop.paste(\"s/{code}\")")
+    print(f"Expires: {result.get('expiresAt', '24h')}")
+
+    return result
+
+
+def paste_share(code, trust=False):
+    """
+    Paste a temporary share into current Houdini network.
+
+    Args:
+        code: Share code (e.g., 'TC-4B9X')
+        trust: Skip security warning
+    """
+    client = _get_client()
+    hou = client.hou
+    from . import importer
+
+    package = client.fetch_share(code)
+
+    # Import at cursor
+    try:
+        items = importer.import_at_cursor(package)
+        if items:
+            print(f"Pasted {len(items)} items from share {code}")
+        else:
+            print(f"Paste completed for share {code}")
+    except Exception as e:
+        raise SopdropError(f"Failed to paste share: {e}")
 
 
 def copy(asset_ref):

@@ -165,6 +165,13 @@ def login():
             )
 
 
+def _normalize_package_format(package):
+    """Normalize legacy 'chopsop-*' format names to 'sopdrop-*'."""
+    fmt = package.get("format", "")
+    if fmt.startswith("chopsop-"):
+        package["format"] = fmt.replace("chopsop-", "sopdrop-", 1)
+
+
 class PublishDialog:
     """Dialog for publishing to Sopdrop."""
 
@@ -270,6 +277,8 @@ class PublishDialog:
             ) as op:
                 # Export the package
                 package = export_items(self.items)
+                # Normalize legacy format names
+                _normalize_package_format(package)
 
             screenshot_data = None
 
@@ -440,6 +449,9 @@ def publish_from_library(package, name="", description="", tags=None, thumbnail_
                 print(f"[Sopdrop] Including {len(additional_images_data)} additional images")
         except Exception as e:
             print(f"[Sopdrop] Failed to convert additional images: {e}")
+
+    # Normalize legacy format names before upload
+    _normalize_package_format(package)
 
     try:
         with hou.InterruptableOperation(

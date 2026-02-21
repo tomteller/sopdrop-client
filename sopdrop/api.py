@@ -10,6 +10,7 @@ import hashlib
 import tempfile
 import webbrowser
 import uuid
+import warnings
 from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode, quote
@@ -41,6 +42,13 @@ def _get_import_module():
     if _import_module is None:
         from . import importer as _import_module
     return _import_module
+
+
+def _normalize_package_format(package):
+    """Normalize legacy 'chopsop-*' format names to 'sopdrop-*'."""
+    fmt = package.get("format", "")
+    if fmt.startswith("chopsop-"):
+        package["format"] = fmt.replace("chopsop-", "sopdrop-", 1)
 
 
 class SopdropError(Exception):
@@ -77,6 +85,11 @@ def _ssl_urlopen(req, timeout=30):
                 is_ssl = True
             if not is_ssl:
                 raise
+            warnings.warn(
+                "SSL certificate verification failed. Falling back to unverified connection. "
+                "Install certifi (`pip install certifi`) to fix this.",
+                stacklevel=2,
+            )
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
@@ -682,6 +695,9 @@ class SopdropClient:
         except Exception as e:
             raise SopdropError(f"Failed to export: {e}")
 
+        # Normalize legacy format names before upload
+        _normalize_package_format(package)
+
         # Check for HDA dependencies
         if package.get("dependencies"):
             deps = package["dependencies"]
@@ -906,6 +922,56 @@ class SopdropClient:
             raise SopdropError(f"Publish failed: {message}")
         except URLError as e:
             raise SopdropError(f"Connection error: {e.reason}")
+
+    # === Sharing ===
+
+    def share(self, package, name=None):
+        """
+        Create a temporary share from a .sopdrop package.
+
+        Args:
+            package: Exported package dict
+            name: Optional display name
+
+        Returns:
+            Dict with shareCode, shareUrl, expiresAt
+        """
+        token = get_token()
+        if not token:
+            raise AuthError("Please login first: sopdrop.login()")
+
+        # Normalize legacy format names before upload
+        _normalize_package_format(package)
+
+        data = {"package": package}
+        if name:
+            data["name"] = name
+
+        return self._post("share", data=data, auth=True)
+
+    def fetch_share(self, code):
+        """
+        Download a shared .sopdrop package by share code.
+
+        Args:
+            code: Share code (e.g., 'TC-4B9X')
+
+        Returns:
+            Package dict ready for import
+        """
+        return self._get(f"share/{code}/download", auth=False)
+
+    def share_info(self, code):
+        """
+        Get metadata about a share without downloading.
+
+        Args:
+            code: Share code (e.g., 'TC-4B9X')
+
+        Returns:
+            Dict with shareCode, name, context, nodeCount, etc.
+        """
+        return self._get(f"share/{code}", auth=False)
 
     # === Cache Management ===
 

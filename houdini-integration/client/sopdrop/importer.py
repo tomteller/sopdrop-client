@@ -353,12 +353,15 @@ def _import_v1(
     new_nodes = []
     new_netboxes = []
     new_stickies = []
+    new_dots = []
 
     for item in new_items:
         if isinstance(item, hou.NetworkBox):
             new_netboxes.append(item)
         elif isinstance(item, hou.StickyNote):
             new_stickies.append(item)
+        elif isinstance(item, hou.NetworkDot):
+            new_dots.append(item)
         elif isinstance(item, hou.Node):
             if item.parent() == target_node:
                 new_nodes.append(item)
@@ -406,14 +409,14 @@ def _import_v1(
         except Exception:
             stickies_to_move.append(sticky)
 
-    # Reposition: move loose nodes + loose stickies individually,
+    # Reposition: move loose nodes + loose stickies + dots individually,
     # move network boxes separately (which moves their contents too)
-    items_to_move = nodes_to_move + stickies_to_move
+    items_to_move = nodes_to_move + stickies_to_move + new_dots
     if position and (items_to_move or new_netboxes):
         _reposition_items(items_to_move, position, new_netboxes, netbox_data, sticky_data)
 
     # All top-level items for selection
-    all_top_level = new_nodes + new_netboxes + new_stickies
+    all_top_level = new_nodes + new_netboxes + new_stickies + new_dots
 
     # Clear existing selection, then select the new items
     target_node.setSelected(False, clear_all_selected=True)

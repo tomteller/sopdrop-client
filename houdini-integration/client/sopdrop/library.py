@@ -19,6 +19,7 @@ import json
 import uuid
 import shutil
 import sqlite3
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -209,6 +210,12 @@ CREATE TABLE IF NOT EXISTS user_prefs (
     value TEXT
 );
 
+-- Library identity metadata (team name/slug stored in the DB itself)
+CREATE TABLE IF NOT EXISTS library_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_assets_context ON library_assets(context);
 CREATE INDEX IF NOT EXISTS idx_assets_name ON library_assets(name);
@@ -218,7 +225,11 @@ CREATE INDEX IF NOT EXISTS idx_assets_use_count ON library_assets(use_count);
 CREATE INDEX IF NOT EXISTS idx_assets_remote_slug ON library_assets(remote_slug);
 CREATE INDEX IF NOT EXISTS idx_tags_tag ON asset_tags(tag);
 CREATE INDEX IF NOT EXISTS idx_collections_parent ON collections(parent_id);
+"""
 
+# FTS5 schema separated so a failure doesn't block core functionality.
+# FTS5 uses memory-mapped I/O which can crash on network/shared drives.
+FTS_SCHEMA = """
 -- Full-text search (SQLite FTS5)
 CREATE VIRTUAL TABLE IF NOT EXISTS assets_fts USING fts5(
     name,
@@ -274,7 +285,20 @@ def get_db():
         conn = sqlite3.connect(db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        # Disable memory-mapped I/O — prevents segfaults on network/shared
+        # drives (team library folders) where mmap behaves unpredictably.
+        conn.execute("PRAGMA mmap_size = 0")
+        # Wait up to 5 s on a locked DB instead of failing immediately
+        # (team libraries may have concurrent access from multiple users).
+        conn.execute("PRAGMA busy_timeout = 5000")
         conn.executescript(SCHEMA)
+
+        # FTS5 uses mmap internally and can crash on network filesystems.
+        # Create it separately so a failure doesn't block core functionality.
+        try:
+            conn.executescript(FTS_SCHEMA)
+        except Exception as e:
+            print(f"[Sopdrop] FTS5 unavailable for {db_path}: {e}")
 
         # Run migrations for existing databases
         _run_migrations(conn)
@@ -330,6 +354,17 @@ def _run_migrations(conn):
     except Exception as e:
         print(f"[Sopdrop] Migration warning (library_assets): {e}")
 
+    # Add library_meta table if it doesn't exist (for existing DBs)
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS library_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+    except Exception as e:
+        print(f"[Sopdrop] Migration warning (library_meta): {e}")
+
 
 def close_db():
     """Close all database connections."""
@@ -341,6 +376,74 @@ def close_db():
             pass
     _connections = {}
     _current_db_path = None
+
+
+def get_library_meta(key: str, db=None) -> Optional[str]:
+    """Get a metadata value from the library_meta table."""
+    conn = db or get_db()
+    row = conn.execute("SELECT value FROM library_meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def set_library_meta(key: str, value: str, db=None):
+    """Set a metadata value in the library_meta table."""
+    conn = db or get_db()
+    conn.execute(
+        "INSERT OR REPLACE INTO library_meta (key, value) VALUES (?, ?)",
+        (key, value)
+    )
+    conn.commit()
+
+
+def detect_team_from_library(path: str) -> Optional[Dict[str, str]]:
+    """
+    Detect team identity from an existing library database.
+
+    Opens the DB at the given path (expects a 'library/' subdirectory with library.db),
+    reads team_name and team_slug from library_meta.
+
+    Returns dict with 'team_name' and 'team_slug', or None if not found.
+    """
+    from pathlib import Path
+
+    db_path = Path(path) / "library" / "library.db"
+    if not db_path.exists():
+        return None
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+
+        # Check if library_meta table exists
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='library_meta'"
+        ).fetchone()
+        if not tables:
+            conn.close()
+            return None
+
+        team_name = None
+        team_slug = None
+
+        row = conn.execute("SELECT value FROM library_meta WHERE key = 'team_name'").fetchone()
+        if row:
+            team_name = row[0]
+
+        row = conn.execute("SELECT value FROM library_meta WHERE key = 'team_slug'").fetchone()
+        if row:
+            team_slug = row[0]
+
+        conn.close()
+
+        if team_name or team_slug:
+            return {
+                'team_name': team_name,
+                'team_slug': team_slug,
+            }
+    except Exception as e:
+        print(f"[Sopdrop] Could not read team metadata from {db_path}: {e}")
+
+    return None
 
 
 def switch_library(library_type):
@@ -1796,9 +1899,18 @@ def pull_from_cloud(slug: str, version: str = None, collection_id: str = None,
             # Handle SSL (Houdini's Python often has cert issues)
             if thumb_url.startswith("https://"):
                 ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                response = urlopen(req, timeout=15, context=ctx)
+                try:
+                    import certifi
+                    ctx = ssl.create_default_context(cafile=certifi.where())
+                except ImportError:
+                    pass
+                try:
+                    response = urlopen(req, timeout=15, context=ctx)
+                except (ssl.SSLCertVerificationError, URLError):
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    response = urlopen(req, timeout=15, context=ctx)
             else:
                 response = urlopen(req, timeout=15)
 
@@ -1881,13 +1993,31 @@ def push_to_cloud(asset_id: str) -> Dict[str, Any]:
 
     req = Request(url, data=body, headers=headers, method="POST")
 
-    # Handle SSL
+    # Handle SSL with fallback for Houdini's Python
     ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        pass
 
     try:
         response = urlopen(req, timeout=120, context=ctx)
+    except (ssl.SSLCertVerificationError, URLError) as e:
+        is_ssl = isinstance(e, ssl.SSLCertVerificationError) or (
+            isinstance(e, URLError) and 'CERTIFICATE_VERIFY_FAILED' in str(e.reason))
+        if not is_ssl:
+            raise
+        warnings.warn(
+            "SSL verification failed for publish. Install certifi to fix.",
+            stacklevel=2,
+        )
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        response = urlopen(req, timeout=120, context=ctx)
+
+    try:
         result = json.loads(response.read().decode('utf-8'))
     except HTTPError as e:
         error_body = e.read().decode('utf-8')
@@ -1969,12 +2099,31 @@ def push_version_to_cloud(asset_id: str) -> Dict[str, Any]:
 
     req = Request(url, data=body, headers=headers, method="POST")
 
+    # Handle SSL with fallback for Houdini's Python
     ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        pass
 
     try:
         response = urlopen(req, timeout=120, context=ctx)
+    except (ssl.SSLCertVerificationError, URLError) as e:
+        is_ssl = isinstance(e, ssl.SSLCertVerificationError) or (
+            isinstance(e, URLError) and 'CERTIFICATE_VERIFY_FAILED' in str(e.reason))
+        if not is_ssl:
+            raise
+        warnings.warn(
+            "SSL verification failed for version upload. Install certifi to fix.",
+            stacklevel=2,
+        )
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        response = urlopen(req, timeout=120, context=ctx)
+
+    try:
         result = json.loads(response.read().decode('utf-8'))
     except HTTPError as e:
         error_body = e.read().decode('utf-8')
@@ -2690,6 +2839,15 @@ def sync_team_library(team_slug: str = None, collection_name: str = None) -> Dic
             print(f"[Sopdrop] Failed to sync {slug}: {e}")
             import traceback
             traceback.print_exc()
+
+    # Store team identity in the library database itself
+    try:
+        from .config import get_team_name as _get_team_name
+        set_library_meta('team_slug', team_slug)
+        team_name = _get_team_name() or team_slug
+        set_library_meta('team_name', team_name)
+    except Exception as e:
+        print(f"[Sopdrop] Warning: could not write team metadata to library: {e}")
 
     # Trigger menu regeneration if we synced any assets
     if synced > 0:

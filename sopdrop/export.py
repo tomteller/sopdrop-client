@@ -2,44 +2,22 @@
 Export module for Sopdrop.
 
 Handles exporting Houdini nodes to the .sopdrop package format.
-Uses Houdini's native saveItemsToFile() for reliable serialization.
+Uses Houdini's asCode() for inspectable, auditable, diffable serialization.
 """
 
 import base64
 import hashlib
-import json
-import tempfile
 import os
+import re
 from typing import List, Dict, Any, Optional
-
-# Version of the package format
-CHOP_FORMAT_VERSION = "sopdrop-v2"
-
-
-def _is_non_commercial() -> bool:
-    """Check if running a non-commercial Houdini license."""
-    try:
-        import hou
-        # hou.isApprentice() returns True for Apprentice (free non-commercial)
-        if hasattr(hou, 'isApprentice') and hou.isApprentice():
-            return True
-        # Also check license category for NC (Non-Commercial) licenses
-        if hasattr(hou, 'licenseCategory'):
-            cat = hou.licenseCategory()
-            if cat in (hou.licenseCategoryType.Apprentice,):
-                return True
-        return False
-    except Exception:
-        return False
 
 
 def export_items(items) -> Dict[str, Any]:
     """
     Export selected Houdini items as a .sopdrop package.
 
-    Uses saveItemsToFile() (v2/cpio) for commercial licenses, and
-    asCode() (v1/python) for non-commercial licenses to avoid
-    embedding the NC license flag in the binary data.
+    Always uses asCode() to produce inspectable Python code.
+    recurse=True ensures children inside subnets/containers are captured.
 
     Args:
         items: List of hou.NetworkMovableItem (nodes, network boxes, sticky notes)
@@ -56,6 +34,7 @@ def export_items(items) -> Dict[str, Any]:
     nodes = []
     network_boxes = []
     sticky_notes = []
+    network_dots = []
 
     for item in items:
         if isinstance(item, hou.Node):
@@ -64,6 +43,8 @@ def export_items(items) -> Dict[str, Any]:
             network_boxes.append(item)
         elif isinstance(item, hou.StickyNote):
             sticky_notes.append(item)
+        elif isinstance(item, hou.NetworkDot):
+            network_dots.append(item)
 
     if not nodes:
         raise ValueError("No nodes to export. Select at least one node.")
@@ -95,96 +76,34 @@ def export_items(items) -> Dict[str, Any]:
     # Capture node graph data (positions, connections, types)
     node_graph = _capture_node_graph(nodes)
 
-    # Non-commercial Houdini: use asCode() (v1 format) to avoid
-    # embedding the NC license flag in .cpio binary data
-    if _is_non_commercial():
-        return _export_as_code(
-            items, nodes, network_boxes, sticky_notes,
-            parent, context, node_types, node_names,
-            all_node_count, dependencies, node_graph
-        )
-
-    # Commercial: use saveItemsToFile (v2/cpio) for full fidelity
-    with tempfile.NamedTemporaryFile(suffix='.cpio', delete=False) as f:
-        temp_path = f.name
-
-    try:
-        # saveItemsToFile handles nodes, network boxes, sticky notes, connections
-        parent.saveItemsToFile(items, temp_path)
-
-        # Read the binary data
-        with open(temp_path, 'rb') as f:
-            binary_data = f.read()
-
-        # Encode as base64 for JSON transport
-        encoded_data = base64.b64encode(binary_data).decode('ascii')
-
-        # Generate checksum for integrity verification
-        checksum = hashlib.sha256(binary_data).hexdigest()
-
-    finally:
-        # Clean up temp file
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
-
-    # Build the package
-    package = {
-        "format": CHOP_FORMAT_VERSION,
-        "context": context,
-        "houdini_version": hou.applicationVersionString(),
-        "metadata": {
-            "node_count": all_node_count,
-            "top_level_count": len(nodes),
-            "node_types": list(set(node_types)),
-            "node_names": node_names,
-            "network_boxes": len(network_boxes),
-            "sticky_notes": len(sticky_notes),
-            "has_hda_dependencies": len(dependencies) > 0,
-            "node_graph": node_graph,
-        },
-        "dependencies": dependencies,
-        "data": encoded_data,
-        "checksum": checksum,
-    }
-
-    return package
-
-
-def _export_as_code(items, nodes, network_boxes, sticky_notes,
-                    parent, context, node_types, node_names,
-                    all_node_count, dependencies, node_graph) -> Dict[str, Any]:
-    """
-    Export using asCode() — produces license-neutral Python code.
-
-    Used for non-commercial Houdini to avoid the NC flag in .cpio data.
-    The v1 format stores executable Python that recreates the node network.
-
-    Sticky notes and network boxes are serialized manually (not via asCode)
-    to ensure correct relative positioning when imported.
-    """
-    import hou
-    import re
-
+    # Serialize via asCode
     parent_path = parent.path()
-    # Escape parent path for regex (handles special chars in node names)
     parent_path_escaped = re.escape(parent_path)
 
     code_parts = []
 
-    # Export each node via asCode, with unique variable prefix per node
-    # to avoid variable name collisions between multiple asCode outputs
+    # Export each node via asCode, with unique variable suffix per node
+    # to avoid variable name collisions between multiple asCode outputs.
+    # recurse=True ensures children inside subnets/containers are captured.
     for idx, node in enumerate(nodes):
         code = node.asCode(
             brief=True,
+            recurse=True,
             save_box_membership=False,
             save_outgoing_wires=True,
         )
-        # Prefix variable names to avoid collisions between nodes.
-        # asCode uses: hou_node, hou_parm, hou_parm_template, hou_parm_template_group
-        # Use regex word boundaries (\b) to match exact names only,
-        # so 'hou_parm' won't accidentally match inside 'hou_parm_template'.
+        # Suffix variable names to avoid collisions between nodes.
+        # asCode generates: hou_node, hou_node2, hou_node3, etc. for children
+        # when recurse=True. We must rename ALL numbered variants to prevent
+        # collisions when multiple top-level nodes are selected.
+        # Process longer names first so 'hou_parm_template' doesn't match
+        # inside 'hou_parm_template_group'.
         for var in ['hou_parm_template_group', 'hou_parm_template', 'hou_parm', 'hou_node']:
-            code = re.sub(r'\b' + var + r'\b', f'{var}_{idx}', code)
+            code = re.sub(
+                r'\b(' + var + r'(?:\d+)?)\b',
+                r'\g<1>__' + str(idx),
+                code,
+            )
         code_parts.append(code)
 
     # Export network boxes with explicit creation code
@@ -240,6 +159,64 @@ hou_sticky_{i}.setDrawBackground({draw_bg})
 hou_sticky_{i}.setTextColor(hou.Color(({tc_rgb[0]}, {tc_rgb[1]}, {tc_rgb[2]})))
 hou_sticky_{i}.setColor(hou.Color(({bg_rgb[0]}, {bg_rgb[1]}, {bg_rgb[2]})))""")
 
+    # Export network dots (wire reroute points)
+    # Build a lookup of which (upstream_name, output_idx) has a dot on it,
+    # so we can rewire downstream nodes through the dot after creation.
+    dot_lookup = {}  # (upstream_name, output_idx) -> dot variable name
+    for i, dot in enumerate(network_dots):
+        pos = dot.position()
+        var = f'hou_dot_{i}'
+
+        code_parts.append(f"""
+# Network dot {i}
+{var} = hou_parent.createNetworkDot()
+{var}.setPosition(hou.Vector2({pos[0]}, {pos[1]}))""")
+
+        # Set the dot's input connection
+        try:
+            input_item = dot.inputItem()
+            if input_item:
+                input_name = input_item.name()
+                input_out_idx = dot.inputItemOutputIndex()
+                code_parts.append(
+                    f'try:\n'
+                    f'    _up = hou_parent.item("{input_name}")\n'
+                    f'    if _up: {var}.setInput(_up, {input_out_idx})\n'
+                    f'except: pass'
+                )
+                dot_lookup[(input_name, input_out_idx)] = var
+        except Exception:
+            pass
+
+        try:
+            if dot.isPinned():
+                code_parts.append(f'{var}.setPinned(True)')
+        except Exception:
+            pass
+
+    # Rewire downstream nodes through dots.
+    # asCode(save_outgoing_wires=True) creates direct connections that skip dots.
+    # For each selected node, check if any of its inputs match a dot's upstream —
+    # if so, rewire that input through the dot.
+    if dot_lookup:
+        for node in nodes:
+            try:
+                for conn in node.inputConnections():
+                    upstream = conn.inputNode()
+                    if upstream is None:
+                        continue
+                    key = (upstream.name(), conn.inputIndex())
+                    if key in dot_lookup:
+                        input_idx = conn.outputIndex()
+                        dot_var = dot_lookup[key]
+                        code_parts.append(
+                            f'try:\n'
+                            f'    hou_parent.item("{node.name()}").setInput({input_idx}, {dot_var}, 0)\n'
+                            f'except: pass'
+                        )
+            except Exception:
+                pass
+
     # Join all code
     raw_code = "\n".join(code_parts)
 
@@ -278,6 +255,7 @@ hou_sticky_{i}.setColor(hou.Color(({bg_rgb[0]}, {bg_rgb[1]}, {bg_rgb[2]})))""")
             "node_names": node_names,
             "network_boxes": len(network_boxes),
             "sticky_notes": len(sticky_notes),
+            "network_dots": len(network_dots),
             "has_hda_dependencies": len(dependencies) > 0,
             "node_graph": node_graph,
         },
@@ -694,6 +672,7 @@ def preview_export(items=None) -> None:
     nodes = [i for i in items if isinstance(i, hou.Node)]
     netboxes = [i for i in items if isinstance(i, hou.NetworkBox)]
     stickies = [i for i in items if isinstance(i, hou.StickyNote)]
+    dots = [i for i in items if isinstance(i, hou.NetworkDot)]
 
     print("\n=== Export Preview ===")
     print(f"Nodes: {len(nodes)}")
@@ -711,6 +690,9 @@ def preview_export(items=None) -> None:
 
     if stickies:
         print(f"\nSticky Notes: {len(stickies)}")
+
+    if dots:
+        print(f"\nNetwork Dots: {len(dots)}")
 
     # Check for HDA dependencies
     deps = _detect_hda_dependencies(nodes)

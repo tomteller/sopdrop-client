@@ -17,8 +17,11 @@ DEFAULTS = {
     "cache_max_size_mb": 500,
     # Library settings
     "active_library": "personal",  # "personal" or "team"
+    "personal_library_path": None,  # Custom personal library path (None = ~/.sopdrop/library/)
     "team_library_path": None,  # Path to shared team library folder
     "team_slug": None,  # Slug of the team to sync from (e.g., "my-team")
+    # UI settings
+    "ui_scale": 1.0,  # UI scale factor (0.8 - 1.5)
 }
 
 def get_config_dir():
@@ -187,6 +190,28 @@ def set_team_library_path(path):
     save_config(config)
 
 
+def get_personal_library_path():
+    """Get the personal library path. Returns custom path or default ~/.sopdrop/library/."""
+    config = get_config()
+    custom = config.get("personal_library_path")
+    if custom:
+        return Path(custom)
+    return get_config_dir() / "library"
+
+
+def set_personal_library_path(path):
+    """Set custom personal library path. Pass None to reset to default."""
+    config = get_config()
+    if path is None:
+        config["personal_library_path"] = None
+    else:
+        path = Path(path)
+        if not path.exists():
+            path.mkdir(parents=True, exist_ok=True)
+        config["personal_library_path"] = str(path.resolve())
+    save_config(config)
+
+
 def get_library_path():
     """Get the path to the currently active library."""
     active = get_active_library()
@@ -194,8 +219,8 @@ def get_library_path():
         team_path = get_team_library_path()
         if team_path and team_path.exists():
             return team_path / "library"
-    # Default to personal library
-    return get_config_dir() / "library"
+    # Personal library (custom or default)
+    return get_personal_library_path()
 
 
 def list_available_libraries():
@@ -203,7 +228,7 @@ def list_available_libraries():
     libraries = []
 
     # Personal library (always available)
-    personal_path = get_config_dir() / "library"
+    personal_path = get_personal_library_path()
     libraries.append({
         "type": "personal",
         "name": "Personal Library",
@@ -273,6 +298,29 @@ def get_team_info():
         "name": name or slug or "Team Library",
         "path": path,
     }
+
+
+# ==============================================================================
+# UI Scale
+# ==============================================================================
+
+def get_ui_scale():
+    """Get the UI scale factor (clamped 0.8-1.5)."""
+    config = get_config()
+    scale = config.get("ui_scale", 1.0)
+    try:
+        scale = float(scale)
+    except (TypeError, ValueError):
+        scale = 1.0
+    return max(0.8, min(1.5, scale))
+
+
+def set_ui_scale(scale):
+    """Set the UI scale factor (clamped 0.8-1.5)."""
+    scale = max(0.8, min(1.5, float(scale)))
+    config = get_config()
+    config["ui_scale"] = round(scale, 2)
+    save_config(config)
 
 
 # ==============================================================================

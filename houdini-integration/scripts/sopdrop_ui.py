@@ -591,13 +591,14 @@ class PublishDialog(QtWidgets.QDialog):
 
     def _take_screenshot(self):
         """Launch snipping tool to capture a region."""
-        # Hide the dialog temporarily
-        self.hide()
+        # Use setWindowOpacity instead of hide() — hiding a modal dialog on
+        # Windows exits the exec_() event loop which closes the dialog entirely.
+        self.setWindowOpacity(0)
 
-        # Process events to ensure dialog is fully hidden
+        # Process events to ensure dialog is visually gone
         QtWidgets.QApplication.processEvents()
 
-        # Small delay to let the dialog hide and screen settle
+        # Small delay to let the screen settle
         QtCore.QTimer.singleShot(300, self._show_snipping_tool)
 
     def _show_snipping_tool(self):
@@ -613,8 +614,8 @@ class PublishDialog(QtWidgets.QDialog):
 
     def _on_screenshot_captured(self, image):
         """Handle captured screenshot from snipping tool."""
-        # Show dialog again
-        self.show()
+        # Restore dialog visibility
+        self.setWindowOpacity(1)
         self.raise_()
         self.activateWindow()
 

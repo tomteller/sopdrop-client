@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Sopdrop logo - node/branch network icon (orange) -->
+  <!-- Based on logo_256.png: top circle connected to two lower circles -->
+
+  <!-- Connection lines -->
+  <line x1="12" y1="7" x2="12" y2="12" stroke="#f97316" stroke-width="2" stroke-linecap="round"/>
+  <line x1="12" y1="12" x2="6" y2="18" stroke="#f97316" stroke-width="2" stroke-linecap="round"/>
+  <line x1="12" y1="12" x2="18" y2="18" stroke="#f97316" stroke-width="2" stroke-linecap="round"/>
+
+  <!-- Junction dots -->
+  <circle cx="12" cy="12" r="1.5" fill="#f97316"/>
+
+  <!-- Top circle -->
+  <circle cx="12" cy="5" r="3" stroke="#f97316" stroke-width="2" fill="none"/>
+  <circle cx="12" cy="5" r="1.2" fill="#f97316"/>
+
+  <!-- Bottom-left circle -->
+  <circle cx="6" cy="19" r="3" stroke="#f97316" stroke-width="2" fill="none"/>
+  <circle cx="6" cy="19" r="1.2" fill="#f97316"/>
+
+  <!-- Bottom-right circle -->
+  <circle cx="18" cy="19" r="3" stroke="#f97316" stroke-width="2" fill="none"/>
+  <circle cx="18" cy="19" r="1.2" fill="#f97316"/>
+</svg>

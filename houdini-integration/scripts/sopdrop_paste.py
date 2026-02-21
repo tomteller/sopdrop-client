@@ -109,7 +109,7 @@ def main():
 
 
 def _check_system_clipboard():
-    """Check system clipboard for sopdrop.paste("slug") command."""
+    """Check system clipboard for sopdrop paste commands or share URLs."""
     import re
     try:
         if PYSIDE_VERSION == 0:
@@ -121,10 +121,15 @@ def _check_system_clipboard():
         if not text:
             return None
 
-        # Look for sopdrop.paste("user/asset") pattern
+        # Look for sopdrop.paste("user/asset") or sopdrop.paste("s/CODE") pattern
         match = re.search(r'sopdrop\.paste\(["\']([^"\']+)["\']\)', text)
         if match:
             return match.group(1)
+
+        # Look for share URLs: sopdrop.com/s/TC-XXXX or */s/TC-XXXX
+        match = re.search(r'(?:sopdrop\.com|localhost:\d+)/s/([A-Z]{2}-[A-Z0-9]{4})\b', text)
+        if match:
+            return f"s/{match.group(1)}"
 
     except Exception as e:
         print(f"Could not check system clipboard: {e}")
@@ -167,21 +172,7 @@ def _get_context(node):
 
 
 def _get_paste_position(pane):
-    """Get the best position to paste at (cursor or view center)."""
-    position = None
-
-    # Try cursor position first
-    try:
-        cursor_pos = pane.cursorPosition()
-        bounds = pane.visibleBounds()
-        if bounds.contains(cursor_pos):
-            position = (cursor_pos[0], cursor_pos[1])
-            print(f"[Sopdrop] Paste position: cursor ({position[0]:.1f}, {position[1]:.1f})")
-            return position
-    except Exception:
-        pass
-
-    # Fall back to view center
+    """Get the best position to paste at (center of visible network view)."""
     try:
         bounds = pane.visibleBounds()
         center = bounds.center()
@@ -535,7 +526,19 @@ def _show_paste_dialog(slug, pane):
     # Try to get asset info
     asset_info = {}
     try:
-        asset_info = sopdrop.info(slug)
+        if slug.startswith("s/"):
+            # Temporary share — get info from share endpoint
+            from sopdrop.api import SopdropClient
+            client = SopdropClient()
+            share_info = client.share_info(slug[2:])
+            asset_info = {
+                "name": share_info.get("name") or f"Share {slug[2:]}",
+                "context": share_info.get("context", "?"),
+                "nodeCount": share_info.get("nodeCount", "?"),
+                "owner": {"username": share_info.get("createdBy", "someone")},
+            }
+        else:
+            asset_info = sopdrop.info(slug)
     except Exception as e:
         print(f"Could not fetch asset info: {e}")
 
@@ -564,12 +567,22 @@ def _confirm_and_paste_fallback(slug, pane):
     import sopdrop
 
     try:
-        info = sopdrop.info(slug)
-        name = info.get("name", slug)
-        context = info.get("context", "?").upper()
-        node_count = info.get("nodeCount", "?")
-        owner = info.get("owner", {})
-        owner_name = owner.get("username", "unknown") if isinstance(owner, dict) else str(owner)
+        if slug.startswith("s/"):
+            # Temporary share
+            from sopdrop.api import SopdropClient
+            client = SopdropClient()
+            info = client.share_info(slug[2:])
+            name = info.get("name") or f"Share {slug[2:]}"
+            context = info.get("context", "?").upper()
+            node_count = info.get("nodeCount", "?")
+            owner_name = info.get("createdBy", "someone")
+        else:
+            info = sopdrop.info(slug)
+            name = info.get("name", slug)
+            context = info.get("context", "?").upper()
+            node_count = info.get("nodeCount", "?")
+            owner = info.get("owner", {})
+            owner_name = owner.get("username", "unknown") if isinstance(owner, dict) else str(owner)
 
         result = hou.ui.displayMessage(
             f"Paste from Sopdrop?\n\n"
@@ -688,7 +701,7 @@ def _quick_paste(clipboard, pane):
 
 
 def _paste_by_slug(slug, pane=None):
-    """Fetch and paste an asset by its slug."""
+    """Fetch and paste an asset by its slug (or share code like 's/TC-XXXX')."""
     import sopdrop
     from sopdrop.api import SopdropClient
     from sopdrop.importer import import_items
@@ -697,6 +710,25 @@ def _paste_by_slug(slug, pane=None):
         pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
 
     try:
+        if slug.startswith("s/"):
+            # Temporary share — fetch from share endpoint
+            share_code = slug[2:]
+            with hou.InterruptableOperation(f"Fetching share {share_code}...", open_interrupt_dialog=True):
+                client = SopdropClient()
+                package = client.fetch_share(share_code)
+
+            # Get paste position
+            position = _get_paste_position(pane) if pane else (0, 0)
+            target_node = pane.pwd() if pane else None
+
+            items = import_items(package, target_node, position)
+
+            meta = package.get("metadata", {})
+            node_count = meta.get("node_count", len(items) if items else "?")
+            print(f"Sopdrop: Pasted {node_count} nodes from share {share_code}")
+            return
+
+        # Regular asset slug
         # Show progress
         with hou.InterruptableOperation(f"Fetching {slug}...", open_interrupt_dialog=True):
             client = SopdropClient()

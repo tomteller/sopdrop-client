@@ -126,7 +126,7 @@ sopdrop.menu.paste_asset("{asset_id}")'''
     if asset_icon:
         icon_attr = asset_icon  # Houdini icon name like "SOP_scatter"
     else:
-        icon_attr = "$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_ramen.svg"
+        icon_attr = "$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg"
 
     return f'''
   <tool name="{tool_name}" label="{escape(label)}" icon="{escape(icon_attr)}">
@@ -150,7 +150,7 @@ def generate_browse_tool_xml(context: str) -> str:
     tool_name = f"sopdrop_browse_{context}"
 
     return f'''
-  <tool name="{tool_name}" label="Browse Library..." icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_ramen.svg">
+  <tool name="{tool_name}" label="Browse Library..." icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
     <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
     <toolSubmenu>Sopdrop</toolSubmenu>
     <toolMenuContext name="network">
@@ -205,7 +205,7 @@ def generate_shelf_xml(personal_assets: List[Dict[str, Any]], team_assets: List[
 # Main Functions
 # ==============================================================================
 
-def regenerate_menu(quiet: bool = False) -> bool:
+def regenerate_menu(quiet: bool = False, skip_reload: bool = False) -> bool:
     """
     Regenerate the TAB menu shelf file from the library.
 
@@ -219,10 +219,16 @@ def regenerate_menu(quiet: bool = False) -> bool:
         True if successful
     """
     try:
-        from .library import search_assets, get_asset_collections
-        from .config import get_team_library_path
+        from .library import search_assets, get_asset_collections, close_db
+        from .config import get_team_library_path, get_active_library, set_active_library
 
-        # Get personal library assets with collection info
+        original_library = get_active_library()
+
+        # Ensure we read personal library first
+        if original_library != 'personal':
+            close_db()
+            set_active_library('personal')
+
         personal_assets = search_assets(limit=500)
         _enrich_with_collections(personal_assets)
 
@@ -231,14 +237,19 @@ def regenerate_menu(quiet: bool = False) -> bool:
         team_path = get_team_library_path()
         if team_path:
             try:
-                from .config import set_active_library, get_active_library
-                prev = get_active_library()
+                close_db()
                 set_active_library('team')
                 team_assets = search_assets(limit=500)
                 _enrich_with_collections(team_assets)
-                set_active_library(prev)
             except Exception:
                 pass
+            finally:
+                close_db()
+                set_active_library(original_library)
+        elif original_library != 'personal':
+            # Restore original library if no team path
+            close_db()
+            set_active_library(original_library)
 
         total = len(personal_assets) + len(team_assets)
         if not quiet:
@@ -256,17 +267,20 @@ def regenerate_menu(quiet: bool = False) -> bool:
             print(f"[Sopdrop] Shelf file: {shelf_file}")
             print("[Sopdrop] Press TAB and type 'sopdrop' to find your assets")
 
-        # Try to reload shelves in Houdini
-        try:
-            import hou
-            hou.shelves.loadFile(str(shelf_file))
-            if not quiet:
-                print("[Sopdrop] Shelf reloaded - tools should appear in TAB menu")
-        except ImportError:
-            pass
-        except Exception as e:
-            if not quiet:
-                print(f"[Sopdrop] Note: Restart Houdini to see changes ({e})")
+        # Try to reload shelves in Houdini (skip during modal
+        # dialog saves — hou.shelves.loadFile modifies UI state which
+        # can crash on Windows when called inside an exec_() event loop).
+        if not skip_reload:
+            try:
+                import hou
+                hou.shelves.loadFile(str(shelf_file))
+                if not quiet:
+                    print("[Sopdrop] Shelf reloaded - tools should appear in TAB menu")
+            except ImportError:
+                pass
+            except Exception as e:
+                if not quiet:
+                    print(f"[Sopdrop] Note: Restart Houdini to see changes ({e})")
 
         return True
 
@@ -521,9 +535,14 @@ def should_regenerate() -> bool:
 
 
 def trigger_regenerate():
-    """Trigger menu regeneration if enabled."""
+    """Trigger menu regeneration if enabled.
+
+    Called automatically after save_asset/save_hda — uses skip_reload=True
+    to avoid calling hou.shelves.loadFile() which can crash when invoked
+    during a modal dialog (e.g., SaveToLibraryDialog on Windows).
+    """
     if should_regenerate():
         try:
-            regenerate_menu(quiet=True)
+            regenerate_menu(quiet=True, skip_reload=True)
         except:
             pass
