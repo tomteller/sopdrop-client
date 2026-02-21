@@ -30,7 +30,7 @@ Usage in Houdini Python shell:
     # Or: sopdrop.preview_export() to see what would be exported
 """
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 from .api import SopdropClient, SopdropError, AuthError, NotFoundError
 from .config import get_config, set_server_url, get_clipboard, set_clipboard, clear_clipboard
