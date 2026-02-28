@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <!-- Save/download to library icon -->
-  <rect x="4" y="4" width="16" height="16" rx="2" stroke="#f97316" stroke-width="2" fill="none"/>
-  <path d="M12 8v6" stroke="#f97316" stroke-width="2" stroke-linecap="round"/>
-  <path d="M9 12l3 3 3-3" stroke="#f97316" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M8 17h8" stroke="#f97316" stroke-width="2" stroke-linecap="round"/>
+  <!-- Floppy disk save icon -->
+  <path d="M5 3h11l4 4v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" stroke="#f97316" stroke-width="2" stroke-linejoin="round" fill="none"/>
+  <!-- Top slot -->
+  <path d="M7 3v5h8V3" stroke="#f97316" stroke-width="2" stroke-linejoin="round"/>
+  <!-- Bottom label area -->
+  <rect x="6" y="13" width="12" height="6" rx="1" stroke="#f97316" stroke-width="2" fill="none"/>
 </svg>

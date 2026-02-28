@@ -95,8 +95,8 @@ def generate_tool_xml(asset: Dict[str, Any], library_type: str = 'personal') -> 
     safe_id = asset_id.replace('-', '_')
     tool_name = f"sopdrop_lib_{safe_id}"
 
-    # Label without node count
-    label = name
+    # Prefix with (SD) so users know it's a Sopdrop snippet, not a native node
+    label = f"(SD) {name}"
 
     # Submenu path: Sopdrop/[Personal|Team]/[Collection]
     collections = asset.get('collections', [])
@@ -273,6 +273,28 @@ def regenerate_menu(quiet: bool = False, skip_reload: bool = False) -> bool:
         if not skip_reload:
             try:
                 import hou
+
+                # Build set of valid tool names from the new shelf
+                valid_tools = set()
+                for asset in personal_assets:
+                    safe_id = asset.get('id', '').replace('-', '_')
+                    valid_tools.add(f"sopdrop_lib_{safe_id}")
+                if team_assets:
+                    for asset in team_assets:
+                        safe_id = asset.get('id', '').replace('-', '_')
+                        valid_tools.add(f"sopdrop_lib_{safe_id}")
+                for ctx in CONTEXT_TO_NETTYPE:
+                    valid_tools.add(f"sopdrop_browse_{ctx}")
+
+                # Destroy orphaned tools (e.g. deleted assets still in memory)
+                for tool_name in list(hou.shelves.tools().keys()):
+                    if tool_name.startswith('sopdrop_lib_') or tool_name.startswith('sopdrop_browse_'):
+                        if tool_name not in valid_tools:
+                            try:
+                                hou.shelves.tools()[tool_name].destroy()
+                            except Exception:
+                                pass
+
                 hou.shelves.loadFile(str(shelf_file))
                 if not quiet:
                     print("[Sopdrop] Shelf reloaded - tools should appear in TAB menu")
@@ -534,15 +556,17 @@ def should_regenerate() -> bool:
     return _auto_regenerate
 
 
-def trigger_regenerate():
+def trigger_regenerate(skip_reload: bool = True):
     """Trigger menu regeneration if enabled.
 
-    Called automatically after save_asset/save_hda — uses skip_reload=True
-    to avoid calling hou.shelves.loadFile() which can crash when invoked
-    during a modal dialog (e.g., SaveToLibraryDialog on Windows).
+    Args:
+        skip_reload: If True (default), skip hou.shelves.loadFile() — safe for
+                     calls during modal dialogs (e.g., SaveToLibraryDialog).
+                     If False, also reload the shelf file in Houdini so changes
+                     appear immediately (use for deletes, renames, etc.).
     """
     if should_regenerate():
         try:
-            regenerate_menu(quiet=True, skip_reload=True)
+            regenerate_menu(quiet=True, skip_reload=skip_reload)
         except:
             pass

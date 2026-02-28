@@ -32,10 +32,186 @@ class MissingDependencyError(ImportError):
     pass
 
 
+class _NullParm:
+    """Silently absorbs parameter operations for placeholder nodes."""
+
+    def set(self, *args, **kwargs):
+        pass
+
+    def setExpression(self, *args, **kwargs):
+        pass
+
+    def setKeyframe(self, *args, **kwargs):
+        pass
+
+    def deleteAllKeyframes(self, *args, **kwargs):
+        pass
+
+    def revertToDefaults(self, *args, **kwargs):
+        pass
+
+    def lock(self, *args, **kwargs):
+        pass
+
+    def setAutoscope(self, *args, **kwargs):
+        pass
+
+    def setScope(self, *args, **kwargs):
+        pass
+
+    def setPending(self, *args, **kwargs):
+        pass
+
+    def pressButton(self, *args, **kwargs):
+        pass
+
+    def eval(self):
+        return 0
+
+    def evalAsString(self):
+        return ""
+
+    def unexpandedString(self):
+        return ""
+
+    def rawValue(self):
+        return 0
+
+    def __bool__(self):
+        return True
+
+
+class _NullParmTuple:
+    """Silently absorbs parm tuple operations for placeholder nodes."""
+
+    def set(self, *args, **kwargs):
+        pass
+
+    def setExpression(self, *args, **kwargs):
+        pass
+
+    def setKeyframe(self, *args, **kwargs):
+        pass
+
+    def deleteAllKeyframes(self, *args, **kwargs):
+        pass
+
+    def revertToDefaults(self, *args, **kwargs):
+        pass
+
+    def lock(self, *args, **kwargs):
+        pass
+
+    def setAutoscope(self, *args, **kwargs):
+        pass
+
+    def setScope(self, *args, **kwargs):
+        pass
+
+    def eval(self):
+        return (0,)
+
+    def __getitem__(self, index):
+        return _NullParm()
+
+    def __len__(self):
+        return 1
+
+    def __bool__(self):
+        return True
+
+
+class _PlaceholderNode:
+    """Wraps a subnet standing in for a missing HDA.
+
+    Intercepts parm()/parmTuple() to return _NullParm when the parameter
+    doesn't exist on the subnet. Blocks setColor() to preserve the red
+    warning color. Delegates everything else to the real subnet.
+    """
+
+    def __init__(self, subnet, type_name):
+        object.__setattr__(self, '_subnet', subnet)
+        object.__setattr__(self, '_type_name', type_name)
+
+    def parm(self, name):
+        real = self._subnet.parm(name)
+        if real is not None:
+            return real
+        return _NullParm()
+
+    def parmTuple(self, name):
+        real = self._subnet.parmTuple(name)
+        if real is not None:
+            return real
+        return _NullParmTuple()
+
+    def setColor(self, *args, **kwargs):
+        # Block — keep the red warning color
+        pass
+
+    def setUserData(self, key, value):
+        self._subnet.setUserData(key, value)
+
+    def __getattr__(self, name):
+        return getattr(self._subnet, name)
+
+    def __repr__(self):
+        return f"<PlaceholderNode for '{self._type_name}': {self._subnet.path()}>"
+
+
+class _PlaceholderParent:
+    """Wraps the target node, intercepting createNode() for missing HDA types.
+
+    When a missing type is encountered, creates a red subnet as a placeholder
+    and returns a _PlaceholderNode wrapper. All other methods delegate to the
+    real parent node.
+    """
+
+    def __init__(self, real_parent, missing_types):
+        import hou as _hou
+        object.__setattr__(self, '_real_parent', real_parent)
+        object.__setattr__(self, '_missing_types', set(missing_types))
+        object.__setattr__(self, '_hou', _hou)
+        object.__setattr__(self, '_placeholders', [])
+
+    def createNode(self, type_name, node_name=None, *args, **kwargs):
+        hou = self._hou
+
+        # Check if this type is one of the missing ones
+        if type_name in self._missing_types:
+            # Create a subnet as placeholder
+            try:
+                if node_name:
+                    subnet = self._real_parent.createNode('subnet', node_name, *args, **kwargs)
+                else:
+                    subnet = self._real_parent.createNode('subnet', *args, **kwargs)
+            except Exception:
+                # If node_name conflicts, let Houdini pick a name
+                subnet = self._real_parent.createNode('subnet', *args, **kwargs)
+
+            # Mark it as a placeholder
+            subnet.setColor(hou.Color(0.9, 0.15, 0.15))
+            subnet.setComment(f"Missing HDA: {type_name}")
+            subnet.setGenericFlag(hou.nodeFlag.DisplayComment, True)
+
+            wrapper = _PlaceholderNode(subnet, type_name)
+            self._placeholders.append(wrapper)
+            return wrapper
+
+        # Not a missing type — create normally
+        if node_name:
+            return self._real_parent.createNode(type_name, node_name, *args, **kwargs)
+        return self._real_parent.createNode(type_name, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real_parent, name)
+
+
 def import_items(
     package: Dict[str, Any],
     target_node=None,
     position: Optional[Tuple[float, float]] = None,
+    allow_placeholders: bool = False,
 ) -> List:
     """
     Import a .sopdrop package into Houdini.
@@ -46,6 +222,8 @@ def import_items(
         package: The .sopdrop package dictionary
         target_node: Target parent node (default: current network)
         position: Position to place nodes at (default: cursor or center)
+        allow_placeholders: If True, missing HDA deps become red placeholder
+            subnets instead of raising MissingDependencyError (V1 only).
 
     Returns:
         List of created items
@@ -56,7 +234,7 @@ def import_items(
     fmt = package.get("format", "")
     if fmt == "sopdrop-v1" or fmt == "chopsop-v1":
         # Legacy format - use old code-based import
-        return _import_v1(package, target_node, position)
+        return _import_v1(package, target_node, position, allow_placeholders)
     elif fmt.startswith("sopdrop-v") or fmt.startswith("chopsop-v"):
         # v2+ uses binary format (support old "chopsop" name for backwards compat)
         return _import_v2(package, target_node, position)
@@ -96,10 +274,7 @@ def _import_v2(
     if dependencies:
         missing = _check_missing_hdas(dependencies)
         if missing:
-            raise MissingDependencyError(
-                f"Missing HDA dependencies: {', '.join(missing)}. "
-                f"Install these HDAs first."
-            )
+            raise MissingDependencyError(_format_missing_deps_error(missing, v2=True))
 
     # Get the binary data
     encoded_data = package.get("data")
@@ -290,15 +465,135 @@ def _import_v2(
             os.unlink(temp_path)
 
 
+def _patch_old_format_code(code):
+    """Patch old-format v1 code to fix variable references after asCode navigation.
+
+    Old exports concatenated asCode blocks with renamed variables (hou_node__N).
+    After asCode's navigate-in/restore pattern, those variables end up pointing
+    to the node's PARENT instead of the node itself, breaking subsequent
+    connection and network-box code.
+
+    Fix: inject re-establishment lines that look up each top-level node by name
+    right before the manual wiring/netbox sections.
+
+    New-format code (function-wrapped with _sdrop_create_) is returned as-is.
+    """
+    import re
+
+    # New format uses function wrapping — no patching needed
+    if '_sdrop_create_' in code:
+        return code
+
+    # Find all hou_node__N = hou_parent.createNode('type', 'name', ...) patterns.
+    # Also handle bare hou_node (single-node exports without variable renaming).
+    # Only take the FIRST createNode per variable — that's the top-level node.
+    # Subsequent createNode calls on the same variable are children (recurse=True).
+    pattern = (
+        r"(hou_node(?:__\d+)?)\s*=\s*hou_parent\.createNode\("
+        r"\s*['\"][^'\"]+['\"]\s*,\s*['\"]([^'\"]+)['\"]"
+    )
+
+    seen_vars = set()
+    top_level = []
+    for match in re.finditer(pattern, code):
+        var_name = match.group(1)
+        node_name = match.group(2)
+        if var_name not in seen_vars:
+            seen_vars.add(var_name)
+            top_level.append((var_name, node_name))
+
+    if not top_level:
+        return code
+
+    # Build re-establishment block: look up each top-level node by name
+    lines = ["\n# Re-establish node references after asCode navigation"]
+    for var_name, node_name in top_level:
+        escaped = node_name.replace("'", "\\'")
+        lines.append(f"{var_name} = hou_parent.node('{escaped}')")
+    reestablish_block = "\n".join(lines) + "\n"
+
+    # Find the earliest manual section marker (comments from export code)
+    markers = [
+        "\n# Wire connections",
+        "\n# Rewire through dots",
+        "\n# Network box:",
+        "\n# Add items to network boxes",
+        "\n# Sticky note ",
+    ]
+
+    insert_pos = len(code)
+    for marker in markers:
+        pos = code.find(marker)
+        if pos != -1 and pos < insert_pos:
+            insert_pos = pos
+
+    # Fallback: look for manual setInput/addItem calls on hou_node__ variables
+    if insert_pos == len(code):
+        m = re.search(r'\nhou_node__\d+\.setInput\(', code)
+        if m:
+            insert_pos = m.start()
+
+    if insert_pos == len(code):
+        m = re.search(r'\nhou_netbox_\d+\s*=', code)
+        if m:
+            insert_pos = m.start()
+
+    return code[:insert_pos] + reestablish_block + code[insert_pos:]
+
+
+def _make_connections_resilient(code):
+    """Wrap .setInput() and .addItem() calls in try/except to prevent cascade failures.
+
+    asCode generates setInput calls that can fail if node types are missing
+    or if variable references are stale. By wrapping these in try/except,
+    node creation can complete even if some wiring fails.
+
+    Uses multi-line try/except blocks (not inline) so compound statements
+    like ``if cond: node.setInput(...)`` are handled correctly.
+    """
+    lines = code.split('\n')
+    result = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Skip lines already inside try blocks, comments, or except/finally
+        if stripped.startswith(('try:', '#', 'except', 'finally')):
+            result.append(line)
+            i += 1
+            continue
+
+        # Wrap setInput / addItem calls in proper multi-line try/except
+        if '.setInput(' in stripped or '.addItem(' in stripped:
+            indent = line[:len(line) - len(line.lstrip())]
+            result.append(f'{indent}try:')
+            result.append(f'{indent}    {stripped}')
+            result.append(f'{indent}except Exception:')
+            result.append(f'{indent}    pass')
+            i += 1
+            continue
+
+        result.append(line)
+        i += 1
+
+    return '\n'.join(result)
+
+
 def _import_v1(
     package: Dict[str, Any],
     target_node=None,
     position: Optional[Tuple[float, float]] = None,
+    allow_placeholders: bool = False,
 ) -> List:
     """Import v1 format (code-based, license-neutral).
 
     Used for packages exported from non-commercial Houdini (asCode output)
     and legacy packages. The code is plain Python with no license flags.
+
+    Args:
+        allow_placeholders: If True, missing HDA types become red placeholder
+            subnets instead of raising MissingDependencyError.
     """
     import hou
 
@@ -318,6 +613,20 @@ def _import_v1(
             f"Package is for {package_context} context, but target is {target_context}."
         )
 
+    # Check dependencies
+    use_placeholders = False
+    missing_type_names = []
+    dependencies = package.get("dependencies", [])
+    if dependencies:
+        missing = _check_missing_hdas(dependencies)
+        if missing:
+            if allow_placeholders:
+                use_placeholders = True
+                missing_type_names = [dep.get("name") for dep in missing if dep.get("name")]
+                print(f"[Sopdrop] Using placeholders for {len(missing_type_names)} missing HDA(s): {', '.join(missing_type_names)}")
+            else:
+                raise MissingDependencyError(_format_missing_deps_error(missing))
+
     # Get the code
     code = package.get("code", "")
     if not code:
@@ -333,17 +642,89 @@ def _import_v1(
                 "The data may be corrupted or tampered with."
             )
 
+    # Patch old-format packages to fix variable references.
+    code = _patch_old_format_code(code)
+
     # Track items before import
     items_before = set(target_node.allItems())
 
-    # Execute the code
+    # Build the exec namespace — use proxy parent if placeholders are needed
+    if use_placeholders:
+        exec_parent = _PlaceholderParent(target_node, missing_type_names)
+    else:
+        exec_parent = target_node
+
+    # Wrap the entire import in an undo group so the user can undo the
+    # paste with a single Ctrl+Z instead of one undo per setInput/createNode.
+    with hou.undos.group("Sopdrop Paste"):
+        return _import_v1_inner(
+            code, target_node, exec_parent, use_placeholders,
+            missing_type_names, items_before, position,
+        )
+
+
+def _import_v1_inner(
+    code, target_node, exec_parent, use_placeholders,
+    missing_type_names, items_before, position,
+):
+    """Inner import logic, runs inside an undo group."""
+    import hou
+
+    # Execute the code.
+    # Strategy: try the full code first. If it fails, make connection/addItem
+    # calls resilient (wrap in try/except) and retry so nodes are still created
+    # even if some wiring fails.
+    namespace = {"hou": hou, "hou_parent": exec_parent}
+    exec_error = None
     try:
-        exec(code, {
-            "hou": hou,
-            "hou_parent": target_node,
-        })
+        exec(code, namespace)
     except Exception as e:
-        raise ImportError(f"Failed to execute package code: {e}")
+        import traceback
+        tb = traceback.format_exc()
+        exc_type = type(e).__name__
+        exec_error = f"{exc_type}: {e}"
+        print(f"[Sopdrop] Code execution failed ({exc_type}): {e}")
+        print(f"[Sopdrop] Full traceback:\n{tb}")
+
+        # Show the failing line for debugging
+        try:
+            import re as _re
+            line_match = _re.search(r'line (\d+)', tb)
+            if line_match:
+                line_num = int(line_match.group(1))
+                code_lines = code.split('\n')
+                start = max(0, line_num - 3)
+                end = min(len(code_lines), line_num + 3)
+                print("[Sopdrop] Code around error:")
+                for j in range(start, end):
+                    marker = ">>>" if j + 1 == line_num else "   "
+                    print(f"  {marker} {j+1}: {code_lines[j]}")
+        except Exception:
+            pass
+
+        # Retry with resilient connections — wrap setInput/addItem
+        # calls in try/except so node creation can complete even if
+        # some wiring fails.
+        items_after_fail = set(target_node.allItems())
+        if items_after_fail == items_before:
+            # Nothing was created — retry with resilient code
+            print("[Sopdrop] Retrying with resilient connections...")
+            resilient = _make_connections_resilient(code)
+            try:
+                exec(resilient, {"hou": hou, "hou_parent": exec_parent})
+                exec_error = None  # Retry succeeded
+                print("[Sopdrop] Resilient retry succeeded")
+            except Exception as e2:
+                exc_type2 = type(e2).__name__
+                print(f"[Sopdrop] Resilient retry also failed ({exc_type2}): {e2}")
+                raise ImportError(
+                    f"Failed to execute package code: {exc_type}: {e}"
+                )
+        else:
+            # Some items were already created — continue with partial result
+            partial_count = len(items_after_fail - items_before)
+            print(f"[Sopdrop] Partial execution: {partial_count} items created before error.")
+            print(f"[Sopdrop] Continuing with partial result. Some connections may be missing.")
 
     # Find newly created items
     items_after = set(target_node.allItems())
@@ -430,7 +811,7 @@ def _import_v1(
     return all_top_level
 
 
-def import_at_cursor(package: Dict[str, Any]) -> List:
+def import_at_cursor(package: Dict[str, Any], allow_placeholders: bool = False) -> List:
     """
     Import a package at the current cursor/view position.
 
@@ -442,6 +823,8 @@ def import_at_cursor(package: Dict[str, Any]) -> List:
 
     Args:
         package: The .sopdrop package dictionary
+        allow_placeholders: If True, missing HDA deps become red placeholder
+            subnets instead of raising MissingDependencyError (V1 only).
 
     Returns:
         List of created items
@@ -480,7 +863,7 @@ def import_at_cursor(package: Dict[str, Any]) -> List:
             position = (0, 0)
             print("Pasting at origin")
 
-    return import_items(package, target_node, position)
+    return import_items(package, target_node, position, allow_placeholders=allow_placeholders)
 
 
 def show_package_info(package: Dict[str, Any]) -> None:
@@ -545,8 +928,12 @@ def _get_context(node) -> str:
         return 'unknown'
 
 
-def _check_missing_hdas(dependencies: List[Dict]) -> List[str]:
-    """Check which HDA dependencies are missing."""
+def _check_missing_hdas(dependencies: List[Dict]) -> List[Dict]:
+    """Check which HDA dependencies are missing.
+
+    Returns list of dicts for each missing dependency, preserving all
+    original fields (name, category, label, operator_type, sopdrop_slug, etc.).
+    """
     import hou
 
     missing = []
@@ -558,19 +945,38 @@ def _check_missing_hdas(dependencies: List[Dict]) -> List[str]:
             continue
 
         # Try to find the node type in the specified category
+        found = False
         try:
             categories = hou.nodeTypeCategories()
             if category_name in categories:
                 node_type = hou.nodeType(categories[category_name], name)
-                if node_type is None:
-                    missing.append(name)
-            else:
-                # Category not found, assume missing
-                missing.append(name)
+                if node_type is not None:
+                    found = True
         except Exception:
-            missing.append(name)
+            pass
+
+        if not found:
+            missing.append(dep)
 
     return missing
+
+
+def _format_missing_deps_error(missing: List[Dict], v2: bool = False) -> str:
+    """Format a human-readable error message for missing HDA dependencies."""
+    lines = [f"Missing {len(missing)} HDA dependenc{'y' if len(missing) == 1 else 'ies'}:"]
+    for dep in missing:
+        label = dep.get("label") or dep.get("name", "unknown")
+        category = dep.get("category", "")
+        slug = dep.get("sopdrop_slug")
+        if slug:
+            lines.append(f"  - {label} ({category}) -> sopdrop.install(\"{slug}\")")
+        else:
+            lines.append(f"  - {label} ({category})")
+    lines.append("")
+    lines.append("Install the missing HDAs and try again.")
+    if v2:
+        lines.append("(Placeholder mode is only available for V1/code-based packages.)")
+    return "\n".join(lines)
 
 
 def _reposition_items(items, target_position: Tuple[float, float], network_boxes=None, netbox_data=None, sticky_data=None) -> None:
@@ -742,6 +1148,6 @@ def _reposition_items(items, target_position: Tuple[float, float], network_boxes
 
 
 # Legacy function for backwards compatibility
-def import_network(package, target_node=None, position=None, force=False):
+def import_network(package, target_node=None, position=None, force=False, allow_placeholders=False):
     """Legacy wrapper - use import_items() instead."""
-    return import_items(package, target_node, position)
+    return import_items(package, target_node, position, allow_placeholders=allow_placeholders)

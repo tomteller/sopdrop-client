@@ -30,7 +30,7 @@ Usage in Houdini Python shell:
     # Or: sopdrop.preview_export() to see what would be exported
 """
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 from .api import SopdropClient, SopdropError, AuthError, NotFoundError
 from .config import get_config, set_server_url, get_clipboard, set_clipboard, clear_clipboard
@@ -86,15 +86,18 @@ def paste(asset_ref=None, force=False, trust=False):
     Paste an asset into current Houdini network.
 
     Args:
-        asset_ref: Asset to paste (e.g., 'user/scatter-points@1.0.0' or 's/TC-4B9X')
+        asset_ref: Asset to paste (e.g., 'user/scatter-points@1.0.0', 's/TC-4B9X', or 't/TC-4B9X')
         force: Skip context mismatch check
         trust: Skip security warning for untrusted assets
 
-    If asset_ref starts with 's/', treats it as a temporary share code.
+    If asset_ref starts with 's/', treats it as a cloud share code.
+    If asset_ref starts with 't/', treats it as a team (local) share code.
     If asset_ref is None, pastes from Houdini clipboard.
     """
     if asset_ref and asset_ref.startswith("s/"):
         return paste_share(asset_ref[2:], trust=trust)
+    if asset_ref and asset_ref.startswith("t/"):
+        return paste_team_share(asset_ref[2:])
     return _get_client().paste(asset_ref, force=force, trust=trust)
 
 
@@ -164,6 +167,46 @@ def paste_share(code, trust=False):
             print(f"Paste completed for share {code}")
     except Exception as e:
         raise SopdropError(f"Failed to paste share: {e}")
+
+
+def paste_team_share(code):
+    """
+    Paste a team (local) share into current Houdini network.
+
+    Reads the package from the team library's shares directory.
+    No network call or authentication required.
+
+    Args:
+        code: Share code (e.g., 'TC-4B9X')
+    """
+    import json
+    from .config import get_team_library_path
+    from . import importer
+
+    team_path = get_team_library_path()
+    if not team_path:
+        raise SopdropError(
+            "No team library path configured.\n\n"
+            "Set one with: sopdrop.config.set_team_library_path('/path/to/shared')"
+        )
+
+    package_file = team_path / "shares" / f"{code}.sopdrop"
+    if not package_file.exists():
+        raise SopdropError(
+            f"Team share not found: {code}\n\n"
+            f"Looked in: {package_file}"
+        )
+
+    package = json.loads(package_file.read_text())
+
+    try:
+        items = importer.import_at_cursor(package)
+        if items:
+            print(f"Pasted {len(items)} items from team share {code}")
+        else:
+            print(f"Paste completed for team share {code}")
+    except Exception as e:
+        raise SopdropError(f"Failed to paste team share: {e}")
 
 
 def copy(asset_ref):

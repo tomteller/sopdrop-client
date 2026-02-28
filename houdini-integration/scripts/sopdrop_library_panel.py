@@ -8,6 +8,7 @@ Works offline - syncs manually with cloud when desired.
 import hou
 import os
 import json
+import weakref
 import zipfile
 from datetime import datetime
 
@@ -31,6 +32,20 @@ SOPDROP_AVAILABLE = False
 SOPDROP_ERROR = None
 
 try:
+    # Force-reload export/importer so code changes are picked up
+    # without restarting Houdini (this module is reloaded by shelf tools)
+    import importlib as _importlib
+    try:
+        import sopdrop.export
+        _importlib.reload(sopdrop.export)
+    except Exception:
+        pass
+    try:
+        import sopdrop.importer
+        _importlib.reload(sopdrop.importer)
+    except Exception:
+        pass
+
     from sopdrop import library
     from sopdrop.config import (
         get_token,
@@ -64,9 +79,29 @@ else:
     UI_SCALE = 1.0
 
 
+def reload_ui_scale():
+    """Re-read UI scale from config and rebuild the global stylesheet."""
+    global UI_SCALE, STYLESHEET
+    if SOPDROP_AVAILABLE:
+        UI_SCALE = get_ui_scale()
+    else:
+        UI_SCALE = 1.0
+    STYLESHEET = build_stylesheet()
+
+
 def scale(px):
     """Scale a pixel value by the current UI scale factor."""
     return max(1, int(px * UI_SCALE))
+
+
+def spx(n):
+    """Return a scaled pixel value as a CSS string, e.g. '12px'."""
+    return f"{scale(n)}px"
+
+
+def sfs(n):
+    """Return a scaled font-size CSS property, e.g. 'font-size: 10px;'."""
+    return f"font-size: {scale(n)}px;"
 
 
 # ==============================================================================
@@ -136,10 +171,15 @@ def get_context_color(context):
 # ==============================================================================
 
 def build_stylesheet(s=None):
-    """Build the stylesheet with scaled font sizes and paddings."""
+    """Build the stylesheet with all sizes scaled by the UI scale factor."""
     if s is None:
         s = UI_SCALE
-    fs = max(8, int(11 * s))  # base font size
+
+    def px(n):
+        """Scale a pixel value for CSS."""
+        return max(1, int(n * s))
+
+    fs = px(11)  # base font size
     return f"""
 /* Base styling - Houdini-like */
 QWidget {{
@@ -153,7 +193,7 @@ QLineEdit {{
     background-color: {COLORS['bg_medium']};
     border: 1px solid {COLORS['border']};
     border-radius: 3px;
-    padding: 4px 8px;
+    padding: {px(4)}px {px(8)}px;
     color: {COLORS['text']};
     selection-background-color: {COLORS['accent']};
 }}
@@ -174,7 +214,7 @@ QTextEdit {{
     background-color: {COLORS['bg_medium']};
     border: 1px solid {COLORS['border']};
     border-radius: 3px;
-    padding: 4px;
+    padding: {px(4)}px;
     color: {COLORS['text']};
 }}
 
@@ -187,7 +227,7 @@ QPushButton {{
     background-color: {COLORS['bg_light']};
     border: 1px solid {COLORS['border']};
     border-radius: 3px;
-    padding: 4px 12px;
+    padding: {px(4)}px {px(12)}px;
     color: {COLORS['text']};
 }}
 
@@ -219,8 +259,9 @@ QComboBox {{
     background-color: {COLORS['bg_medium']};
     border: 1px solid {COLORS['border']};
     border-radius: 3px;
-    padding: 4px 8px;
-    min-height: 18px;
+    padding: {px(4)}px {px(8)}px;
+    min-height: {px(18)}px;
+    color: {COLORS['text']};
 }}
 
 QComboBox:hover {{
@@ -233,7 +274,7 @@ QComboBox:focus {{
 
 QComboBox::drop-down {{
     border: none;
-    width: 16px;
+    width: {px(16)}px;
 }}
 
 QComboBox::down-arrow {{
@@ -245,18 +286,21 @@ QComboBox QAbstractItemView {{
     background-color: {COLORS['bg_light']};
     border: 1px solid {COLORS['border']};
     border-radius: 3px;
-    padding: 2px;
+    padding: {px(2)}px;
     selection-background-color: {COLORS['bg_selected']};
+    color: {COLORS['text']};
     outline: none;
 }}
 
 QComboBox QAbstractItemView::item {{
-    padding: 4px 8px;
+    padding: {px(4)}px {px(8)}px;
     border-radius: 2px;
+    color: {COLORS['text']};
 }}
 
 QComboBox QAbstractItemView::item:selected {{
     background-color: {COLORS['bg_selected']};
+    color: {COLORS['text']};
 }}
 
 /* Scrollbars */
@@ -267,15 +311,15 @@ QScrollArea {{
 
 QScrollBar:vertical {{
     background-color: {COLORS['bg_medium']};
-    width: 10px;
+    width: {px(10)}px;
     margin: 0;
 }}
 
 QScrollBar::handle:vertical {{
     background-color: {COLORS['border_light']};
     border-radius: 2px;
-    min-height: 20px;
-    margin: 2px;
+    min-height: {px(20)}px;
+    margin: {spx(2)};
 }}
 
 QScrollBar::handle:vertical:hover {{
@@ -292,15 +336,15 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
 
 QScrollBar:horizontal {{
     background-color: {COLORS['bg_medium']};
-    height: 10px;
+    height: {px(10)}px;
     margin: 0;
 }}
 
 QScrollBar::handle:horizontal {{
     background-color: {COLORS['border_light']};
     border-radius: 2px;
-    min-width: 20px;
-    margin: 2px;
+    min-width: {px(20)}px;
+    margin: {spx(2)};
 }}
 
 /* Splitter */
@@ -321,12 +365,12 @@ QMenu {{
     background-color: {COLORS['bg_light']};
     border: 1px solid {COLORS['border']};
     border-radius: 4px;
-    padding: 4px;
+    padding: {px(4)}px;
 }}
 
 QMenu::item {{
     background-color: transparent;
-    padding: 6px 12px;
+    padding: {px(6)}px {px(12)}px;
     border-radius: 2px;
 }}
 
@@ -341,13 +385,13 @@ QMenu::item:disabled {{
 QMenu::separator {{
     height: 1px;
     background-color: {COLORS['border']};
-    margin: 4px 2px;
+    margin: {px(4)}px {px(2)}px;
 }}
 
 QMenu::indicator {{
-    width: 12px;
-    height: 12px;
-    margin-left: 4px;
+    width: {px(12)}px;
+    height: {px(12)}px;
+    margin-left: {px(4)}px;
 }}
 
 QMenu::indicator:checked {{
@@ -361,7 +405,7 @@ QToolTip {{
     color: {COLORS['text']};
     border: 1px solid {COLORS['border']};
     border-radius: 3px;
-    padding: 4px 8px;
+    padding: {px(4)}px {px(8)}px;
     font-size: {fs}px;
 }}
 
@@ -373,12 +417,12 @@ QLabel {{
 
 /* Checkboxes */
 QCheckBox {{
-    spacing: 6px;
+    spacing: {px(6)}px;
 }}
 
 QCheckBox::indicator {{
-    width: 14px;
-    height: 14px;
+    width: {px(14)}px;
+    height: {px(14)}px;
     border-radius: 3px;
     border: 1px solid {COLORS['border_light']};
     background-color: {COLORS['bg_medium']};
@@ -415,7 +459,7 @@ class TagPill(QtWidgets.QFrame):
 
     def _setup_ui(self):
         self.setObjectName("tagPill")
-        self.setFixedHeight(20)
+        self.setFixedHeight(scale(20))
         self.setStyleSheet(f"""
             QFrame#tagPill {{
                 background-color: {COLORS['bg_light']};
@@ -430,13 +474,13 @@ class TagPill(QtWidgets.QFrame):
         self.setCursor(QtCore.Qt.PointingHandCursor)
 
         layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(6, 0, 6 if not self.removable else 4, 0)
-        layout.setSpacing(2)
+        layout.setContentsMargins(scale(6), 0, scale(6) if not self.removable else scale(4), 0)
+        layout.setSpacing(scale(2))
 
         self.label = QtWidgets.QLabel(self.tag)
         self.label.setStyleSheet(f"""
             color: {COLORS['text']};
-            font-size: 10px;
+            {sfs(10)}
             background: transparent;
         """)
         layout.addWidget(self.label)
@@ -445,7 +489,7 @@ class TagPill(QtWidgets.QFrame):
             remove_btn = QtWidgets.QLabel("×")
             remove_btn.setStyleSheet(f"""
                 color: {COLORS['text_dim']};
-                font-size: 12px;
+                {sfs(12)}
                 background: transparent;
             """)
             remove_btn.setCursor(QtCore.Qt.PointingHandCursor)
@@ -474,7 +518,7 @@ class ToastWidget(QtWidgets.QFrame):
         self.hide()
 
     def _setup_ui(self):
-        self.setFixedHeight(28)
+        self.setFixedHeight(scale(28))
         self.setStyleSheet(f"""
             QFrame#toast {{
                 background-color: {COLORS['bg_light']};
@@ -484,24 +528,24 @@ class ToastWidget(QtWidgets.QFrame):
         """)
 
         layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(10, 0, 10, 0)
-        layout.setSpacing(6)
+        layout.setContentsMargins(scale(10), 0, scale(10), 0)
+        layout.setSpacing(scale(6))
 
         self.icon_label = QtWidgets.QLabel()
-        self.icon_label.setFixedSize(14, 14)
+        self.icon_label.setFixedSize(scale(14), scale(14))
         self.icon_label.setAlignment(QtCore.Qt.AlignCenter)
         layout.addWidget(self.icon_label)
 
         self.message_label = QtWidgets.QLabel()
         self.message_label.setStyleSheet(f"""
             color: {COLORS['text']};
-            font-size: 11px;
+            {sfs(11)}
             background: transparent;
         """)
         layout.addWidget(self.message_label, 1)
 
         self.action_btn = QtWidgets.QPushButton()
-        self.action_btn.setFixedHeight(18)
+        self.action_btn.setFixedHeight(scale(18))
         self.action_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.action_btn.setStyleSheet(f"""
             QPushButton {{
@@ -509,8 +553,8 @@ class ToastWidget(QtWidgets.QFrame):
                 border: 1px solid {COLORS['accent']};
                 border-radius: 3px;
                 color: {COLORS['accent']};
-                font-size: 10px;
-                padding: 0 8px;
+                {sfs(10)}
+                padding: 0 {spx(8)};
             }}
             QPushButton:hover {{
                 background: {COLORS['accent']};
@@ -560,7 +604,7 @@ class ToastWidget(QtWidgets.QFrame):
         self.icon_label.setText(icon)
         self.icon_label.setStyleSheet(f"""
             color: {color};
-            font-size: 12px;
+            {sfs(12)}
             background: transparent;
         """)
         self.message_label.setText(message)
@@ -596,17 +640,17 @@ class _CheckboxPopup(QtWidgets.QFrame):
             }}
             QCheckBox {{
                 color: {COLORS['text']};
-                font-size: 11px;
-                padding: 4px 8px;
-                spacing: 6px;
+                {sfs(11)}
+                padding: {spx(2)} {spx(6)};
+                spacing: 5px;
             }}
             QCheckBox:hover {{
                 background-color: {COLORS['bg_hover']};
                 border-radius: 2px;
             }}
             QCheckBox::indicator {{
-                width: 12px;
-                height: 12px;
+                width: 11px;
+                height: 11px;
                 border: 1px solid {COLORS['border_light']};
                 border-radius: 2px;
                 background: {COLORS['bg_dark']};
@@ -617,15 +661,15 @@ class _CheckboxPopup(QtWidgets.QFrame):
             }}
             QLabel {{
                 color: {COLORS['text_dim']};
-                font-size: 10px;
-                padding: 4px 8px;
+                {sfs(10)}
+                padding: {spx(2)} {spx(6)};
             }}
             QPushButton {{
                 background: transparent;
                 border: none;
                 color: {COLORS['accent']};
-                font-size: 10px;
-                padding: 4px 8px;
+                {sfs(10)}
+                padding: {spx(2)} {spx(6)};
                 text-align: left;
             }}
             QPushButton:hover {{
@@ -636,22 +680,22 @@ class _CheckboxPopup(QtWidgets.QFrame):
 
         self._max_height = max_height
         self._layout = QtWidgets.QVBoxLayout(self)
-        self._layout.setContentsMargins(4, 6, 4, 6)
+        self._layout.setContentsMargins(scale(3), scale(4), scale(3), scale(4))
         self._layout.setSpacing(0)
 
+        self._scroll = None
         if max_height:
-            scroll = QtWidgets.QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-            scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
-            scroll.setMaximumHeight(max_height)
+            self._scroll = QtWidgets.QScrollArea()
+            self._scroll.setWidgetResizable(True)
+            self._scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            self._scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
             self._scroll_content = QtWidgets.QWidget()
             self._scroll_content.setStyleSheet("background: transparent;")
             self._inner_layout = QtWidgets.QVBoxLayout(self._scroll_content)
             self._inner_layout.setContentsMargins(0, 0, 0, 0)
             self._inner_layout.setSpacing(0)
-            scroll.setWidget(self._scroll_content)
-            self._layout.addWidget(scroll)
+            self._scroll.setWidget(self._scroll_content)
+            self._layout.addWidget(self._scroll)
         else:
             self._inner_layout = self._layout
 
@@ -664,7 +708,7 @@ class _CheckboxPopup(QtWidgets.QFrame):
     def add_separator(self):
         sep = QtWidgets.QFrame()
         sep.setFixedHeight(1)
-        sep.setStyleSheet(f"background-color: {COLORS['border']}; margin: 3px 4px;")
+        sep.setStyleSheet(f"background-color: {COLORS['border']}; margin: {spx(3)} {spx(4)};")
         self._inner_layout.addWidget(sep)
 
     def add_label(self, text):
@@ -678,6 +722,13 @@ class _CheckboxPopup(QtWidgets.QFrame):
         self._inner_layout.addWidget(btn)
 
     def show_at(self, pos):
+        if self._scroll:
+            # Size the scroll area to fit content, capped at max_height
+            self._scroll_content.adjustSize()
+            natural = self._scroll_content.sizeHint().height()
+            capped = min(natural, self._max_height) if self._max_height else natural
+            self._scroll.setMinimumHeight(0)
+            self._scroll.setFixedHeight(max(capped, 1))
         self.adjustSize()
         self.move(pos)
         self.show()
@@ -713,6 +764,12 @@ class FlowLayout(QtWidgets.QLayout):
     def spacing(self):
         return self._spacing
 
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do_layout(QtCore.QRect(0, 0, width, 0), dry_run=True)
+
     def sizeHint(self):
         return self.minimumSize()
 
@@ -726,7 +783,7 @@ class FlowLayout(QtWidgets.QLayout):
         super().setGeometry(rect)
         self._do_layout(rect)
 
-    def _do_layout(self, rect):
+    def _do_layout(self, rect, dry_run=False):
         x = rect.x()
         y = rect.y()
         line_height = 0
@@ -745,9 +802,12 @@ class FlowLayout(QtWidgets.QLayout):
                 next_x = x + item.sizeHint().width() + space
                 line_height = 0
 
-            item.setGeometry(QtCore.QRect(QtCore.QPoint(x, y), item.sizeHint()))
+            if not dry_run:
+                item.setGeometry(QtCore.QRect(QtCore.QPoint(x, y), item.sizeHint()))
             x = next_x
             line_height = max(line_height, item.sizeHint().height())
+
+        return y + line_height - rect.y()
 
 
 class TagFlowWidget(QtWidgets.QWidget):
@@ -759,7 +819,7 @@ class TagFlowWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self.tags = []
         self._layout = FlowLayout(self)
-        self._layout.setSpacing(3)
+        self._layout.setSpacing(scale(3))
 
     def set_tags(self, tags, max_tags=3):
         """Set the tags to display."""
@@ -776,7 +836,7 @@ class TagFlowWidget(QtWidgets.QWidget):
 
         if len(self.tags) > max_tags:
             more = QtWidgets.QLabel(f"+{len(self.tags) - max_tags}")
-            more.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 9px;")
+            more.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(9)}")
             self._layout.addWidget(more)
 
 
@@ -799,18 +859,18 @@ class TagInputWidget(QtWidgets.QWidget):
     def _setup_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(scale(4))
 
         # Tag pills container
         self.pills_widget = QtWidgets.QWidget()
         self.pills_layout = FlowLayout(self.pills_widget)
-        self.pills_layout.setSpacing(3)
+        self.pills_layout.setSpacing(scale(3))
         layout.addWidget(self.pills_widget)
 
         # Input with completer
         self.input = TagLineEdit()
         self.input.setPlaceholderText("Add tags...")
-        self.input.setFixedHeight(22)
+        self.input.setFixedHeight(scale(22))
         self.input.tag_submitted.connect(self._add_tag)
         layout.addWidget(self.input)
 
@@ -824,7 +884,7 @@ class TagInputWidget(QtWidgets.QWidget):
         # Clickable suggestions
         self.suggestions_widget = QtWidgets.QWidget()
         self.suggestions_layout = FlowLayout(self.suggestions_widget)
-        self.suggestions_layout.setSpacing(3)
+        self.suggestions_layout.setSpacing(scale(3))
         layout.addWidget(self.suggestions_widget)
 
         self._update_suggestions()
@@ -855,7 +915,7 @@ class TagInputWidget(QtWidgets.QWidget):
         if remaining:
             # Add "Try:" label
             try_label = QtWidgets.QLabel("Try:")
-            try_label.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 9px; background: transparent;")
+            try_label.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(9)} background: transparent;")
             self.suggestions_layout.addWidget(try_label)
 
             # Add clickable tag pills
@@ -977,14 +1037,14 @@ class AssetPopover(QtWidgets.QFrame):
         """)
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(6)
+        layout.setContentsMargins(scale(10), scale(10), scale(10), scale(10))
+        layout.setSpacing(scale(6))
 
         # Row 1: Name + context badge
         row1 = QtWidgets.QHBoxLayout()
-        row1.setSpacing(6)
+        row1.setSpacing(scale(6))
         self.name_label = QtWidgets.QLabel()
-        self.name_label.setStyleSheet(f"color: {COLORS['text_bright']}; font-size: 12px; font-weight: 600;")
+        self.name_label.setStyleSheet(f"color: {COLORS['text_bright']}; {sfs(12)} font-weight: 600;")
         self.name_label.setWordWrap(True)
         row1.addWidget(self.name_label, 1)
 
@@ -995,9 +1055,9 @@ class AssetPopover(QtWidgets.QFrame):
 
         # Description
         self.desc_label = QtWidgets.QLabel()
-        self.desc_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 10px;")
+        self.desc_label.setStyleSheet(f"color: {COLORS['text_secondary']}; {sfs(10)}")
         self.desc_label.setWordWrap(True)
-        self.desc_label.setMaximumHeight(40)
+        self.desc_label.setMaximumHeight(scale(40))
         layout.addWidget(self.desc_label)
 
         # Separator
@@ -1008,25 +1068,25 @@ class AssetPopover(QtWidgets.QFrame):
 
         # Metadata row 1: nodes, version, usage
         self.meta_label = QtWidgets.QLabel()
-        self.meta_label.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 9px;")
+        self.meta_label.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(9)}")
         layout.addWidget(self.meta_label)
 
         # Metadata row 2: node types, houdini version, file size
         self.meta2_label = QtWidgets.QLabel()
-        self.meta2_label.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 9px;")
+        self.meta2_label.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(9)}")
         self.meta2_label.setWordWrap(True)
         layout.addWidget(self.meta2_label)
 
         # Collections row
         self.colls_label = QtWidgets.QLabel()
-        self.colls_label.setStyleSheet(f"color: {COLORS['accent']}; font-size: 9px;")
+        self.colls_label.setStyleSheet(f"color: {COLORS['accent']}; {sfs(9)}")
         layout.addWidget(self.colls_label)
 
         # Tags row
         self.tags_container = QtWidgets.QWidget()
         self.tags_container.setStyleSheet("background: transparent;")
         self.tags_layout = FlowLayout(self.tags_container)
-        self.tags_layout.setSpacing(4)
+        self.tags_layout.setSpacing(scale(4))
         layout.addWidget(self.tags_container)
 
     def show_for_asset(self, asset, global_pos):
@@ -1052,9 +1112,9 @@ class AssetPopover(QtWidgets.QFrame):
         self.ctx_badge.setStyleSheet(f"""
             background-color: {ctx_color};
             color: white;
-            font-size: 9px;
+            {sfs(9)}
             font-weight: bold;
-            padding: 2px 6px;
+            padding: {spx(2)} {spx(6)};
             border-radius: 2px;
         """)
 
@@ -1156,8 +1216,8 @@ class AssetPopover(QtWidgets.QFrame):
                 pill.setStyleSheet(f"""
                     background-color: {COLORS['bg_light']};
                     color: {COLORS['text_secondary']};
-                    font-size: 9px;
-                    padding: 1px 5px;
+                    {sfs(9)}
+                    padding: {spx(1)} {spx(5)};
                     border-radius: 2px;
                 """)
                 self.tags_layout.addWidget(pill)
@@ -1290,11 +1350,61 @@ class CollectionListWidget(QtWidgets.QWidget):
             asset_ids = [aid for aid in data.split(',') if aid]
             event.acceptProposedAction()
             if SOPDROP_AVAILABLE and asset_ids:
-                for aid in asset_ids:
-                    library.add_asset_to_collection(aid, coll_id)
-                self.collection_selected.emit(coll_id)
+                self._drop_assets_to_collection(asset_ids, coll_id)
         else:
             event.ignore()
+
+    def _drop_assets_to_collection(self, asset_ids, target_coll_id):
+        """Handle dropping assets into a collection with move/add prompt."""
+        if not SOPDROP_AVAILABLE or not asset_ids:
+            return
+
+        # Check if any asset is already in a collection
+        has_existing = False
+        for aid in asset_ids:
+            colls = library.get_asset_collections(aid)
+            if colls:
+                has_existing = True
+                break
+
+        if has_existing:
+            # Ask: Move or Add?
+            target_name = ''
+            try:
+                coll = library.get_collection(target_coll_id)
+                if coll:
+                    target_name = coll.get('name', '')
+            except Exception:
+                pass
+
+            try:
+                import hou
+                result = hou.ui.displayMessage(
+                    f"Add to \"{target_name}\" or move?",
+                    buttons=("Add", "Move", "Cancel"),
+                    default_choice=0,
+                    close_choice=2,
+                    title="Sopdrop",
+                    help="Add: asset stays in its current collections too.\n"
+                         "Move: asset is removed from other collections."
+                )
+            except Exception:
+                result = 0  # default to Add
+
+            if result == 2:
+                return  # Cancel
+
+            if result == 1:
+                # Move: remove from all current collections first
+                for aid in asset_ids:
+                    for coll in library.get_asset_collections(aid):
+                        if coll['id'] != target_coll_id:
+                            library.remove_asset_from_collection(aid, coll['id'])
+
+        # Add to target collection
+        for aid in asset_ids:
+            library.add_asset_to_collection(aid, target_coll_id)
+        self.collection_selected.emit(target_coll_id)
 
     def _find_collection_at_pos(self, pos):
         """Find the collection button at the given position (container coords)."""
@@ -1336,8 +1446,8 @@ class CollectionListWidget(QtWidgets.QWidget):
             border-radius: 3px;
         """)
         container_layout = QtWidgets.QVBoxLayout(self.container)
-        container_layout.setContentsMargins(8, 12, 8, 12)
-        container_layout.setSpacing(4)
+        container_layout.setContentsMargins(scale(8), scale(12), scale(8), scale(12))
+        container_layout.setSpacing(scale(4))
 
         # System items section
         self.system_layout = QtWidgets.QVBoxLayout()
@@ -1346,9 +1456,9 @@ class CollectionListWidget(QtWidgets.QWidget):
 
         # Separator
         sep_container = QtWidgets.QWidget()
-        sep_container.setFixedHeight(16)
+        sep_container.setFixedHeight(scale(16))
         sep_layout = QtWidgets.QHBoxLayout(sep_container)
-        sep_layout.setContentsMargins(8, 0, 8, 0)
+        sep_layout.setContentsMargins(scale(8), 0, scale(8), 0)
         sep = QtWidgets.QFrame()
         sep.setFixedHeight(1)
         sep.setStyleSheet(f"background-color: {COLORS['border']};")
@@ -1357,10 +1467,10 @@ class CollectionListWidget(QtWidgets.QWidget):
 
         # Collections header
         coll_header = QtWidgets.QHBoxLayout()
-        coll_header.setContentsMargins(8, 0, 4, 4)
+        coll_header.setContentsMargins(scale(8), 0, scale(4), scale(4))
         coll_label = QtWidgets.QLabel("COLLECTIONS")
         coll_label.setStyleSheet(f"""
-            font-size: 9px;
+            {sfs(9)}
             font-weight: 600;
             letter-spacing: 1px;
             color: {COLORS['text_dim']};
@@ -1370,7 +1480,7 @@ class CollectionListWidget(QtWidgets.QWidget):
 
         # Add folder button
         add_btn = QtWidgets.QPushButton("+")
-        add_btn.setFixedSize(18, 18)
+        add_btn.setFixedSize(scale(18), scale(18))
         add_btn.setCursor(QtCore.Qt.PointingHandCursor)
         add_btn.setToolTip("New collection")
         add_btn.setStyleSheet(f"""
@@ -1379,7 +1489,7 @@ class CollectionListWidget(QtWidgets.QWidget):
                 border: none;
                 border-radius: 2px;
                 color: {COLORS['text_secondary']};
-                font-size: 13px;
+                {sfs(13)}
             }}
             QPushButton:hover {{
                 background-color: {COLORS['bg_light']};
@@ -1460,7 +1570,7 @@ class CollectionListWidget(QtWidgets.QWidget):
         btn = QtWidgets.QPushButton()
         btn.setProperty("item_id", item_id)
         btn.setCursor(QtCore.Qt.PointingHandCursor)
-        btn.setFixedHeight(20)
+        btn.setFixedHeight(scale(20))
 
         btn.setStyleSheet(f"""
             QPushButton {{
@@ -1478,18 +1588,18 @@ class CollectionListWidget(QtWidgets.QWidget):
         """)
 
         layout = QtWidgets.QHBoxLayout(btn)
-        layout.setContentsMargins(8, 0, 8, 0)
-        layout.setSpacing(8)
+        layout.setContentsMargins(scale(8), 0, scale(8), 0)
+        layout.setSpacing(scale(8))
 
         if icon:
             icon_label = QtWidgets.QLabel(icon)
-            icon_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 11px; background: transparent;")
-            icon_label.setFixedWidth(14)
+            icon_label.setStyleSheet(f"color: {COLORS['text_secondary']}; {sfs(11)} background: transparent;")
+            icon_label.setFixedWidth(scale(14))
             layout.addWidget(icon_label)
 
         font_weight = "600" if bold else "400"
         label = QtWidgets.QLabel(text)
-        label.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px; font-weight: {font_weight}; background: transparent;")
+        label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)} font-weight: {font_weight}; background: transparent;")
         layout.addWidget(label)
         layout.addStretch()
 
@@ -1535,20 +1645,20 @@ class CollectionListWidget(QtWidgets.QWidget):
         btn.setProperty("base_style", base_style)
         btn.setProperty("highlight_style", highlight_style)
         btn.setCursor(QtCore.Qt.PointingHandCursor)
-        btn.setFixedHeight(20)
+        btn.setFixedHeight(scale(20))
         btn.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         btn.customContextMenuRequested.connect(lambda pos, b=btn: self._show_context_menu(b, pos))
         btn.setStyleSheet(base_style)
 
         # Inner layout: [arrow or spacer] [dot + name]
         inner = QtWidgets.QHBoxLayout(btn)
-        inner.setContentsMargins(indent, 0, 8, 0)
-        inner.setSpacing(2)
+        inner.setContentsMargins(indent, 0, scale(8), 0)
+        inner.setSpacing(scale(2))
 
         if has_children:
             arrow_btn = QtWidgets.QToolButton()
             arrow_btn.setText("\u25BC" if is_expanded else "\u25B6")
-            arrow_btn.setFixedSize(14, 16)
+            arrow_btn.setFixedSize(scale(14), scale(16))
             arrow_btn.setAutoRaise(True)
             arrow_btn.setCursor(QtCore.Qt.PointingHandCursor)
             arrow_btn.setStyleSheet(f"""
@@ -1556,7 +1666,7 @@ class CollectionListWidget(QtWidgets.QWidget):
                     background: transparent;
                     border: none;
                     color: {COLORS['text_dim']};
-                    font-size: 8px;
+                    {sfs(8)}
                     padding: 0;
                 }}
                 QToolButton:hover {{
@@ -1568,23 +1678,23 @@ class CollectionListWidget(QtWidgets.QWidget):
         else:
             # Invisible spacer same width as arrow so names align across depth levels
             spacer = QtWidgets.QWidget()
-            spacer.setFixedSize(14, 16)
+            spacer.setFixedSize(scale(14), scale(16))
             spacer.setStyleSheet("background: transparent;")
             spacer.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
             inner.addWidget(spacer)
 
         coll_color = coll.get('color', '') or COLORS['text_dim']
         color_chip = QtWidgets.QWidget()
-        color_chip.setFixedSize(8, 8)
+        color_chip.setFixedSize(scale(8), scale(8))
         color_chip.setStyleSheet(f"""
             background-color: {coll_color};
             border-radius: 2px;
         """)
         color_chip.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
         inner.addWidget(color_chip)
-        inner.addSpacing(4)
+        inner.addSpacing(scale(4))
         name_label = QtWidgets.QLabel(coll['name'])
-        name_label.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px; background: transparent;")
+        name_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)} background: transparent;")
         name_label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
         inner.addWidget(name_label)
         inner.addStretch()
@@ -1665,10 +1775,10 @@ class CollectionListWidget(QtWidgets.QWidget):
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 3px;
-                padding: 2px;
+                padding: {spx(2)};
             }}
             QMenu::item {{
-                padding: 4px 12px;
+                padding: {spx(4)} {spx(12)};
                 border-radius: 2px;
             }}
             QMenu::item:selected {{
@@ -1735,6 +1845,69 @@ class CollectionListWidget(QtWidgets.QWidget):
 
 
 # ==============================================================================
+# Cloud Sync Icon (uses Sopdrop logo SVG, tinted by sync status color)
+# ==============================================================================
+
+class _SyncIcon(QtWidgets.QWidget):
+    """Small Sopdrop logo icon tinted with a status color for cloud sync."""
+
+    _logo_pixmap_cache = {}  # (size, color_hex) -> QPixmap
+
+    def __init__(self, size, color, parent=None):
+        super().__init__(parent)
+        self._size = size
+        self._color = QtGui.QColor(color)
+        self.setFixedSize(size, size)
+        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+        self._pixmap = self._get_tinted_logo(size, self._color)
+
+    @classmethod
+    def _get_tinted_logo(cls, size, color):
+        """Load the Sopdrop logo SVG and tint it with the given color."""
+        key = (size, color.name())
+        if key in cls._logo_pixmap_cache:
+            return cls._logo_pixmap_cache[key]
+
+        logo_path = ''
+        try:
+            sp = os.environ.get('SOPDROP_HOUDINI_PATH', '')
+            if sp:
+                logo_path = os.path.join(sp, 'toolbar', 'icons', 'sopdrop_logo.svg')
+        except Exception:
+            pass
+
+        pixmap = QtGui.QPixmap(size, size)
+        pixmap.fill(QtCore.Qt.transparent)
+
+        if logo_path and os.path.isfile(logo_path):
+            src = QtGui.QPixmap(logo_path)
+            if not src.isNull():
+                src = src.scaled(size, size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+                # Tint: draw source as mask, fill with color
+                painter = QtGui.QPainter(pixmap)
+                painter.setRenderHint(QtGui.QPainter.Antialiasing)
+                painter.setCompositionMode(QtGui.QPainter.CompositionMode_SourceOver)
+                # Center the scaled source
+                x = (size - src.width()) // 2
+                y = (size - src.height()) // 2
+                painter.drawPixmap(x, y, src)
+                # Tint by drawing color over using SourceIn (keeps alpha from source)
+                painter.setCompositionMode(QtGui.QPainter.CompositionMode_SourceIn)
+                painter.fillRect(pixmap.rect(), color)
+                painter.end()
+
+        cls._logo_pixmap_cache[key] = pixmap
+        return pixmap
+
+    def paintEvent(self, event):
+        if self._pixmap and not self._pixmap.isNull():
+            p = QtGui.QPainter(self)
+            p.setRenderHint(QtGui.QPainter.Antialiasing)
+            p.drawPixmap(0, 0, self._pixmap)
+            p.end()
+
+
+# ==============================================================================
 # Asset Card Widget
 # ==============================================================================
 
@@ -1775,13 +1948,13 @@ class AssetCardWidget(QtWidgets.QFrame):
         """)
         self.setCursor(QtCore.Qt.PointingHandCursor)
 
-        # Sizes for zoom levels
+        # Sizes for zoom levels (scaled by UI_SCALE)
         sizes = {
-            'tiny': {'total': 60, 'font': 8, 'badge': 7},
-            'small': {'total': 80, 'font': 9, 'badge': 8},
-            'medium': {'total': 100, 'font': 10, 'badge': 8},
-            'large': {'total': 130, 'font': 11, 'badge': 9},
-            'xlarge': {'total': 170, 'font': 12, 'badge': 10},
+            'tiny': {'total': scale(60), 'font': scale(8), 'badge': scale(7)},
+            'small': {'total': scale(80), 'font': scale(9), 'badge': scale(8)},
+            'medium': {'total': scale(100), 'font': scale(10), 'badge': scale(8)},
+            'large': {'total': scale(130), 'font': scale(11), 'badge': scale(9)},
+            'xlarge': {'total': scale(170), 'font': scale(12), 'badge': scale(10)},
         }
         s = sizes.get(self.card_size, sizes['medium'])
 
@@ -1807,8 +1980,8 @@ class AssetCardWidget(QtWidgets.QFrame):
         self.top_overlay.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
         self.top_overlay.setStyleSheet("background: transparent;")
         top_layout = QtWidgets.QHBoxLayout(self.top_overlay)
-        top_layout.setContentsMargins(4, 4, 4, 0)
-        top_layout.setSpacing(3)
+        top_layout.setContentsMargins(scale(4), scale(4), scale(4), 0)
+        top_layout.setSpacing(scale(3))
 
         # Context badge
         context = self.asset.get('context', 'sop')
@@ -1819,7 +1992,7 @@ class AssetCardWidget(QtWidgets.QFrame):
                 color: white;
                 font-size: {s['badge']}px;
                 font-weight: bold;
-                padding: 2px 5px;
+                padding: {spx(2)} {spx(5)};
                 border-radius: 2px;
             """)
             top_layout.addWidget(self.ctx_badge, 0, QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
@@ -1845,7 +2018,7 @@ class AssetCardWidget(QtWidgets.QFrame):
                 background-color: {hda_color};
                 color: white;
                 font-size: {s['badge']}px;
-                padding: 2px 4px;
+                padding: {spx(2)} {spx(4)};
                 border-radius: 2px;
             """)
             hda_badge.setToolTip(hda_tip)
@@ -1853,19 +2026,21 @@ class AssetCardWidget(QtWidgets.QFrame):
 
         top_layout.addStretch()
 
-        # Cloud sync indicator
+        # Cloud sync indicator — globe icon
         sync_status = self.asset.get('sync_status', 'local_only')
         if sync_status in ('synced', 'syncing', 'modified'):
-            sync_icon = QtWidgets.QLabel("●")
             if sync_status == 'synced':
-                sync_icon.setStyleSheet(f"color: {COLORS['success']}; font-size: 8px; background: transparent;")
-                sync_icon.setToolTip("Synced to cloud")
+                color = COLORS['success']
+                tip = "Published on sopdrop.com"
             elif sync_status == 'syncing':
-                sync_icon.setStyleSheet(f"color: {COLORS['accent']}; font-size: 8px; background: transparent;")
-                sync_icon.setToolTip("Syncing...")
+                color = COLORS['accent']
+                tip = "Syncing..."
             else:
-                sync_icon.setStyleSheet(f"color: {COLORS['warning']}; font-size: 8px; background: transparent;")
-                sync_icon.setToolTip("Modified locally \u2014 right-click to push update")
+                color = COLORS['warning']
+                tip = "Modified locally \u2014 right-click to push update"
+            icon_size = max(s['badge'] + scale(2), scale(10))
+            sync_icon = _SyncIcon(icon_size, color, self.top_overlay)
+            sync_icon.setToolTip(tip)
             top_layout.addWidget(sync_icon)
 
         # Bottom overlay - gradient for text (hidden when name display is off)
@@ -1888,8 +2063,8 @@ class AssetCardWidget(QtWidgets.QFrame):
             self.bottom_overlay.setStyleSheet("background: transparent;")
 
         bottom_layout = QtWidgets.QVBoxLayout(self.bottom_overlay)
-        bottom_layout.setContentsMargins(6, 8, 6, 6)
-        bottom_layout.setSpacing(2)
+        bottom_layout.setContentsMargins(scale(6), scale(8), scale(6), scale(6))
+        bottom_layout.setSpacing(scale(2))
         bottom_layout.addStretch()
 
         # Asset name - clean typography
@@ -1905,8 +2080,8 @@ class AssetCardWidget(QtWidgets.QFrame):
             name.setWordWrap(False)
             fm = QtGui.QFontMetrics(name.font())
             max_width = {
-                'tiny': 70, 'small': 90, 'medium': 120, 'large': 160, 'xlarge': 210
-            }.get(self.card_size, 120)
+                'tiny': scale(70), 'small': scale(90), 'medium': scale(120), 'large': scale(160), 'xlarge': scale(210)
+            }.get(self.card_size, scale(120))
             elided = fm.elidedText(name_text, QtCore.Qt.ElideRight, max_width)
             name.setText(elided)
             name.setToolTip(name_text)
@@ -1918,8 +2093,8 @@ class AssetCardWidget(QtWidgets.QFrame):
             if tags:
                 tags_layout = QtWidgets.QHBoxLayout()
                 tags_layout.setContentsMargins(0, 0, 0, 0)
-                tags_layout.setSpacing(3)
-                tag_font = max(9, s['font'] - 1)
+                tags_layout.setSpacing(scale(3))
+                tag_font = max(scale(9), s['font'] - 1)
                 for tag_text in tags[:3]:
                     tag_btn = QtWidgets.QPushButton(tag_text)
                     tag_btn.setCursor(QtCore.Qt.PointingHandCursor)
@@ -1928,7 +2103,7 @@ class AssetCardWidget(QtWidgets.QFrame):
                             background-color: rgba(255,255,255,0.15);
                             color: {COLORS['text_secondary']};
                             font-size: {tag_font}px;
-                            padding: 1px 5px;
+                            padding: {spx(1)} {spx(5)};
                             border-radius: 3px;
                             border: none;
                         }}
@@ -2013,10 +2188,10 @@ class AssetCardWidget(QtWidgets.QFrame):
         self._update_thumbnail_display(w, h)
 
         # Top overlay - sized for badge row
-        self.top_overlay.setGeometry(0, 0, w, 22)
+        self.top_overlay.setGeometry(0, 0, w, scale(22))
 
         # Bottom overlay (bottom third)
-        bottom_h = max(24, h // 3)
+        bottom_h = max(scale(24), h // 3)
         self.bottom_overlay.setGeometry(0, h - bottom_h, w, bottom_h)
 
     def _load_thumbnail(self, height):
@@ -2080,7 +2255,7 @@ class AssetCardWidget(QtWidgets.QFrame):
             painter.end()
             self.thumb_label.setPixmap(rounded)
         else:
-            # Placeholder with context letter and rounded corners
+            # Placeholder with Sopdrop logo icon and rounded corners
             context = self.asset.get('context', 'sop')
             pixmap = QtGui.QPixmap(width, height)
             pixmap.fill(QtCore.Qt.transparent)
@@ -2093,17 +2268,57 @@ class AssetCardWidget(QtWidgets.QFrame):
             painter.setClipPath(path)
             painter.fillRect(0, 0, width, height, QtGui.QColor(COLORS['bg_medium']))
 
-            # Draw context letter or VEX code icon
-            is_vex = self.asset.get('asset_type') == 'vex' or context == 'vex'
-            painter.setPen(QtGui.QColor(get_context_color(context)))
-            font_size = max(12, min(height // 3, 24))
-            painter.setFont(QtGui.QFont("Arial", font_size, QtGui.QFont.Bold))
-            painter.setOpacity(0.2)
-            if is_vex:
-                # Show code brackets icon for VEX snippets
-                painter.drawText(pixmap.rect(), QtCore.Qt.AlignCenter, "{ }")
-            else:
-                painter.drawText(pixmap.rect(), QtCore.Qt.AlignCenter, context[0].upper())
+            # Try to draw the asset's Houdini icon if one is set
+            icon_drawn = False
+            asset_icon = self.asset.get('icon')
+            if asset_icon:
+                try:
+                    hou_icon = hou.qt.Icon(asset_icon, 64, 64)
+                    if hou_icon and not hou_icon.isNull():
+                        icon_pm = hou_icon.pixmap(64, 64)
+                        if not icon_pm.isNull():
+                            icon_s = min(width, height) // 2
+                            icon_pm = icon_pm.scaled(icon_s, icon_s, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+                            painter.setOpacity(0.5)
+                            lx = (width - icon_pm.width()) // 2
+                            ly = (height - icon_pm.height()) // 2
+                            painter.drawPixmap(lx, ly, icon_pm)
+                            icon_drawn = True
+                except Exception:
+                    pass
+
+            if not icon_drawn:
+                # Fallback: draw Sopdrop logo as placeholder
+                logo_drawn = False
+                try:
+                    sp = os.environ.get('SOPDROP_HOUDINI_PATH', '')
+                    if sp:
+                        logo_path = os.path.join(sp, 'toolbar', 'icons', 'sopdrop_logo.svg')
+                        if os.path.isfile(logo_path):
+                            logo = QtGui.QPixmap(logo_path)
+                            if not logo.isNull():
+                                icon_s = min(width, height) // 2
+                                logo = logo.scaled(icon_s, icon_s, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+                                painter.setOpacity(0.15)
+                                lx = (width - logo.width()) // 2
+                                ly = (height - logo.height()) // 2
+                                painter.drawPixmap(lx, ly, logo)
+                                logo_drawn = True
+                except Exception:
+                    pass
+
+                if not logo_drawn:
+                    # Fallback: context letter if logo unavailable
+                    is_vex = self.asset.get('asset_type') == 'vex' or context == 'vex'
+                    painter.setPen(QtGui.QColor(get_context_color(context)))
+                    font_size = max(12, min(height // 3, 24))
+                    painter.setFont(QtGui.QFont("Arial", font_size, QtGui.QFont.Bold))
+                    painter.setOpacity(0.15)
+                    if is_vex:
+                        painter.drawText(pixmap.rect(), QtCore.Qt.AlignCenter, "{ }")
+                    else:
+                        painter.drawText(pixmap.rect(), QtCore.Qt.AlignCenter, context[0].upper())
+
             painter.end()
             self.thumb_label.setPixmap(pixmap)
 
@@ -2115,6 +2330,7 @@ class AssetCardWidget(QtWidgets.QFrame):
     _custom_drag_active = False
     _custom_drag_ids = []
     _IS_MACOS = __import__('sys').platform == 'darwin'
+    _drag_timer = None
 
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
@@ -2135,15 +2351,24 @@ class AssetCardWidget(QtWidgets.QFrame):
                 asset_ids = list(parent_grid._selected_assets)
         return asset_ids
 
+    def _poll_drag_position(self):
+        """Timer-based cursor polling for macOS drag — more reliable than mouseMoveEvent in Houdini."""
+        if not AssetCardWidget._custom_drag_active:
+            if AssetCardWidget._drag_timer:
+                AssetCardWidget._drag_timer.stop()
+            return
+        global_pos = QtGui.QCursor.pos()
+        coll_widget = CollectionListWidget._active_instance
+        if coll_widget:
+            container_pos = coll_widget.container.mapFromGlobal(global_pos)
+            btn = coll_widget._find_collection_at_pos(container_pos)
+            coll_widget._set_drop_highlight(btn)
+
     def mouseMoveEvent(self, event):
         """Start drag when mouse moves beyond threshold."""
-        # macOS custom drag: track cursor over collections
+        # macOS custom drag: mouseMoveEvent may not fire reliably during
+        # grabMouse in Houdini, so highlighting is handled by _poll_drag_position timer
         if AssetCardWidget._custom_drag_active:
-            coll_widget = CollectionListWidget._active_instance
-            if coll_widget:
-                container_pos = coll_widget.container.mapFromGlobal(event.globalPos())
-                btn = coll_widget._find_collection_at_pos(container_pos)
-                coll_widget._set_drop_highlight(btn)
             return
 
         if not (event.buttons() & QtCore.Qt.LeftButton):
@@ -2157,11 +2382,15 @@ class AssetCardWidget(QtWidgets.QFrame):
         self._did_drag = True
 
         if self._IS_MACOS:
-            # macOS: grabMouse keeps us in Qt's normal event loop
+            # macOS: grabMouse + timer-based position polling
+            # (Houdini's embedded Qt doesn't reliably deliver mouseMoveEvent during grab)
             AssetCardWidget._custom_drag_active = True
             AssetCardWidget._custom_drag_ids = asset_ids
             self.grabMouse()
-            QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.DragMoveCursor)
+            QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.ClosedHandCursor)
+            AssetCardWidget._drag_timer = QtCore.QTimer()
+            AssetCardWidget._drag_timer.timeout.connect(self._poll_drag_position)
+            AssetCardWidget._drag_timer.start(30)
         else:
             # Windows/Linux: standard QDrag — _DropAwareContainer handles highlighting
             drag = QtGui.QDrag(self)
@@ -2175,6 +2404,9 @@ class AssetCardWidget(QtWidgets.QFrame):
         if AssetCardWidget._custom_drag_active:
             # macOS custom drag release
             AssetCardWidget._custom_drag_active = False
+            if AssetCardWidget._drag_timer:
+                AssetCardWidget._drag_timer.stop()
+                AssetCardWidget._drag_timer = None
             self.releaseMouse()
             QtWidgets.QApplication.restoreOverrideCursor()
 
@@ -2187,9 +2419,9 @@ class AssetCardWidget(QtWidgets.QFrame):
                 if btn:
                     coll_id = btn.property("item_id")
                     if SOPDROP_AVAILABLE and AssetCardWidget._custom_drag_ids:
-                        for aid in AssetCardWidget._custom_drag_ids:
-                            library.add_asset_to_collection(aid, coll_id)
-                        coll_widget.collection_selected.emit(coll_id)
+                        coll_widget._drop_assets_to_collection(
+                            AssetCardWidget._custom_drag_ids, coll_id
+                        )
 
             AssetCardWidget._custom_drag_ids = []
             return
@@ -2236,8 +2468,8 @@ class AssetCardWidget(QtWidgets.QFrame):
         dialog.setStyleSheet(STYLESHEET)
 
         layout = QtWidgets.QVBoxLayout(dialog)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(scale(12), scale(12), scale(12), scale(12))
+        layout.setSpacing(scale(8))
 
         editor = QtWidgets.QPlainTextEdit()
         editor.setPlainText(package['code'])
@@ -2247,9 +2479,9 @@ class AssetCardWidget(QtWidgets.QFrame):
                 color: {COLORS['text_bright']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 4px;
-                padding: 8px;
+                padding: {spx(8)};
                 font-family: 'Source Code Pro', 'Fira Code', 'Consolas', monospace;
-                font-size: 12px;
+                {sfs(12)}
             }}
         """)
         layout.addWidget(editor)
@@ -2304,11 +2536,11 @@ class AssetCardWidget(QtWidgets.QFrame):
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 4px;
-                padding: 3px;
+                padding: {spx(3)};
             }}
             QMenu::item {{
                 background-color: transparent;
-                padding: 5px 10px;
+                padding: {spx(5)} {spx(10)};
                 color: {COLORS['text']};
                 border-radius: 2px;
             }}
@@ -2318,7 +2550,7 @@ class AssetCardWidget(QtWidgets.QFrame):
             QMenu::separator {{
                 height: 1px;
                 background-color: {COLORS['border']};
-                margin: 3px 2px;
+                margin: {spx(3)} 2px;
             }}
         """)
 
@@ -2686,7 +2918,7 @@ class AssetGridWidget(QtWidgets.QWidget):
         self.container = QtWidgets.QWidget()
         self.container.setStyleSheet(f"background-color: {COLORS['bg_grid']};")
         container_layout = QtWidgets.QVBoxLayout(self.container)
-        container_layout.setContentsMargins(6, 6, 6, 6)
+        container_layout.setContentsMargins(scale(6), scale(6), scale(6), scale(6))
         container_layout.setSpacing(0)
 
         # Grid widget inside container
@@ -2694,7 +2926,7 @@ class AssetGridWidget(QtWidgets.QWidget):
         self.grid_widget.setStyleSheet(f"background-color: {COLORS['bg_grid']};")
         self.grid_layout = QtWidgets.QGridLayout(self.grid_widget)
         self.grid_layout.setContentsMargins(0, 0, 0, 0)
-        self.grid_layout.setSpacing(6)
+        self.grid_layout.setSpacing(scale(6))
         self.grid_layout.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
 
         container_layout.addWidget(self.grid_widget)
@@ -2709,7 +2941,7 @@ class AssetGridWidget(QtWidgets.QWidget):
         empty_layout.setAlignment(QtCore.Qt.AlignCenter)
         self.empty_label = QtWidgets.QLabel("No assets yet\nSave nodes using + Save Nodes")
         self.empty_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.empty_label.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 12px;")
+        self.empty_label.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(12)}")
         self.empty_label.setWordWrap(True)
         empty_layout.addWidget(self.empty_label)
         self.empty_widget.hide()
@@ -2721,7 +2953,7 @@ class AssetGridWidget(QtWidgets.QWidget):
         loading_layout.setAlignment(QtCore.Qt.AlignCenter)
         loading_label = QtWidgets.QLabel("Loading...")
         loading_label.setAlignment(QtCore.Qt.AlignCenter)
-        loading_label.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
+        loading_label.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(11)}")
         loading_layout.addWidget(loading_label)
         self.loading_widget.hide()
         layout.addWidget(self.loading_widget)
@@ -2760,10 +2992,10 @@ class AssetGridWidget(QtWidgets.QWidget):
         if not self._assets:
             return
 
-        widths = {'tiny': 80, 'small': 100, 'medium': 130, 'large': 170, 'xlarge': 220}
-        card_width = widths.get(self._card_size, 130)
+        widths = {'tiny': scale(80), 'small': scale(100), 'medium': scale(130), 'large': scale(170), 'xlarge': scale(220)}
+        card_width = widths.get(self._card_size, scale(130))
         width = self.scroll.viewport().width() or 400
-        columns = max(1, (width - 10) // (card_width + 6))
+        columns = max(1, (width - scale(10)) // (card_width + scale(6)))
 
         # Only rebuild if columns changed
         if columns != self._last_columns:
@@ -2820,11 +3052,11 @@ class AssetGridWidget(QtWidgets.QWidget):
         self.empty_widget.hide()
         self.scroll.show()
 
-        widths = {'tiny': 80, 'small': 100, 'medium': 130, 'large': 170, 'xlarge': 220}
-        card_width = widths.get(self._card_size, 130)
+        widths = {'tiny': scale(80), 'small': scale(100), 'medium': scale(130), 'large': scale(170), 'xlarge': scale(220)}
+        card_width = widths.get(self._card_size, scale(130))
 
         width = self.scroll.viewport().width() or 400
-        columns = max(1, (width - 10) // (card_width + 6))
+        columns = max(1, (width - scale(10)) // (card_width + scale(6)))
         self._last_columns = columns
 
         for i, asset in enumerate(assets):
@@ -2864,11 +3096,11 @@ class AssetGridWidget(QtWidgets.QWidget):
         self.empty_widget.hide()
         self.scroll.show()
 
-        widths = {'tiny': 80, 'small': 100, 'medium': 130, 'large': 170, 'xlarge': 220}
-        card_width = widths.get(self._card_size, 130)
+        widths = {'tiny': scale(80), 'small': scale(100), 'medium': scale(130), 'large': scale(170), 'xlarge': scale(220)}
+        card_width = widths.get(self._card_size, scale(130))
 
         width = self.scroll.viewport().width() or 400
-        columns = max(1, (width - 10) // (card_width + 6))
+        columns = max(1, (width - scale(10)) // (card_width + scale(6)))
         self._last_columns = columns
 
         row = 0
@@ -2879,8 +3111,8 @@ class AssetGridWidget(QtWidgets.QWidget):
             # Add section header with clear visual separator
             header_container = QtWidgets.QWidget()
             header_layout = QtWidgets.QHBoxLayout(header_container)
-            header_layout.setContentsMargins(0, 12, 0, 6)
-            header_layout.setSpacing(8)
+            header_layout.setContentsMargins(0, scale(12), 0, scale(6))
+            header_layout.setSpacing(scale(8))
 
             # Left line
             left_line = QtWidgets.QFrame()
@@ -2896,11 +3128,11 @@ class AssetGridWidget(QtWidgets.QWidget):
             header_label.setStyleSheet(f"""
                 QPushButton {{
                     color: {COLORS['text']};
-                    font-size: 11px;
+                    {sfs(11)}
                     font-weight: 600;
                     background: transparent;
                     border: none;
-                    padding: 0 4px;
+                    padding: 0 {spx(4)};
                 }}
                 QPushButton:hover {{
                     color: {COLORS['accent']};
@@ -3001,6 +3233,41 @@ class AssetGridWidget(QtWidgets.QWidget):
 
 
 # ==============================================================================
+# Panel Instance Registry (for shelf tool refresh)
+# ==============================================================================
+
+# Preserve across importlib.reload() — shelf tools reload this module
+try:
+    _active_panels
+except NameError:
+    _active_panels = []  # List of weakref.ref to LibraryPanel instances
+
+
+def refresh_all_panels():
+    """Refresh all open LibraryPanel instances. Called by shelf tools after save."""
+    global _active_panels
+    alive = []
+    for ref in _active_panels:
+        panel = ref()
+        if panel is not None:
+            try:
+                panel.collections.refresh()
+                panel._refresh_assets()
+            except Exception:
+                pass
+            alive.append(ref)
+    _active_panels = alive
+
+
+def _register_panel(panel):
+    """Register a LibraryPanel instance for external refresh."""
+    global _active_panels
+    # Clean dead refs
+    _active_panels = [r for r in _active_panels if r() is not None]
+    _active_panels.append(weakref.ref(panel))
+
+
+# ==============================================================================
 # Main Library Panel
 # ==============================================================================
 
@@ -3009,6 +3276,9 @@ class LibraryPanel(QtWidgets.QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        _register_panel(self)
+        # Reload UI scale from config so changes apply without restarting Houdini
+        reload_ui_scale()
         self.current_collection = None  # str ID, "__recent__", "__favorites__", or None
         self.current_collections = set()  # Multi-select collection IDs
         self.current_context_filter = None
@@ -3156,16 +3426,16 @@ class LibraryPanel(QtWidgets.QWidget):
         self.setStyleSheet(STYLESHEET)
 
         main_layout = QtWidgets.QVBoxLayout(self)
-        main_layout.setContentsMargins(6, 6, 6, 6)
-        main_layout.setSpacing(6)
+        main_layout.setContentsMargins(scale(6), scale(6), scale(6), scale(6))
+        main_layout.setSpacing(scale(6))
 
         # Top bar
         top_bar = QtWidgets.QHBoxLayout()
-        top_bar.setSpacing(6)
+        top_bar.setSpacing(scale(6))
 
         # Library toggle
         lib_toggle_frame = QtWidgets.QFrame()
-        lib_toggle_frame.setFixedHeight(22)
+        lib_toggle_frame.setFixedHeight(scale(22))
         lib_toggle_frame.setStyleSheet(f"""
             QFrame {{
                 background-color: {COLORS['bg_base']};
@@ -3174,17 +3444,17 @@ class LibraryPanel(QtWidgets.QWidget):
             }}
         """)
         lib_toggle_layout = QtWidgets.QHBoxLayout(lib_toggle_frame)
-        lib_toggle_layout.setContentsMargins(1, 1, 1, 1)
-        lib_toggle_layout.setSpacing(1)
+        lib_toggle_layout.setContentsMargins(scale(1), scale(1), scale(1), scale(1))
+        lib_toggle_layout.setSpacing(scale(1))
 
         self.personal_btn = QtWidgets.QPushButton("Personal")
-        self.personal_btn.setFixedHeight(18)
+        self.personal_btn.setFixedHeight(scale(18))
         self.personal_btn.setCheckable(True)
         self.personal_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.personal_btn.clicked.connect(lambda: self._select_library("personal"))
 
         self.team_btn = QtWidgets.QPushButton("Team")
-        self.team_btn.setFixedHeight(18)
+        self.team_btn.setFixedHeight(scale(18))
         self.team_btn.setCheckable(True)
         self.team_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.team_btn.clicked.connect(lambda: self._select_library("team"))
@@ -3204,7 +3474,7 @@ class LibraryPanel(QtWidgets.QWidget):
                 background-color: {COLORS['bg_medium']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 2px;
-                padding: 2px 6px;
+                padding: {spx(2)} {spx(6)};
                 color: {COLORS['text']};
             }}
             QLineEdit:focus {{
@@ -3213,7 +3483,7 @@ class LibraryPanel(QtWidgets.QWidget):
         """)
         self._search_timer = QtCore.QTimer(self)
         self._search_timer.setSingleShot(True)
-        self._search_timer.setInterval(300)
+        self._search_timer.setInterval(150)
         self._search_timer.timeout.connect(self._execute_search)
         self.search_input.textChanged.connect(self._on_search)
         top_bar.addWidget(self.search_input, 1)
@@ -3221,14 +3491,14 @@ class LibraryPanel(QtWidgets.QWidget):
         # Save button
         save_btn = QtWidgets.QPushButton("+ Save Nodes")
         save_btn.setToolTip("Save selected nodes to library")
-        save_btn.setFixedHeight(22)
+        save_btn.setFixedHeight(scale(22))
         save_btn.setCursor(QtCore.Qt.PointingHandCursor)
         save_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['accent']};
                 border: none;
                 border-radius: 2px;
-                padding: 2px 10px;
+                padding: {spx(2)} {spx(10)};
                 color: white;
             }}
             QPushButton:hover {{
@@ -3241,14 +3511,14 @@ class LibraryPanel(QtWidgets.QWidget):
         # Save VEX button
         save_vex_btn = QtWidgets.QPushButton("+ VEX")
         save_vex_btn.setToolTip("Save a VEX snippet to library")
-        save_vex_btn.setFixedHeight(22)
+        save_vex_btn.setFixedHeight(scale(22))
         save_vex_btn.setCursor(QtCore.Qt.PointingHandCursor)
         save_vex_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 2px;
-                padding: 2px 8px;
+                padding: {spx(2)} {spx(8)};
                 color: {COLORS['text']};
             }}
             QPushButton:hover {{
@@ -3262,14 +3532,14 @@ class LibraryPanel(QtWidgets.QWidget):
         # Sync button
         sync_btn = QtWidgets.QPushButton("Pull")
         sync_btn.setToolTip("Pull from sopdrop.com")
-        sync_btn.setFixedHeight(22)
+        sync_btn.setFixedHeight(scale(22))
         sync_btn.setCursor(QtCore.Qt.PointingHandCursor)
         sync_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 2px;
-                padding: 2px 8px;
+                padding: {spx(2)} {spx(8)};
                 color: {COLORS['text']};
             }}
             QPushButton:hover {{
@@ -3307,7 +3577,7 @@ class LibraryPanel(QtWidgets.QWidget):
 
         settings_btn = QtWidgets.QPushButton()
         settings_btn.setIcon(QtGui.QIcon(gear_pixmap))
-        settings_btn.setIconSize(QtCore.QSize(14, 14))
+        settings_btn.setIconSize(QtCore.QSize(scale(14), scale(14)))
         settings_btn.setToolTip("Settings")
         settings_btn.setFixedSize(scale(22), scale(22))
         settings_btn.setCursor(QtCore.Qt.PointingHandCursor)
@@ -3328,11 +3598,11 @@ class LibraryPanel(QtWidgets.QWidget):
 
         # Second row - filtering controls
         filter_bar = QtWidgets.QHBoxLayout()
-        filter_bar.setSpacing(6)
+        filter_bar.setSpacing(scale(6))
 
         # Context filter dropdown with icon prefix
         ctx_container = QtWidgets.QFrame()
-        ctx_container.setFixedHeight(20)
+        ctx_container.setFixedHeight(scale(20))
         ctx_container.setStyleSheet(f"""
             QFrame {{
                 background-color: {COLORS['bg_medium']};
@@ -3344,12 +3614,12 @@ class LibraryPanel(QtWidgets.QWidget):
             }}
         """)
         ctx_layout = QtWidgets.QHBoxLayout(ctx_container)
-        ctx_layout.setContentsMargins(4, 0, 0, 0)
-        ctx_layout.setSpacing(2)
+        ctx_layout.setContentsMargins(scale(4), 0, 0, 0)
+        ctx_layout.setSpacing(scale(2))
 
         ctx_icon = QtWidgets.QLabel("◉")
-        ctx_icon.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px; background: transparent;")
-        ctx_icon.setFixedWidth(12)
+        ctx_icon.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)} background: transparent;")
+        ctx_icon.setFixedWidth(scale(12))
         ctx_layout.addWidget(ctx_icon)
 
         self.context_combo = QtWidgets.QComboBox()
@@ -3372,7 +3642,7 @@ class LibraryPanel(QtWidgets.QWidget):
             QComboBox {{
                 background-color: transparent;
                 border: none;
-                padding: 0 2px;
+                padding: 0 {spx(2)};
                 min-width: 40px;
             }}
             QComboBox::drop-down {{
@@ -3384,10 +3654,10 @@ class LibraryPanel(QtWidgets.QWidget):
         ctx_layout.addWidget(self.context_combo)
         filter_bar.addWidget(ctx_container)
 
-        # Tags button with icon
-        self.tags_btn = QtWidgets.QPushButton("⊞ Tags")
+        # Tags button
+        self.tags_btn = QtWidgets.QPushButton("Tags \u25BE")
         self.tags_btn.setToolTip("Filter by tags")
-        self.tags_btn.setFixedHeight(20)
+        self.tags_btn.setFixedHeight(scale(20))
         self.tags_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.tags_btn.setStyleSheet(f"""
             QPushButton {{
@@ -3395,7 +3665,7 @@ class LibraryPanel(QtWidgets.QWidget):
                 border: 1px solid {COLORS['border']};
                 border-radius: 2px;
                 color: {COLORS['text']};
-                padding: 1px 6px;
+                padding: {spx(1)} {spx(6)};
             }}
             QPushButton:hover {{
                 border-color: {COLORS['border_light']};
@@ -3404,9 +3674,37 @@ class LibraryPanel(QtWidgets.QWidget):
         self.tags_btn.clicked.connect(self._show_tags_menu)
         filter_bar.addWidget(self.tags_btn)
 
+        # Artist filter button
+        self.artist_btn = QtWidgets.QPushButton("Artist \u25BE")
+        self.artist_btn.setToolTip("Filter by artist/user")
+        self.artist_btn.setFixedHeight(scale(20))
+        self.artist_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.artist_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_medium']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 2px;
+                color: {COLORS['text']};
+                padding: {spx(1)} {spx(6)};
+            }}
+            QPushButton:hover {{
+                border-color: {COLORS['border_light']};
+            }}
+        """)
+        self.artist_btn.clicked.connect(self._show_artist_menu)
+        filter_bar.addWidget(self.artist_btn)
+        self.current_artist_filter = None
+
+        # ── Visual divider between data filters and view controls ──
+        filter_divider = QtWidgets.QFrame()
+        filter_divider.setFixedWidth(1)
+        filter_divider.setFixedHeight(scale(14))
+        filter_divider.setStyleSheet(f"background-color: {COLORS['border']};")
+        filter_bar.addWidget(filter_divider)
+
         # Sort dropdown with icon prefix
         sort_container = QtWidgets.QFrame()
-        sort_container.setFixedHeight(20)
+        sort_container.setFixedHeight(scale(20))
         sort_container.setStyleSheet(f"""
             QFrame {{
                 background-color: {COLORS['bg_medium']};
@@ -3418,12 +3716,12 @@ class LibraryPanel(QtWidgets.QWidget):
             }}
         """)
         sort_layout = QtWidgets.QHBoxLayout(sort_container)
-        sort_layout.setContentsMargins(4, 0, 0, 0)
-        sort_layout.setSpacing(2)
+        sort_layout.setContentsMargins(scale(4), 0, 0, 0)
+        sort_layout.setSpacing(scale(2))
 
         sort_icon = QtWidgets.QLabel("↕")
-        sort_icon.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px; background: transparent;")
-        sort_icon.setFixedWidth(10)
+        sort_icon.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)} background: transparent;")
+        sort_icon.setFixedWidth(scale(10))
         sort_layout.addWidget(sort_icon)
 
         self.sort_combo = QtWidgets.QComboBox()
@@ -3437,7 +3735,7 @@ class LibraryPanel(QtWidgets.QWidget):
             QComboBox {{
                 background-color: transparent;
                 border: none;
-                padding: 0 2px;
+                padding: 0 {spx(2)};
                 min-width: 50px;
             }}
             QComboBox::drop-down {{
@@ -3449,10 +3747,10 @@ class LibraryPanel(QtWidgets.QWidget):
         sort_layout.addWidget(self.sort_combo)
         filter_bar.addWidget(sort_container)
 
-        # Group toggle
+        # Group toggle — click to toggle grouping, holds Subs state internally
         self.group_btn = QtWidgets.QPushButton("Group")
         self.group_btn.setToolTip("Group assets by collection")
-        self.group_btn.setFixedHeight(20)
+        self.group_btn.setFixedHeight(scale(20))
         self.group_btn.setCheckable(True)
         self.group_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.group_btn.setStyleSheet(f"""
@@ -3461,8 +3759,8 @@ class LibraryPanel(QtWidgets.QWidget):
                 border: 1px solid {COLORS['border']};
                 border-radius: 2px;
                 color: {COLORS['text_secondary']};
-                font-size: 10px;
-                padding: 0 6px;
+                {sfs(10)}
+                padding: 0 {spx(6)};
             }}
             QPushButton:hover {{
                 border-color: {COLORS['border_light']};
@@ -3477,38 +3775,16 @@ class LibraryPanel(QtWidgets.QWidget):
         self.group_btn.clicked.connect(self._on_group_changed)
         filter_bar.addWidget(self.group_btn)
 
-        # Subcontent toggle (show assets from child collections too)
+        # Hidden subcontent toggle — state preserved but controlled via View popup
         self.subcontent_btn = QtWidgets.QPushButton("Subs")
-        self.subcontent_btn.setToolTip("Include assets from child collections")
-        self.subcontent_btn.setFixedHeight(20)
         self.subcontent_btn.setCheckable(True)
-        self.subcontent_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self.subcontent_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS['bg_medium']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 2px;
-                color: {COLORS['text_secondary']};
-                font-size: 10px;
-                padding: 0 6px;
-            }}
-            QPushButton:hover {{
-                border-color: {COLORS['border_light']};
-                color: {COLORS['text']};
-            }}
-            QPushButton:checked {{
-                background-color: {COLORS['accent']};
-                border-color: {COLORS['accent']};
-                color: white;
-            }}
-        """)
+        self.subcontent_btn.setVisible(False)
         self.subcontent_btn.clicked.connect(self._on_subcontent_changed)
-        filter_bar.addWidget(self.subcontent_btn)
 
-        # Display toggle
-        self.display_btn = QtWidgets.QPushButton("Display ▾")
-        self.display_btn.setToolTip("Toggle what info shows on cards")
-        self.display_btn.setFixedHeight(20)
+        # View settings button — Display options + Subcollections toggle
+        self.display_btn = QtWidgets.QPushButton("View ▾")
+        self.display_btn.setToolTip("Card display options")
+        self.display_btn.setFixedHeight(scale(20))
         self.display_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.display_btn.setStyleSheet(f"""
             QPushButton {{
@@ -3516,8 +3792,8 @@ class LibraryPanel(QtWidgets.QWidget):
                 border: 1px solid {COLORS['border']};
                 border-radius: 2px;
                 color: {COLORS['text_secondary']};
-                font-size: 10px;
-                padding: 0 6px;
+                {sfs(10)}
+                padding: 0 {spx(6)};
             }}
             QPushButton:hover {{
                 border-color: {COLORS['border_light']};
@@ -3531,7 +3807,7 @@ class LibraryPanel(QtWidgets.QWidget):
 
         # Zoom controls
         zoom_container = QtWidgets.QFrame()
-        zoom_container.setFixedHeight(20)
+        zoom_container.setFixedHeight(scale(20))
         zoom_container.setStyleSheet(f"""
             QFrame {{
                 background-color: {COLORS['bg_medium']};
@@ -3540,12 +3816,12 @@ class LibraryPanel(QtWidgets.QWidget):
             }}
         """)
         zoom_layout = QtWidgets.QHBoxLayout(zoom_container)
-        zoom_layout.setContentsMargins(1, 0, 1, 0)
+        zoom_layout.setContentsMargins(scale(1), 0, scale(1), 0)
         zoom_layout.setSpacing(0)
 
         zoom_out = QtWidgets.QPushButton("−")
         zoom_out.setToolTip("Smaller")
-        zoom_out.setFixedSize(18, 18)
+        zoom_out.setFixedSize(scale(18), scale(18))
         zoom_out.setCursor(QtCore.Qt.PointingHandCursor)
         zoom_out.setStyleSheet(f"""
             QPushButton {{
@@ -3562,7 +3838,7 @@ class LibraryPanel(QtWidgets.QWidget):
 
         zoom_in = QtWidgets.QPushButton("+")
         zoom_in.setToolTip("Larger")
-        zoom_in.setFixedSize(18, 18)
+        zoom_in.setFixedSize(scale(18), scale(18))
         zoom_in.setCursor(QtCore.Qt.PointingHandCursor)
         zoom_in.setStyleSheet(f"""
             QPushButton {{
@@ -3582,7 +3858,7 @@ class LibraryPanel(QtWidgets.QWidget):
         # Refresh button
         refresh_btn = QtWidgets.QPushButton("↻")
         refresh_btn.setToolTip("Refresh (Ctrl+R)")
-        refresh_btn.setFixedSize(20, 20)
+        refresh_btn.setFixedSize(scale(20), scale(20))
         refresh_btn.setCursor(QtCore.Qt.PointingHandCursor)
         refresh_btn.setStyleSheet(f"""
             QPushButton {{
@@ -3602,7 +3878,7 @@ class LibraryPanel(QtWidgets.QWidget):
 
         # Active filter bar - persistent, shows active filters as removable chips
         self.active_filter_bar = QtWidgets.QFrame()
-        self.active_filter_bar.setFixedHeight(20)
+        self.active_filter_bar.setFixedHeight(scale(20))
         self.active_filter_bar.setStyleSheet(f"""
             QFrame {{
                 background-color: {COLORS['bg_base']};
@@ -3611,11 +3887,11 @@ class LibraryPanel(QtWidgets.QWidget):
             }}
         """)
         filter_bar_layout = QtWidgets.QHBoxLayout(self.active_filter_bar)
-        filter_bar_layout.setContentsMargins(6, 1, 6, 1)
-        filter_bar_layout.setSpacing(4)
+        filter_bar_layout.setContentsMargins(scale(6), scale(1), scale(6), scale(1))
+        filter_bar_layout.setSpacing(scale(4))
 
         self.filter_icon_label = QtWidgets.QLabel("▸")
-        self.filter_icon_label.setStyleSheet(f"color: {COLORS['accent']}; background: transparent; font-size: 9px;")
+        self.filter_icon_label.setStyleSheet(f"color: {COLORS['accent']}; background: transparent; {sfs(9)}")
         filter_bar_layout.addWidget(self.filter_icon_label)
 
         # Container for filter chips (will be populated dynamically)
@@ -3623,7 +3899,7 @@ class LibraryPanel(QtWidgets.QWidget):
         self.filter_chips_container.setStyleSheet("background: transparent;")
         self.filter_chips_layout = QtWidgets.QHBoxLayout(self.filter_chips_container)
         self.filter_chips_layout.setContentsMargins(0, 0, 0, 0)
-        self.filter_chips_layout.setSpacing(6)
+        self.filter_chips_layout.setSpacing(scale(6))
         filter_bar_layout.addWidget(self.filter_chips_container, 1)
 
         # Backwards compat aliases
@@ -3634,7 +3910,7 @@ class LibraryPanel(QtWidgets.QWidget):
         self.tag_filter_name.hide()
 
         self.clear_all_filters_btn = QtWidgets.QPushButton("× Clear All")
-        self.clear_all_filters_btn.setFixedHeight(18)
+        self.clear_all_filters_btn.setFixedHeight(scale(18))
         self.clear_all_filters_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.clear_all_filters_btn.setStyleSheet(f"""
             QPushButton {{
@@ -3642,7 +3918,7 @@ class LibraryPanel(QtWidgets.QWidget):
                 border: none;
                 border-radius: 2px;
                 color: {COLORS['text_secondary']};
-                padding: 1px 6px;
+                padding: {spx(1)} {spx(6)};
             }}
             QPushButton:hover {{
                 background-color: rgba(255, 255, 255, 0.1);
@@ -3659,8 +3935,8 @@ class LibraryPanel(QtWidgets.QWidget):
         splitter.setHandleWidth(1)
 
         self.collections = CollectionListWidget()
-        self.collections.setMinimumWidth(100)
-        self.collections.setMaximumWidth(300)
+        self.collections.setMinimumWidth(scale(100))
+        self.collections.setMaximumWidth(scale(300))
         self.collections.collection_selected.connect(self._on_collection_selected)
         splitter.addWidget(self.collections)
 
@@ -3689,12 +3965,12 @@ class LibraryPanel(QtWidgets.QWidget):
             }}
         """)
         info_footer_layout = QtWidgets.QHBoxLayout(self.info_footer)
-        info_footer_layout.setContentsMargins(8, 2, 8, 2)
-        info_footer_layout.setSpacing(6)
+        info_footer_layout.setContentsMargins(scale(8), scale(2), scale(8), scale(2))
+        info_footer_layout.setSpacing(scale(6))
 
         # Asset info area (name, context, artist) — hidden by default
         self.footer_asset_info = QtWidgets.QLabel("")
-        self.footer_asset_info.setStyleSheet(f"color: {COLORS['text']}; font-size: 10px; background: transparent;")
+        self.footer_asset_info.setStyleSheet(f"color: {COLORS['text']}; {sfs(10)} background: transparent;")
         self.footer_asset_info.hide()
         info_footer_layout.addWidget(self.footer_asset_info)
 
@@ -3703,7 +3979,7 @@ class LibraryPanel(QtWidgets.QWidget):
         self.footer_tags_container.setStyleSheet("background: transparent;")
         self.footer_tags_layout = QtWidgets.QHBoxLayout(self.footer_tags_container)
         self.footer_tags_layout.setContentsMargins(0, 0, 0, 0)
-        self.footer_tags_layout.setSpacing(4)
+        self.footer_tags_layout.setSpacing(scale(4))
         self.footer_tags_container.hide()
         info_footer_layout.addWidget(self.footer_tags_container)
 
@@ -3711,7 +3987,7 @@ class LibraryPanel(QtWidgets.QWidget):
 
         # Stats label (always at the right)
         self.stats_label = QtWidgets.QLabel("")
-        self.stats_label.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 9px; background: transparent;")
+        self.stats_label.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(9)} background: transparent;")
         info_footer_layout.addWidget(self.stats_label)
 
         main_layout.addWidget(self.info_footer, 0)  # No stretch
@@ -3856,6 +4132,12 @@ class LibraryPanel(QtWidgets.QWidget):
             pending_bulk.add(pending_id)
         if pending_bulk:
             assets = [a for a in assets if a.get('id') not in pending_bulk]
+
+        # Artist filter
+        artist = getattr(self, 'current_artist_filter', None)
+        if artist:
+            prefix = artist + '/'
+            assets = [a for a in assets if (a.get('remote_slug') or '').startswith(prefix)]
 
         # Apply sorting
         sort_key = self.sort_combo.currentData()
@@ -4042,8 +4324,8 @@ class LibraryPanel(QtWidgets.QWidget):
                     QPushButton {{
                         background-color: rgba(255,255,255,0.1);
                         color: {COLORS['text_secondary']};
-                        font-size: 9px;
-                        padding: 1px 5px;
+                        {sfs(9)}
+                        padding: {spx(1)} {spx(5)};
                         border-radius: 3px;
                         border: none;
                     }}
@@ -4115,7 +4397,7 @@ class LibraryPanel(QtWidgets.QWidget):
                     background-color: {COLORS['bg_medium']};
                     border: 1px solid {color};
                     border-radius: 2px;
-                    padding: 1px 4px;
+                    padding: {spx(1)} {spx(4)};
                     color: {color};
                 }}
                 QComboBox:hover {{
@@ -4132,7 +4414,7 @@ class LibraryPanel(QtWidgets.QWidget):
                     background-color: {COLORS['bg_medium']};
                     border: 1px solid {COLORS['border']};
                     border-radius: 2px;
-                    padding: 1px 4px;
+                    padding: {spx(1)} {spx(4)};
                 }}
                 QComboBox:hover {{
                     border-color: {COLORS['border_light']};
@@ -4179,9 +4461,10 @@ class LibraryPanel(QtWidgets.QWidget):
         self.collections.select_collection(coll_id)
 
     def _show_display_menu(self):
-        """Show display settings popup that stays open for multiple toggles."""
+        """Show view settings popup — card display + subcollection toggle."""
         popup = _CheckboxPopup(self)
 
+        popup.add_label("Card info")
         popup.add_checkbox("Name", self._display_settings.get('name', True),
                            lambda v: self._toggle_display('name', v))
         popup.add_checkbox("Context Badge", self._display_settings.get('context', True),
@@ -4189,8 +4472,18 @@ class LibraryPanel(QtWidgets.QWidget):
         popup.add_checkbox("Tags", self._display_settings.get('tags', False),
                            lambda v: self._toggle_display('tags', v))
 
+        popup.add_separator()
+        popup.add_label("Collections")
+        popup.add_checkbox("Include Subcollections", self.subcontent_btn.isChecked(),
+                           self._on_subcontent_toggled_from_popup)
+
         pos = self.display_btn.mapToGlobal(self.display_btn.rect().bottomLeft())
         popup.show_at(pos)
+
+    def _on_subcontent_toggled_from_popup(self, checked):
+        """Handle subcollection toggle from the View popup."""
+        self.subcontent_btn.setChecked(checked)
+        self._on_subcontent_changed()
 
     def _toggle_display(self, key, value):
         """Toggle a display setting and refresh."""
@@ -4266,6 +4559,83 @@ class LibraryPanel(QtWidgets.QWidget):
         self._refresh_assets()
         self._save_ui_state()
 
+    def _show_artist_menu(self):
+        """Show a popup menu for filtering by artist/user."""
+        if not SOPDROP_AVAILABLE:
+            return
+
+        all_artists = library.get_all_artists()
+        # Only use scroll area for 10+ artists — avoids oversized popup for few items
+        use_scroll = len(all_artists) > 10 if all_artists else False
+        popup = _CheckboxPopup(self, max_height=300 if use_scroll else 0)
+
+        if not all_artists:
+            popup.add_label("No artists yet")
+        else:
+            if self.current_artist_filter:
+                def _clear_and_close():
+                    self._clear_artist_filter()
+                    popup.close()
+                popup.add_button(f"Clear ({self.current_artist_filter})", _clear_and_close)
+                popup.add_separator()
+
+            for artist_info in all_artists[:30]:
+                artist = artist_info['artist']
+                count = artist_info['count']
+                is_active = self.current_artist_filter == artist
+
+                def make_handler(a):
+                    return lambda checked: self._set_artist_filter(a if checked else None)
+                popup.add_checkbox(f"{artist}  ({count})", is_active, make_handler(artist))
+
+        pos = self.artist_btn.mapToGlobal(self.artist_btn.rect().bottomLeft())
+        popup.show_at(pos)
+
+    def _set_artist_filter(self, artist):
+        """Set or clear the artist filter."""
+        self.current_artist_filter = artist
+        self._update_artist_btn_style()
+        self._update_filter_chips()
+        self._refresh_assets()
+
+    def _clear_artist_filter(self):
+        """Clear the artist filter."""
+        self.current_artist_filter = None
+        self._update_artist_btn_style()
+        self._update_filter_chips()
+        self._refresh_assets()
+
+    def _update_artist_btn_style(self):
+        """Update artist button appearance based on active filter."""
+        if self.current_artist_filter:
+            self.artist_btn.setText(self.current_artist_filter)
+            self.artist_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {COLORS['accent']};
+                    border: 1px solid {COLORS['accent']};
+                    border-radius: 2px;
+                    color: white;
+                    padding: {spx(1)} {spx(6)};
+                }}
+                QPushButton:hover {{
+                    background-color: {COLORS['accent_hover']};
+                }}
+            """)
+        else:
+            self.artist_btn.setText("Artist \u25BE")
+            self.artist_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {COLORS['bg_medium']};
+                    border: 1px solid {COLORS['border']};
+                    border-radius: 2px;
+                    color: {COLORS['text']};
+                    padding: {spx(1)} {spx(6)};
+                }}
+                QPushButton:hover {{
+                    border-color: {COLORS['border_light']};
+                }}
+            """)
+
     def _clear_all_filters(self):
         """Clear all active filters (search, context, tags, collections)."""
         self.search_input.setText("")
@@ -4273,6 +4643,7 @@ class LibraryPanel(QtWidgets.QWidget):
         self.current_context_filter = None
         self.current_tag_filters.clear()
         self.current_tag_filter = None
+        self.current_artist_filter = None
         self.current_collection = None
         self.current_collections.clear()
         self.collections.deselect_all()
@@ -4281,6 +4652,7 @@ class LibraryPanel(QtWidgets.QWidget):
 
         self._update_filter_chips()
         self._update_tags_btn_style()
+        self._update_artist_btn_style()
         self._update_context_combo_style()
         self._refresh_assets()
         self._save_ui_state()
@@ -4325,22 +4697,22 @@ class LibraryPanel(QtWidgets.QWidget):
             }}
         """)
         chip_layout = QtWidgets.QHBoxLayout(chip)
-        chip_layout.setContentsMargins(6, 1, 4, 1)
-        chip_layout.setSpacing(3)
+        chip_layout.setContentsMargins(scale(6), scale(1), scale(4), scale(1))
+        chip_layout.setSpacing(scale(3))
 
         label = QtWidgets.QLabel(text)
-        label.setStyleSheet(f"color: white; font-size: 10px; background: transparent;")
+        label.setStyleSheet(f"color: white; {sfs(10)} background: transparent;")
         chip_layout.addWidget(label)
 
         remove_btn = QtWidgets.QPushButton("×")
-        remove_btn.setFixedSize(12, 12)
+        remove_btn.setFixedSize(scale(12), scale(12))
         remove_btn.setCursor(QtCore.Qt.PointingHandCursor)
         remove_btn.setStyleSheet(f"""
             QPushButton {{
                 background: transparent;
                 border: none;
                 color: rgba(255,255,255,0.7);
-                font-size: 11px;
+                {sfs(11)}
                 padding: 0;
             }}
             QPushButton:hover {{
@@ -4427,6 +4799,16 @@ class LibraryPanel(QtWidgets.QWidget):
             )
             self.filter_chips_layout.addWidget(chip)
 
+        # Artist chip
+        artist = getattr(self, 'current_artist_filter', None)
+        if artist:
+            has_filters = True
+            chip = self._make_filter_chip(
+                f"by {artist}", COLORS['accent_dim'],
+                lambda: self._clear_artist_filter()
+            )
+            self.filter_chips_layout.addWidget(chip)
+
         self.filter_chips_layout.addStretch()
 
         # Toggle "Filter:" label and "Clear All" button visibility
@@ -4457,7 +4839,7 @@ class LibraryPanel(QtWidgets.QWidget):
                     border: 1px solid {COLORS['accent']};
                     border-radius: 2px;
                     color: white;
-                    padding: 1px 6px;
+                    padding: {spx(1)} {spx(6)};
                 }}
                 QPushButton:hover {{
                     background-color: {COLORS['accent_hover']};
@@ -4471,7 +4853,7 @@ class LibraryPanel(QtWidgets.QWidget):
                     border: 1px solid {COLORS['border']};
                     border-radius: 2px;
                     color: {COLORS['text']};
-                    padding: 1px 6px;
+                    padding: {spx(1)} {spx(6)};
                 }}
                 QPushButton:hover {{
                     border-color: {COLORS['border_light']};
@@ -4511,6 +4893,14 @@ class LibraryPanel(QtWidgets.QWidget):
                 self.collections.refresh()
                 self._refresh_assets()
                 self.show_toast("Asset saved to library", 'success', 2500)
+                # Reload TAB menu shelf so new asset is immediately available
+                try:
+                    from sopdrop.menu import get_shelf_file
+                    _sf = get_shelf_file()
+                    if _sf.exists():
+                        hou.shelves.loadFile(str(_sf))
+                except Exception:
+                    pass
         except Exception as e:
             print(f"[Sopdrop] Error showing save dialog: {e}")
             import traceback
@@ -4582,6 +4972,51 @@ class LibraryPanel(QtWidgets.QWidget):
                 hou.ui.displayMessage("Failed to load asset")
                 return
 
+            # Pre-check HDA dependencies before paste
+            use_placeholders = False
+            deps = package.get('dependencies', [])
+            if deps:
+                try:
+                    from sopdrop.importer import _check_missing_hdas
+                    missing = _check_missing_hdas(deps)
+                    if missing:
+                        lines = [f"This asset requires {len(missing)} missing HDA(s):\n"]
+                        for dep in missing:
+                            label = dep.get('label') or dep.get('name', 'unknown')
+                            cat = dep.get('category', '')
+                            slug = dep.get('sopdrop_slug')
+                            if slug:
+                                lines.append(f"  {label} ({cat}) - install: sopdrop.install(\"{slug}\")")
+                            else:
+                                lines.append(f"  {label} ({cat})")
+
+                        fmt = package.get('format', '')
+                        is_v1 = (fmt == 'sopdrop-v1' or fmt == 'chopsop-v1')
+
+                        if is_v1:
+                            lines.append("\nYou can paste with red placeholder subnets for the missing nodes.")
+                            reply = hou.ui.displayMessage(
+                                "\n".join(lines),
+                                buttons=("Paste with Placeholders", "Cancel"),
+                                title="Missing Dependencies",
+                                severity=hou.severityType.Warning,
+                                default_choice=1,
+                            )
+                            if reply != 0:
+                                return
+                            use_placeholders = True
+                        else:
+                            lines.append("\nInstall the missing HDAs and try again.")
+                            lines.append("(Placeholder mode is only available for code-based packages.)")
+                            hou.ui.displayMessage(
+                                "\n".join(lines),
+                                title="Missing Dependencies",
+                                severity=hou.severityType.Warning,
+                            )
+                            return
+                except ImportError:
+                    pass
+
             target_ctx = target.childTypeCategory().name().lower()
             pkg_ctx = package.get('context', '').lower()
             ctx_map = {'sop': 'sop', 'object': 'obj', 'vop': 'vop', 'dop': 'dop', 'cop2': 'cop', 'top': 'top', 'lop': 'lop', 'chop': 'chop'}
@@ -4605,14 +5040,21 @@ class LibraryPanel(QtWidgets.QWidget):
             center = bounds.center()
             position = (center[0], center[1])
 
-            import_items(package, target, position=position)
+            import_items(package, target, position=position, allow_placeholders=use_placeholders)
             library.record_asset_use(asset_id)
 
             name = asset['name'] if asset else "Asset"
-            self.show_toast(f"Pasted {name}", 'success', 2000)
+            if use_placeholders:
+                self.show_toast(f"Pasted {name} (with placeholders)", 'success', 3000)
+            else:
+                self.show_toast(f"Pasted {name}", 'success', 2000)
 
         except Exception as e:
-            self.show_toast(f"Paste failed: {e}", 'error', 4000)
+            # Show just the first line in the toast — full error goes to console
+            err_first_line = str(e).split('\n')[0][:200]
+            self.show_toast(f"Paste failed: {err_first_line}", 'error', 5000)
+            import traceback as _tb
+            print(f"[Sopdrop] Paste error: {e}\n{_tb.format_exc()}")
 
     def _install_hda(self, asset_id):
         """Install an HDA and place an instance of it."""
@@ -4837,22 +5279,27 @@ class LibraryPanel(QtWidgets.QWidget):
 
     def _update_asset(self, asset_id):
         """Update an existing asset with currently selected nodes."""
+        print(f"[Sopdrop] Version up requested for asset_id={asset_id}")
         if not SOPDROP_AVAILABLE:
+            self.show_toast("Sopdrop library not available", 'error')
             return
 
         asset = library.get_asset(asset_id)
         if not asset:
+            self.show_toast("Asset not found in library", 'error')
             return
 
         pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
         if not pane:
-            hou.ui.displayMessage("No network editor found")
+            self.show_toast("No network editor found", 'error')
             return
 
         items = pane.pwd().selectedItems()
         if not items:
-            hou.ui.displayMessage("Please select some nodes to update this asset with")
+            self.show_toast("Select nodes in the network editor first", 'warning', 3000)
             return
+
+        print(f"[Sopdrop] Version up: {len(items)} items selected, updating '{asset.get('name')}'")
 
         # Show save dialog with existing asset for update
         dialog = SaveToLibraryDialog(items, existing_asset=asset, parent=self)
@@ -4889,7 +5336,7 @@ class LibraryPanel(QtWidgets.QWidget):
                 border: none;
                 border-radius: 2px;
                 color: white;
-                padding: 1px 8px;
+                padding: {spx(1)} {spx(8)};
             }}
         """
         inactive_style = f"""
@@ -4898,7 +5345,7 @@ class LibraryPanel(QtWidgets.QWidget):
                 border: none;
                 border-radius: 2px;
                 color: {COLORS['text_secondary']};
-                padding: 1px 8px;
+                padding: {spx(1)} {spx(8)};
             }}
             QPushButton:hover {{
                 color: {COLORS['text']};
@@ -4911,7 +5358,7 @@ class LibraryPanel(QtWidgets.QWidget):
                 border: none;
                 border-radius: 2px;
                 color: {COLORS['text_dim']};
-                padding: 1px 8px;
+                padding: {spx(1)} {spx(8)};
             }}
         """
 
@@ -5090,193 +5537,199 @@ class LibraryPanel(QtWidgets.QWidget):
 # ==============================================================================
 
 class HoudiniIconBrowser(QtWidgets.QDialog):
-    """Dialog to browse and select Houdini icons."""
+    """Dialog to browse and select from ALL available Houdini icons.
 
-    # Fallback icons used when icons.zip is not found
-    _FALLBACK_ICONS = {
-        'SOP': ['SOP_scatter', 'SOP_attribwrangle', 'SOP_copy', 'SOP_blast', 'SOP_transform',
-                'SOP_merge', 'SOP_subnet', 'SOP_switch', 'SOP_null', 'SOP_group',
-                'SOP_vdbfrompolygons', 'SOP_polyextrude', 'SOP_subdivide', 'SOP_smooth',
-                'SOP_polybevel', 'SOP_boolean', 'SOP_remesh', 'SOP_mountain', 'SOP_noise',
-                'SOP_ray', 'SOP_file', 'SOP_cache', 'SOP_output', 'SOP_foreach',
-                'SOP_pointwrangle', 'SOP_primwrangle', 'SOP_volumewrangle', 'SOP_detailwrangle'],
-        'OBJ': ['OBJ_geo', 'OBJ_null', 'OBJ_subnet', 'OBJ_camera', 'OBJ_light',
-                'OBJ_bone', 'OBJ_muscle', 'OBJ_blend', 'OBJ_fetch', 'OBJ_instance'],
-        'LOP': ['LOP_material', 'LOP_sublayer', 'LOP_merge', 'LOP_switch', 'LOP_null',
-                'LOP_primitiveconfigure', 'LOP_light', 'LOP_camera', 'LOP_edit', 'LOP_prune'],
-        'VOP': ['VOP_constant', 'VOP_add', 'VOP_multiply', 'VOP_noise', 'VOP_texture',
-                'VOP_output', 'VOP_parameter', 'VOP_mix', 'VOP_clamp', 'VOP_fit'],
-        'DOP': ['DOP_rbdobject', 'DOP_rbdpackedobject', 'DOP_dopsolve', 'DOP_popnet',
-                'DOP_pyrosolver', 'DOP_flipsolver', 'DOP_gravity', 'DOP_merge', 'DOP_switch'],
-        'TOP': ['TOP_generic', 'TOP_ffmpegencodevideo', 'TOP_filepattern', 'TOP_imagemagick',
-                'TOP_pythonscript', 'TOP_ropfetch', 'TOP_wedge', 'TOP_wait', 'TOP_partitionbyattribute'],
-        'COP': ['COP2_colorwheel', 'COP2_file', 'COP2_composite', 'COP2_over', 'COP2_multiply',
-                'COP2_vopcop2gen', 'COP2_color', 'COP2_blur', 'COP2_scale', 'COP2_crop'],
-        'CHOP': ['CHOP_channel', 'CHOP_math', 'CHOP_noise', 'CHOP_wave', 'CHOP_lag',
-                 'CHOP_filter', 'CHOP_blend', 'CHOP_export', 'CHOP_delete', 'CHOP_merge'],
-        'ROP': ['ROP_mantra', 'ROP_karma', 'ROP_geometry', 'ROP_alembic', 'ROP_fbx',
-                'ROP_opengl', 'ROP_fetch', 'ROP_merge', 'ROP_switch', 'ROP_comp'],
-        'MISC': ['MISC_python', 'MISC_digital_asset', 'MISC_hda_unlocked', 'MISC_subnet',
-                 'MISC_locked', 'COMMON_null', 'COMMON_subnet', 'COMMON_switch',
-                 'NETWORKS_sop', 'NETWORKS_lop', 'NETWORKS_obj', 'NETWORKS_dop'],
-    }
+    Opens instantly by deferring icon rendering. Icons are only created
+    for the current search results (capped at _MAX_DISPLAY).
+    """
 
-    # Session-level cache for discovered icons
-    _discovered_icons = None
-
-    # Preferred category display order
-    _CATEGORY_ORDER = [
-        'SOP', 'OBJ', 'LOP', 'VOP', 'DOP', 'TOP', 'COP2', 'CHOP', 'ROP',
-    ]
+    _discovered_icons = None  # Session-level cache
+    _MAX_DISPLAY = 250  # Max icons to render at once
+    # Prefixes that are typically text labels, not useful visual icons
+    _EXCLUDED_PREFIXES = ('DATATYPES_', 'SCENEGRAPH_')
 
     @classmethod
     def _discover_icons(cls):
-        """Scan $HH/help/icons.zip for all available icons. Cached per session."""
+        """Discover all available Houdini icons. Cached per session."""
         if cls._discovered_icons is not None:
             return cls._discovered_icons
 
-        icons_zip_path = None
+        all_icons = set()
+
+        # Method 1: Get icons from every registered node type
         try:
-            hh = hou.text.expandString('$HH')
-            if hh:
-                candidate = os.path.join(hh, 'help', 'icons.zip')
-                if os.path.isfile(candidate):
-                    icons_zip_path = candidate
+            for cat_name, cat in hou.nodeTypeCategories().items():
+                for type_name, node_type in cat.nodeTypes().items():
+                    try:
+                        icon = node_type.icon()
+                        if icon:
+                            all_icons.add(icon)
+                    except Exception:
+                        pass
         except Exception:
             pass
 
-        if not icons_zip_path:
-            hh_env = os.environ.get('HH', '')
-            if hh_env:
-                candidate = os.path.join(hh_env, 'help', 'icons.zip')
-                if os.path.isfile(candidate):
-                    icons_zip_path = candidate
+        # Method 2: Scan $HH/config/Icons/ directory tree
+        icon_dirs_tried = False
+        for env_getter in [
+            lambda: hou.text.expandString('$HH'),
+            lambda: os.environ.get('HH', ''),
+            lambda: os.environ.get('HFS', '') + '/houdini',
+        ]:
+            try:
+                hh = env_getter()
+                if not hh:
+                    continue
+                icons_dir = os.path.join(hh, 'config', 'Icons')
+                if os.path.isdir(icons_dir):
+                    icon_dirs_tried = True
+                    for root, dirs, files in os.walk(icons_dir):
+                        for fname in files:
+                            base, ext = os.path.splitext(fname)
+                            if ext.lower() in ('.svg', '.png'):
+                                rel = os.path.relpath(root, icons_dir)
+                                if rel and rel != '.':
+                                    all_icons.add(f"{rel}_{base}")
+                                else:
+                                    all_icons.add(base)
+                    break
+            except Exception:
+                pass
 
-        if not icons_zip_path:
-            cls._discovered_icons = cls._FALLBACK_ICONS
-            return cls._discovered_icons
-
-        try:
-            categories = {}
-            with zipfile.ZipFile(icons_zip_path, 'r') as z:
-                for entry in z.namelist():
-                    if not entry.lower().endswith('.svg'):
+        # Method 3: Scan $HH/help/icons.zip as fallback
+        if not icon_dirs_tried:
+            for env_getter in [
+                lambda: hou.text.expandString('$HH'),
+                lambda: os.environ.get('HH', ''),
+            ]:
+                try:
+                    hh = env_getter()
+                    if not hh:
                         continue
-                    # entries like "SOP/scatter.svg" or "MISC/python.svg"
-                    parts = entry.replace('\\', '/').split('/')
-                    if len(parts) < 2:
-                        continue
-                    cat = parts[-2]  # category folder
-                    name = os.path.splitext(parts[-1])[0]  # icon name without .svg
-                    icon_name = f"{cat}_{name}"
-                    if cat not in categories:
-                        categories[cat] = []
-                    categories[cat].append(icon_name)
+                    zip_path = os.path.join(hh, 'help', 'icons.zip')
+                    if os.path.isfile(zip_path):
+                        with zipfile.ZipFile(zip_path, 'r') as z:
+                            for entry in z.namelist():
+                                if not entry.lower().endswith('.svg'):
+                                    continue
+                                parts = entry.replace('\\', '/').split('/')
+                                if len(parts) >= 2:
+                                    cat = parts[-2]
+                                    name = os.path.splitext(parts[-1])[0]
+                                    all_icons.add(f"{cat}_{name}")
+                        break
+                except Exception:
+                    pass
 
-            # Sort icons within each category
-            for cat in categories:
-                categories[cat].sort()
+        # Filter out text-label icons
+        filtered = sorted(
+            ic for ic in all_icons
+            if not any(ic.startswith(p) for p in cls._EXCLUDED_PREFIXES)
+        )
 
-            if categories:
-                cls._discovered_icons = categories
-            else:
-                cls._discovered_icons = cls._FALLBACK_ICONS
-        except Exception:
-            cls._discovered_icons = cls._FALLBACK_ICONS
+        if filtered:
+            cls._discovered_icons = filtered
+            print(f"[Sopdrop] Discovered {len(cls._discovered_icons)} Houdini icons")
+        else:
+            cls._discovered_icons = sorted([
+                'SOP_scatter', 'SOP_attribwrangle', 'SOP_copy', 'SOP_blast',
+                'SOP_transform', 'SOP_merge', 'SOP_subnet', 'SOP_null',
+                'OBJ_geo', 'OBJ_null', 'OBJ_subnet', 'OBJ_camera',
+                'LOP_material', 'LOP_sublayer', 'VOP_constant', 'VOP_noise',
+                'DOP_rbdobject', 'TOP_generic', 'CHOP_channel', 'ROP_karma',
+                'MISC_python', 'MISC_digital_asset', 'COMMON_subnet',
+            ])
+            print(f"[Sopdrop] Using fallback icon list ({len(cls._discovered_icons)} icons)")
 
         return cls._discovered_icons
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.selected_icon = None
-        self._active_category = None
-        self._icon_categories = self._discover_icons()
+        self._all_icons = self._discover_icons()
+        self._all_icon_buttons = []
         self._setup_ui()
 
     def _setup_ui(self):
         self.setWindowTitle("Select Icon")
-        self.setFixedSize(scale(500), scale(500))
+        self.setFixedSize(scale(540), scale(520))
         self.setStyleSheet(STYLESHEET)
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(scale(12), scale(12), scale(12), scale(12))
+        layout.setSpacing(scale(8))
+
+        # Header with count
+        header = QtWidgets.QHBoxLayout()
+        self._count_label = QtWidgets.QLabel(f"{len(self._all_icons)} icons available")
+        self._count_label.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
+        header.addWidget(self._count_label)
+        header.addStretch()
+        layout.addLayout(header)
 
         # Search bar
         self.search_input = QtWidgets.QLineEdit()
-        self.search_input.setPlaceholderText("Search icons...")
+        self.search_input.setPlaceholderText("Type to search icons... (e.g. scatter, camera, python)")
         self.search_input.setFixedHeight(scale(28))
         self.search_input.setStyleSheet(f"""
             QLineEdit {{
                 background-color: {COLORS['bg_dark']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 3px;
-                padding: 4px 8px;
+                padding: {spx(4)} {spx(8)};
                 color: {COLORS['text']};
             }}
             QLineEdit:focus {{
                 border-color: {COLORS['accent']};
             }}
         """)
-        self.search_input.textChanged.connect(self._on_search)
+        self._search_timer = QtCore.QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(150)
+        self._search_timer.timeout.connect(self._execute_search)
+        self.search_input.textChanged.connect(lambda: self._search_timer.start())
         layout.addWidget(self.search_input)
 
-        # Category tab bar
-        cat_bar = QtWidgets.QWidget()
-        cat_bar_layout = FlowLayout(cat_bar)
-        cat_bar_layout.setSpacing(3)
-        self._cat_buttons = {}
-
-        # Build ordered category list: preferred order first, then remaining sorted
-        ordered_cats = []
-        for cat in self._CATEGORY_ORDER:
-            if cat in self._icon_categories:
-                ordered_cats.append(cat)
-        for cat in sorted(self._icon_categories.keys()):
-            if cat not in ordered_cats:
-                ordered_cats.append(cat)
-        self._ordered_categories = ordered_cats
-
-        for cat in ordered_cats:
-            count = len(self._icon_categories[cat])
-            btn = QtWidgets.QPushButton(f"{cat} ({count})")
-            btn.setCursor(QtCore.Qt.PointingHandCursor)
-            btn.setStyleSheet(self._cat_btn_style(False))
-            btn.clicked.connect(lambda checked=False, c=cat: self._select_category(c))
-            cat_bar_layout.addWidget(btn)
-            self._cat_buttons[cat] = btn
-
-        layout.addWidget(cat_bar)
-
-        # Scrollable icon grid (populated per-category)
+        # Scrollable icon grid
         self._scroll = QtWidgets.QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         self._scroll.setStyleSheet(f"""
             QScrollArea {{
                 border: 1px solid {COLORS['border']};
                 border-radius: 3px;
                 background: {COLORS['bg_medium']};
             }}
+            QScrollBar:vertical {{
+                background: {COLORS['bg_dark']};
+                width: 8px;
+                margin: 0;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {COLORS['border']};
+                min-height: 20px;
+                border-radius: 4px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {COLORS['text_dim']};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0;
+            }}
         """)
-
-        self._icon_container = QtWidgets.QWidget()
-        self._icon_container.setStyleSheet(f"background: {COLORS['bg_medium']};")
-        self._icon_flow = FlowLayout(self._icon_container)
-        self._icon_flow.setSpacing(4)
-        self._scroll.setWidget(self._icon_container)
         layout.addWidget(self._scroll, 1)
 
-        self._all_icon_buttons = []
-        self._category_sections = []  # kept for compatibility
-
-        # Show first category by default
-        if ordered_cats:
-            self._select_category(ordered_cats[0])
+        # Show initial batch (first N) — fast to create
+        self._populate_grid(self._all_icons[:self._MAX_DISPLAY])
+        if len(self._all_icons) > self._MAX_DISPLAY:
+            self._count_label.setText(
+                f"Showing {self._MAX_DISPLAY} of {len(self._all_icons)} — type to search all"
+            )
 
         # Selected icon preview + buttons row
         bottom_row = QtWidgets.QHBoxLayout()
-        bottom_row.setSpacing(8)
+        bottom_row.setSpacing(scale(8))
 
         self.preview_btn = QtWidgets.QLabel()
         self.preview_btn.setFixedSize(scale(28), scale(28))
@@ -5291,7 +5744,7 @@ class HoudiniIconBrowser(QtWidgets.QDialog):
         bottom_row.addWidget(self.preview_btn)
 
         self.preview_name = QtWidgets.QLabel("None selected")
-        self.preview_name.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px;")
+        self.preview_name.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
         bottom_row.addWidget(self.preview_name)
 
         bottom_row.addStretch()
@@ -5304,7 +5757,7 @@ class HoudiniIconBrowser(QtWidgets.QDialog):
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 3px;
-                padding: 4px 16px;
+                padding: {spx(4)} {spx(16)};
                 color: {COLORS['text']};
             }}
             QPushButton:hover {{
@@ -5322,7 +5775,7 @@ class HoudiniIconBrowser(QtWidgets.QDialog):
                 background-color: {COLORS['accent']};
                 border: none;
                 border-radius: 3px;
-                padding: 4px 16px;
+                padding: {spx(4)} {spx(16)};
                 color: white;
                 font-weight: 600;
             }}
@@ -5334,50 +5787,12 @@ class HoudiniIconBrowser(QtWidgets.QDialog):
         bottom_row.addWidget(select_btn)
 
         layout.addLayout(bottom_row)
+        self.search_input.setFocus()
 
-    def _cat_btn_style(self, active):
-        if active:
-            return f"""
-                QPushButton {{
-                    background: {COLORS['accent']};
-                    border: none;
-                    border-radius: 3px;
-                    padding: 3px 8px;
-                    color: white;
-                    font-size: 9px;
-                    font-weight: 600;
-                }}
-            """
-        return f"""
-            QPushButton {{
-                background: {COLORS['bg_light']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 3px;
-                padding: 3px 8px;
-                color: {COLORS['text_secondary']};
-                font-size: 9px;
-            }}
-            QPushButton:hover {{
-                background: {COLORS['bg_lighter']};
-                color: {COLORS['text']};
-            }}
-        """
-
-    def _select_category(self, category):
-        """Show icons for the selected category."""
-        if self._active_category == category:
-            return
-        self._active_category = category
-
-        # Update tab styling
-        for cat, btn in self._cat_buttons.items():
-            btn.setStyleSheet(self._cat_btn_style(cat == category))
-
-        # Clear and repopulate the icon grid
+    def _populate_grid(self, icons):
+        """Populate the icon grid with the given icon list."""
         self._all_icon_buttons.clear()
-        self._category_sections.clear()
 
-        # Remove old container and create fresh one
         old_widget = self._scroll.takeWidget()
         if old_widget:
             old_widget.deleteLater()
@@ -5385,40 +5800,36 @@ class HoudiniIconBrowser(QtWidgets.QDialog):
         container = QtWidgets.QWidget()
         container.setStyleSheet(f"background: {COLORS['bg_medium']};")
         flow = FlowLayout(container)
-        flow.setSpacing(4)
+        flow.setSpacing(scale(4))
 
-        icons = self._icon_categories.get(category, [])
         for icon_name in icons:
             btn = self._create_icon_button(icon_name)
             flow.addWidget(btn)
             self._all_icon_buttons.append(btn)
 
         self._scroll.setWidget(container)
-        self._icon_container = container
-        self._icon_flow = flow
 
     def _create_icon_button(self, icon_name):
         """Create a clickable icon button."""
         btn = QtWidgets.QPushButton()
-        btn.setFixedSize(scale(40), scale(40))
+        btn.setFixedSize(scale(36), scale(36))
         btn.setCursor(QtCore.Qt.PointingHandCursor)
         btn.setToolTip(icon_name)
         btn.setProperty("icon_name", icon_name)
-        btn.setProperty("is_selected", False)
         btn.setStyleSheet(self._icon_btn_style(False))
 
-        # Try to load the icon
         try:
-            icon = hou.qt.Icon(icon_name, 28, 28)
+            icon = hou.qt.Icon(icon_name, 24, 24)
             if icon and not icon.isNull():
                 btn.setIcon(icon)
-                btn.setIconSize(QtCore.QSize(28, 28))
+                btn.setIconSize(QtCore.QSize(24, 24))
             else:
-                btn.setText(icon_name[:2])
-        except:
-            btn.setText(icon_name[:2])
+                btn.setText(icon_name.split('_')[-1][:3])
+                btn.setStyleSheet(self._icon_btn_style(False) + f"QPushButton {{ {sfs(7)} color: {COLORS['text_dim']}; }}")
+        except Exception:
+            btn.setText(icon_name.split('_')[-1][:3])
 
-        btn.clicked.connect(lambda: self._select_icon(icon_name))
+        btn.clicked.connect(lambda checked=False, n=icon_name: self._select_icon(n))
         return btn
 
     def _icon_btn_style(self, selected):
@@ -5446,80 +5857,49 @@ class HoudiniIconBrowser(QtWidgets.QDialog):
         """Handle icon selection."""
         self.selected_icon = icon_name
 
-        # Update preview
         try:
             icon = hou.qt.Icon(icon_name, 28, 28)
             if icon and not icon.isNull():
-                pixmap = icon.pixmap(28, 28)
-                self.preview_btn.setPixmap(pixmap)
+                self.preview_btn.setPixmap(icon.pixmap(28, 28))
             else:
                 self.preview_btn.clear()
-        except:
+        except Exception:
             self.preview_btn.clear()
 
         self.preview_name.setText(icon_name)
-        self.preview_name.setStyleSheet(f"color: {COLORS['text']}; font-size: 10px;")
+        self.preview_name.setStyleSheet(f"color: {COLORS['text']}; {sfs(10)}")
 
         # Highlight selected, unhighlight others
         for btn in self._all_icon_buttons:
             is_sel = btn.property("icon_name") == icon_name
-            btn.setProperty("is_selected", is_sel)
             btn.setStyleSheet(self._icon_btn_style(is_sel))
 
-    def _on_search(self, text):
-        """Filter icons based on search text. Shows results across all categories."""
-        text = text.lower().strip()
+    def _execute_search(self):
+        """Filter icons based on search text (debounced)."""
+        text = self.search_input.text().lower().strip()
 
         if not text:
-            # No search - restore category view
-            if self._active_category:
-                cat = self._active_category
-                self._active_category = None  # force refresh
-                self._select_category(cat)
+            # Empty search — show initial batch
+            display = self._all_icons[:self._MAX_DISPLAY]
+            self._populate_grid(display)
+            if len(self._all_icons) > self._MAX_DISPLAY:
+                self._count_label.setText(
+                    f"Showing {self._MAX_DISPLAY} of {len(self._all_icons)} — type to search all"
+                )
+            else:
+                self._count_label.setText(f"{len(self._all_icons)} icons")
             return
 
-        # Search mode: show matches from ALL categories
-        self._all_icon_buttons.clear()
+        matches = [ic for ic in self._all_icons if text in ic.lower()]
+        display = matches[:self._MAX_DISPLAY]
+        self._populate_grid(display)
 
-        old_widget = self._scroll.takeWidget()
-        if old_widget:
-            old_widget.deleteLater()
-
-        container = QtWidgets.QWidget()
-        container.setStyleSheet(f"background: {COLORS['bg_medium']};")
-        grid_layout = QtWidgets.QVBoxLayout(container)
-        grid_layout.setContentsMargins(8, 8, 8, 8)
-        grid_layout.setSpacing(6)
-
-        total_matches = 0
-        for cat in self._ordered_categories:
-            icons = self._icon_categories.get(cat, [])
-            matches = [ic for ic in icons if text in ic.lower()]
-            if not matches:
-                continue
-
-            cat_label = QtWidgets.QLabel(f"{cat} ({len(matches)})")
-            cat_label.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 9px; font-weight: bold; padding: 2px 0;")
-            grid_layout.addWidget(cat_label)
-
-            flow_widget = QtWidgets.QWidget()
-            flow = FlowLayout(flow_widget)
-            flow.setSpacing(4)
-            for icon_name in matches:
-                btn = self._create_icon_button(icon_name)
-                flow.addWidget(btn)
-                self._all_icon_buttons.append(btn)
-            grid_layout.addWidget(flow_widget)
-            total_matches += len(matches)
-
-        if total_matches == 0:
-            no_results = QtWidgets.QLabel("No icons found")
-            no_results.setStyleSheet(f"color: {COLORS['text_dim']}; padding: 20px;")
-            no_results.setAlignment(QtCore.Qt.AlignCenter)
-            grid_layout.addWidget(no_results)
-
-        grid_layout.addStretch()
-        self._scroll.setWidget(container)
+        if len(matches) > self._MAX_DISPLAY:
+            self._count_label.setText(
+                f"Showing {self._MAX_DISPLAY} of {len(matches)} matches — refine search"
+            )
+        else:
+            self._count_label.setText(f"{len(matches)} matches")
 
 
 # ==============================================================================
@@ -5548,11 +5928,27 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         # Check if this is an HDA
         self.hda_info = None
         self.is_hda = False
+        self.container_hda = None  # Set when saving contents of a container HDA
         if SOPDROP_AVAILABLE and len(self.nodes) == 1:
             try:
                 from sopdrop.export import detect_publishable_hda
                 self.hda_info = detect_publishable_hda(self.nodes)
-                self.is_hda = self.hda_info is not None
+                if self.hda_info is not None:
+                    node = self.nodes[0]
+                    # If the HDA is a container (subnet-like, e.g. SOP Create)
+                    # with children inside, save the children as a node package
+                    # but keep the HDA info as metadata so we know the container type.
+                    if node.isSubNetwork() and node.children():
+                        all_items = list(node.allItems())
+                        self.items = all_items
+                        self.nodes = [i for i in all_items if isinstance(i, hou.Node)]
+                        # Keep hda_info for metadata but don't treat as HDA binary save
+                        self.container_hda = self.hda_info
+                        self.hda_info = None
+                        self.is_hda = False
+                        print(f"[Sopdrop] Container HDA '{self.container_hda.get('type_name', '?')}' with {len(self.nodes)} child nodes — saving contents")
+                    else:
+                        self.is_hda = True
             except Exception as e:
                 print(f"[Sopdrop] HDA detection error: {e}")
 
@@ -5576,22 +5972,22 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
                 background-color: {COLORS['bg_dark']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 3px;
-                padding: 4px 8px;
+                padding: {spx(4)} {spx(8)};
                 color: {COLORS['text']};
             }}
             QLineEdit:focus, QTextEdit:focus {{
                 border-color: {COLORS['accent']};
             }}
         """
-        label_style = f"color: {COLORS['text_dim']}; font-size: 10px;"
+        label_style = f"color: {COLORS['text_dim']}; {sfs(10)}"
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 16)
-        layout.setSpacing(14)
+        layout.setContentsMargins(scale(20), scale(20), scale(20), scale(16))
+        layout.setSpacing(scale(14))
 
         # ── Row 1: Icon + Name + Badges ──
         top_row = QtWidgets.QHBoxLayout()
-        top_row.setSpacing(12)
+        top_row.setSpacing(scale(12))
 
         self.icon_btn = QtWidgets.QPushButton()
         self.icon_btn.setFixedSize(scale(48), scale(48))
@@ -5602,7 +5998,7 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
                 background-color: {COLORS['bg_dark']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 6px;
-                font-size: 10px;
+                {sfs(10)}
                 color: {COLORS['text_dim']};
             }}
             QPushButton:hover {{
@@ -5611,24 +6007,39 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         """)
         self.icon_btn.setText("Icon")
         self.icon_btn.clicked.connect(self._show_icon_browser)
-        self._set_default_icon()
         top_row.addWidget(self.icon_btn)
+
+        # Overlay label on icon button to hint it's clickable
+        self._icon_overlay = QtWidgets.QLabel("Icon...", self.icon_btn)
+        self._icon_overlay.setAlignment(QtCore.Qt.AlignCenter)
+        self._icon_overlay.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+        self._icon_overlay.setStyleSheet(f"""
+            background-color: rgba(0, 0, 0, 0.55);
+            color: {COLORS['text']};
+            {sfs(9)}
+            border-radius: 3px;
+            padding: {spx(1)} {spx(4)};
+        """)
+        self._icon_overlay.setFixedSize(scale(48), scale(48))
+        self._icon_overlay.move(0, 0)
+
+        self._set_default_icon()
 
         # Name input (large, prominent)
         name_col = QtWidgets.QVBoxLayout()
-        name_col.setSpacing(2)
+        name_col.setSpacing(scale(2))
 
         self.name_input = QtWidgets.QLineEdit()
         self.name_input.setPlaceholderText("Asset name...")
-        self.name_input.setFixedHeight(30)
+        self.name_input.setFixedHeight(scale(30))
         self.name_input.setStyleSheet(f"""
             QLineEdit {{
                 background-color: transparent;
                 border: none;
                 border-bottom: 2px solid {COLORS['border']};
                 border-radius: 0;
-                padding: 2px 0;
-                font-size: 15px;
+                padding: {spx(2)} 0;
+                {sfs(15)}
                 font-weight: 600;
                 color: {COLORS['text_bright']};
             }}
@@ -5644,12 +6055,17 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         if self.is_hda:
             hda_label = self.hda_info.get('type_label', '') or self.hda_info.get('type_name', 'Unknown')
             stats_text = f"HDA · {hda_label}"
+        elif self.container_hda:
+            hda_label = self.container_hda.get('type_label', '') or self.container_hda.get('type_name', '?')
+            node_count = len(self.nodes)
+            total = node_count + sum(len(n.allSubChildren()) for n in self.nodes)
+            stats_text = f"{hda_label} · {node_count} nodes · {total} total"
         else:
             node_count = len(self.nodes)
             total = node_count + sum(len(n.allSubChildren()) for n in self.nodes)
             stats_text = f"{node_count} nodes · {total} total"
         stats_label = QtWidgets.QLabel(stats_text)
-        stats_label.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px;")
+        stats_label.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
         name_col.addWidget(stats_label)
 
         top_row.addLayout(name_col, 1)
@@ -5659,13 +6075,13 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         badge_col.setAlignment(QtCore.Qt.AlignTop)
         context = self._get_context()
         badge_row = QtWidgets.QHBoxLayout()
-        badge_row.setSpacing(4)
+        badge_row.setSpacing(scale(4))
         if self.is_hda:
             hda_badge = QtWidgets.QLabel("HDA")
-            hda_badge.setStyleSheet(f"background-color: {COLORS['warning']}; color: black; font-size: 9px; font-weight: bold; padding: 2px 6px; border-radius: 3px;")
+            hda_badge.setStyleSheet(f"background-color: {COLORS['warning']}; color: black; {sfs(9)} font-weight: bold; padding: {spx(2)} {spx(6)}; border-radius: 3px;")
             badge_row.addWidget(hda_badge)
         ctx_badge = QtWidgets.QLabel(context.upper())
-        ctx_badge.setStyleSheet(f"background-color: {get_context_color(context)}; color: white; font-size: 9px; font-weight: bold; padding: 2px 6px; border-radius: 3px;")
+        ctx_badge.setStyleSheet(f"background-color: {get_context_color(context)}; color: white; {sfs(9)} font-weight: bold; padding: {spx(2)} {spx(6)}; border-radius: 3px;")
         badge_row.addWidget(ctx_badge)
         badge_col.addLayout(badge_row)
         top_row.addLayout(badge_col)
@@ -5675,20 +6091,20 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         # Update notice
         if is_update:
             update_notice = QtWidgets.QLabel(f"Updating: {self.existing_asset.get('name', 'Unknown')}")
-            update_notice.setStyleSheet(f"color: {COLORS['accent']}; font-size: 10px;")
+            update_notice.setStyleSheet(f"color: {COLORS['accent']}; {sfs(10)}")
             layout.addWidget(update_notice)
 
         # ── Description ──
         self.desc_input = QtWidgets.QTextEdit()
-        self.desc_input.setFixedHeight(48)
+        self.desc_input.setFixedHeight(scale(48))
         self.desc_input.setPlaceholderText("Description (optional)")
         self.desc_input.setStyleSheet(f"""
             QTextEdit {{
                 background-color: {COLORS['bg_dark']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 3px;
-                padding: 4px 8px;
-                font-size: 11px;
+                padding: {spx(4)} {spx(8)};
+                {sfs(11)}
                 color: {COLORS['text']};
             }}
             QTextEdit:focus {{
@@ -5707,24 +6123,35 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
 
         # ── Save-to + Collection (inline row) ──
         options_row = QtWidgets.QHBoxLayout()
-        options_row.setSpacing(16)
+        options_row.setSpacing(scale(16))
 
         # Library selector (left — collections depend on which library)
         self._has_team_library = False
         self.library_selector = QtWidgets.QComboBox()
-        self.library_selector.setFixedHeight(24)
+        self.library_selector.setFixedHeight(scale(24))
         self.library_selector.addItem("Personal Library", "personal")
 
         if SOPDROP_AVAILABLE:
-            from sopdrop.config import get_team_info
+            from sopdrop.config import get_team_info, get_active_library
             team_info = get_team_info()
             if team_info:
                 team_name = team_info.get('name', 'Team Library')
                 self.library_selector.addItem(f"\u2630 {team_name}", "team")
                 self._has_team_library = True
 
+            # Default to the currently active library
+            active = get_active_library()
+            for i in range(self.library_selector.count()):
+                if self.library_selector.itemData(i) == active:
+                    self.library_selector.setCurrentIndex(i)
+                    break
+
+        # For version-up, lock to the asset's library (can't move assets between libraries)
+        if is_update:
+            self.library_selector.setEnabled(False)
+
         lib_col = QtWidgets.QVBoxLayout()
-        lib_col.setSpacing(2)
+        lib_col.setSpacing(scale(2))
         lib_lbl = QtWidgets.QLabel("Save to")
         lib_lbl.setStyleSheet(label_style)
         lib_col.addWidget(lib_lbl)
@@ -5733,12 +6160,12 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
 
         # Collection (right — refreshes when library changes)
         coll_col = QtWidgets.QVBoxLayout()
-        coll_col.setSpacing(2)
+        coll_col.setSpacing(scale(2))
         coll_lbl = QtWidgets.QLabel("Collection")
         coll_lbl.setStyleSheet(label_style)
         coll_col.addWidget(coll_lbl)
         self.coll_combo = QtWidgets.QComboBox()
-        self.coll_combo.setFixedHeight(24)
+        self.coll_combo.setFixedHeight(scale(24))
         self._populate_collection_combo()
         coll_col.addWidget(self.coll_combo)
         options_row.addLayout(coll_col, 1)
@@ -5754,7 +6181,7 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         layout.addWidget(thumb_lbl)
 
         self.ss_scroll = QtWidgets.QScrollArea()
-        self.ss_scroll.setFixedHeight(80)
+        self.ss_scroll.setFixedHeight(scale(80))
         self.ss_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         self.ss_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.ss_scroll.setWidgetResizable(True)
@@ -5771,12 +6198,12 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
 
         self.ss_gallery = QtWidgets.QWidget()
         self.ss_gallery_layout = QtWidgets.QHBoxLayout(self.ss_gallery)
-        self.ss_gallery_layout.setContentsMargins(6, 6, 6, 6)
-        self.ss_gallery_layout.setSpacing(6)
+        self.ss_gallery_layout.setContentsMargins(scale(6), scale(6), scale(6), scale(6))
+        self.ss_gallery_layout.setSpacing(scale(6))
         self.ss_gallery_layout.setAlignment(QtCore.Qt.AlignLeft)
 
         self.ss_placeholder = QtWidgets.QLabel("No thumbnail — click buttons below to add one")
-        self.ss_placeholder.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px;")
+        self.ss_placeholder.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
         self.ss_placeholder.setAlignment(QtCore.Qt.AlignCenter)
         self.ss_gallery_layout.addWidget(self.ss_placeholder)
         self.ss_status = QtWidgets.QLabel()  # Hidden, kept for compat
@@ -5787,19 +6214,19 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
 
         # Screenshot buttons
         ss_btns = QtWidgets.QHBoxLayout()
-        ss_btns.setSpacing(6)
+        ss_btns.setSpacing(scale(6))
 
         snip_btn = QtWidgets.QPushButton("+ Screenshot")
-        snip_btn.setFixedHeight(22)
+        snip_btn.setFixedHeight(scale(22))
         snip_btn.setCursor(QtCore.Qt.PointingHandCursor)
         snip_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 3px;
-                padding: 2px 10px;
+                padding: {spx(2)} {spx(10)};
                 color: {COLORS['text']};
-                font-size: 10px;
+                {sfs(10)}
             }}
             QPushButton:hover {{
                 border-color: {COLORS['accent']};
@@ -5810,16 +6237,16 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         ss_btns.addWidget(snip_btn)
 
         clip_btn = QtWidgets.QPushButton("+ Clipboard")
-        clip_btn.setFixedHeight(22)
+        clip_btn.setFixedHeight(scale(22))
         clip_btn.setCursor(QtCore.Qt.PointingHandCursor)
         clip_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 3px;
-                padding: 2px 10px;
+                padding: {spx(2)} {spx(10)};
                 color: {COLORS['text']};
-                font-size: 10px;
+                {sfs(10)}
             }}
             QPushButton:hover {{
                 border-color: {COLORS['accent']};
@@ -5839,17 +6266,17 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
 
         # ── Action buttons ──
         btns = QtWidgets.QHBoxLayout()
-        btns.setSpacing(8)
+        btns.setSpacing(scale(8))
 
         cancel = QtWidgets.QPushButton("Cancel")
-        cancel.setFixedHeight(30)
+        cancel.setFixedHeight(scale(30))
         cancel.setCursor(QtCore.Qt.PointingHandCursor)
         cancel.setStyleSheet(f"""
             QPushButton {{
                 background-color: transparent;
                 border: 1px solid {COLORS['border']};
                 border-radius: 3px;
-                padding: 4px 16px;
+                padding: {spx(4)} {spx(16)};
                 color: {COLORS['text_secondary']};
             }}
             QPushButton:hover {{
@@ -5863,7 +6290,7 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         btns.addStretch()
 
         save_local = QtWidgets.QPushButton("Save Local")
-        save_local.setFixedHeight(30)
+        save_local.setFixedHeight(scale(30))
         save_local.setCursor(QtCore.Qt.PointingHandCursor)
         save_local.setToolTip("Save to your local library only")
         save_local.setStyleSheet(f"""
@@ -5871,7 +6298,7 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border_light']};
                 border-radius: 3px;
-                padding: 4px 16px;
+                padding: {spx(4)} {spx(16)};
                 color: {COLORS['text']};
             }}
             QPushButton:hover {{
@@ -5882,7 +6309,7 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         btns.addWidget(save_local)
 
         save_publish = QtWidgets.QPushButton("Publish to Sopdrop")
-        save_publish.setFixedHeight(30)
+        save_publish.setFixedHeight(scale(30))
         save_publish.setCursor(QtCore.Qt.PointingHandCursor)
         save_publish.setToolTip("Save locally and publish to sopdrop.com")
         save_publish.setStyleSheet(f"""
@@ -5890,7 +6317,7 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
                 background-color: {COLORS['accent']};
                 border: none;
                 border-radius: 3px;
-                padding: 4px 18px;
+                padding: {spx(4)} {spx(18)};
                 color: white;
                 font-weight: 600;
             }}
@@ -5911,37 +6338,39 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
                 self._set_icon(self.existing_asset.get('icon'))
 
     def _set_default_icon(self):
-        """Set a default icon based on the node context."""
-        context = self._get_context()
-        default_icons = {
-            'sop': 'SOP_scatter',
-            'lop': 'LOP_material',
-            'obj': 'OBJ_geo',
-            'vop': 'VOP_constant',
-            'dop': 'DOP_rbdobject',
-            'cop': 'COP2_colorwheel',
-            'top': 'TOP_generic',
-            'chop': 'CHOP_channel',
-        }
-        icon_name = default_icons.get(context, 'MISC_python')
-        self._set_icon(icon_name)
+        """Set the default icon to the Sopdrop logo SVG."""
+        sopdrop_path = os.environ.get('SOPDROP_HOUDINI_PATH', '')
+        if sopdrop_path:
+            logo_path = os.path.join(sopdrop_path, 'toolbar', 'icons', 'sopdrop_logo.svg')
+            if os.path.isfile(logo_path):
+                self._selected_icon = None  # No Houdini icon name — using custom SVG
+                icon = QtGui.QIcon(logo_path)
+                if not icon.isNull():
+                    self.icon_btn.setIcon(icon)
+                    self.icon_btn.setIconSize(QtCore.QSize(scale(32), scale(32)))
+                    self.icon_btn.setText("")
+                    return
+        # Fallback to a generic Houdini icon
+        self._set_icon('MISC_python')
 
     def _set_icon(self, icon_name):
         """Set the icon button to display a Houdini icon."""
         self._selected_icon = icon_name
         try:
-            # Try to get the icon from Houdini
-            icon = hou.qt.Icon(icon_name, 48, 48)
+            icon = hou.qt.Icon(icon_name, 32, 32)
             if icon and not icon.isNull():
                 self.icon_btn.setIcon(icon)
-                self.icon_btn.setIconSize(QtCore.QSize(48, 48))
+                self.icon_btn.setIconSize(QtCore.QSize(scale(32), scale(32)))
                 self.icon_btn.setText("")
+                self._icon_overlay.hide()
             else:
                 self.icon_btn.setText("Icon")
                 self.icon_btn.setIcon(QtGui.QIcon())
-        except:
+                self._icon_overlay.show()
+        except Exception:
             self.icon_btn.setText("Icon")
             self.icon_btn.setIcon(QtGui.QIcon())
+            self._icon_overlay.show()
 
     def _show_icon_browser(self):
         """Show a dialog to browse Houdini icons."""
@@ -6068,7 +6497,7 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         if not self._screenshots:
             # Show placeholder
             self.ss_placeholder = QtWidgets.QLabel("No screenshots - add below")
-            self.ss_placeholder.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px;")
+            self.ss_placeholder.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
             self.ss_placeholder.setAlignment(QtCore.Qt.AlignCenter)
             self.ss_gallery_layout.addWidget(self.ss_placeholder)
         else:
@@ -6081,13 +6510,13 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         count = len(self._screenshots)
         if count == 0:
             self.ss_status.setText("First = thumbnail")
-            self.ss_status.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 9px;")
+            self.ss_status.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(9)}")
         elif count == 1:
             self.ss_status.setText("1 image (thumbnail)")
-            self.ss_status.setStyleSheet(f"color: {COLORS['success']}; font-size: 9px;")
+            self.ss_status.setStyleSheet(f"color: {COLORS['success']}; {sfs(9)}")
         else:
             self.ss_status.setText(f"{count} images (first = thumbnail)")
-            self.ss_status.setStyleSheet(f"color: {COLORS['success']}; font-size: 9px;")
+            self.ss_status.setStyleSheet(f"color: {COLORS['success']}; {sfs(9)}")
 
     def _create_screenshot_thumb(self, image, index):
         """Create a thumbnail widget for a screenshot."""
@@ -6104,7 +6533,7 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         """)
 
         layout = QtWidgets.QVBoxLayout(frame)
-        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setContentsMargins(scale(2), scale(2), scale(2), scale(2))
         layout.setSpacing(0)
 
         # Image
@@ -6117,14 +6546,14 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
 
         # Remove button
         remove_btn = QtWidgets.QPushButton("\u00D7")
-        remove_btn.setFixedSize(16, 12)
+        remove_btn.setFixedSize(scale(16), scale(12))
         remove_btn.setStyleSheet(f"""
             QPushButton {{
                 background: rgba(0,0,0,0.5);
                 color: white;
                 border: none;
                 border-radius: 2px;
-                font-size: 10px;
+                {sfs(10)}
             }}
             QPushButton:hover {{
                 background: {COLORS['error']};
@@ -6233,15 +6662,26 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
                     from sopdrop.export import export_items
                     package = export_items(self.items)
 
+                    # If contents came from a container HDA, embed its info
+                    if self.container_hda:
+                        package['metadata']['container_hda'] = {
+                            'type_name': self.container_hda.get('type_name'),
+                            'type_label': self.container_hda.get('type_label'),
+                            'category': self.container_hda.get('category'),
+                            'icon': self.container_hda.get('icon'),
+                        }
+
                     if self.existing_asset:
                         # Update existing asset with new version
-                        library.save_asset_version(
+                        result = library.save_asset_version(
                             asset_id=self.existing_asset['id'],
                             package_data=package,
                             description=self.desc_input.toPlainText().strip(),
                             tags=tags,
                             thumbnail_data=thumb_data,
                         )
+                        if not result:
+                            raise RuntimeError(f"Asset '{name}' not found in library — cannot update")
                         print(f"[Sopdrop] Updated: {name}")
                     else:
                         # Create new asset
@@ -6330,15 +6770,26 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
                     from sopdrop.export import export_items
                     package = export_items(self.items)
 
+                    # If contents came from a container HDA, embed its info
+                    if self.container_hda:
+                        package['metadata']['container_hda'] = {
+                            'type_name': self.container_hda.get('type_name'),
+                            'type_label': self.container_hda.get('type_label'),
+                            'category': self.container_hda.get('category'),
+                            'icon': self.container_hda.get('icon'),
+                        }
+
                     # Save locally first
                     if self.existing_asset:
-                        library.save_asset_version(
+                        result = library.save_asset_version(
                             asset_id=self.existing_asset['id'],
                             package_data=package,
                             description=self.desc_input.toPlainText().strip(),
                             tags=tags,
                             thumbnail_data=thumb_data,
                         )
+                        if not result:
+                            raise RuntimeError(f"Asset not found in library — cannot update")
                         asset_id = self.existing_asset['id']
                         print(f"[Sopdrop] Updated locally: {name}")
                     else:
@@ -6422,41 +6873,41 @@ class SaveVexDialog(QtWidgets.QDialog):
     def _setup_ui(self):
         self.setWindowTitle("Save VEX Snippet")
         self.setFixedWidth(scale(500))
-        self.setMinimumHeight(400)
+        self.setMinimumHeight(scale(400))
         self.setStyleSheet(STYLESHEET)
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(scale(16), scale(16), scale(16), scale(16))
+        layout.setSpacing(scale(12))
 
         # Header
         header = QtWidgets.QHBoxLayout()
         title = QtWidgets.QLabel("Save VEX Snippet")
-        title.setStyleSheet(f"font-size: 18px; font-weight: 700; color: {COLORS['text_bright']};")
+        title.setStyleSheet(f"{sfs(18)} font-weight: 700; color: {COLORS['text_bright']};")
         header.addWidget(title)
         header.addStretch()
         vex_badge = QtWidgets.QLabel("VEX")
-        vex_badge.setStyleSheet(f"background-color: {get_context_color('vex')}; color: white; font-size: 10px; font-weight: bold; padding: 3px 8px; border-radius: 3px;")
+        vex_badge.setStyleSheet(f"background-color: {get_context_color('vex')}; color: white; {sfs(10)} font-weight: bold; padding: {spx(3)} {spx(8)}; border-radius: 3px;")
         header.addWidget(vex_badge)
         layout.addLayout(header)
 
         # Code editor
         code_label = QtWidgets.QLabel("VEX Code")
-        code_label.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px; font-weight: 600;")
+        code_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)} font-weight: 600;")
         layout.addWidget(code_label)
 
         self.code_input = QtWidgets.QPlainTextEdit()
         self.code_input.setPlainText(self._initial_code)
-        self.code_input.setMinimumHeight(150)
+        self.code_input.setMinimumHeight(scale(150))
         self.code_input.setStyleSheet(f"""
             QPlainTextEdit {{
                 background-color: {COLORS['bg_dark']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 3px;
-                padding: 6px;
+                padding: {spx(6)};
                 font-family: "Source Code Pro", "Consolas", "Courier New", monospace;
-                font-size: 11px;
+                {sfs(11)}
                 color: {COLORS['text']};
             }}
             QPlainTextEdit:focus {{
@@ -6467,7 +6918,7 @@ class SaveVexDialog(QtWidgets.QDialog):
 
         if not self._initial_code:
             hint = QtWidgets.QLabel("Tip: Select a wrangle node before opening this dialog to auto-fill the code")
-            hint.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 9px;")
+            hint.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(9)}")
             hint.setWordWrap(True)
             layout.addWidget(hint)
 
@@ -6481,24 +6932,24 @@ class SaveVexDialog(QtWidgets.QDialog):
             }}
         """)
         form_layout = QtWidgets.QVBoxLayout(form)
-        form_layout.setContentsMargins(12, 12, 12, 12)
-        form_layout.setSpacing(8)
+        form_layout.setContentsMargins(scale(12), scale(12), scale(12), scale(12))
+        form_layout.setSpacing(scale(8))
 
         # Name
         name_label = QtWidgets.QLabel("Name")
-        name_label.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px; font-weight: 600;")
+        name_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)} font-weight: 600;")
         form_layout.addWidget(name_label)
 
         self.name_input = QtWidgets.QLineEdit()
         self.name_input.setPlaceholderText("e.g., Color by Curvature, Point Relax")
-        self.name_input.setFixedHeight(28)
+        self.name_input.setFixedHeight(scale(28))
         self.name_input.setStyleSheet(f"""
             QLineEdit {{
                 background-color: {COLORS['bg_dark']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 3px;
-                padding: 4px 8px;
-                font-size: 12px;
+                padding: {spx(4)} {spx(8)};
+                {sfs(12)}
                 color: {COLORS['text']};
             }}
             QLineEdit:focus {{
@@ -6509,19 +6960,19 @@ class SaveVexDialog(QtWidgets.QDialog):
 
         # Description
         desc_label = QtWidgets.QLabel("Description")
-        desc_label.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px; font-weight: 600;")
+        desc_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)} font-weight: 600;")
         form_layout.addWidget(desc_label)
 
         self.desc_input = QtWidgets.QLineEdit()
         self.desc_input.setPlaceholderText("What does this snippet do?")
-        self.desc_input.setFixedHeight(28)
+        self.desc_input.setFixedHeight(scale(28))
         self.desc_input.setStyleSheet(f"""
             QLineEdit {{
                 background-color: {COLORS['bg_dark']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 3px;
-                padding: 4px 8px;
-                font-size: 11px;
+                padding: {spx(4)} {spx(8)};
+                {sfs(11)}
                 color: {COLORS['text']};
             }}
             QLineEdit:focus {{
@@ -6532,12 +6983,12 @@ class SaveVexDialog(QtWidgets.QDialog):
 
         # Tags + Collection row
         row = QtWidgets.QHBoxLayout()
-        row.setSpacing(12)
+        row.setSpacing(scale(12))
 
         # Tags
         tag_col = QtWidgets.QVBoxLayout()
         tags_label = QtWidgets.QLabel("Tags")
-        tags_label.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px; font-weight: 600;")
+        tags_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)} font-weight: 600;")
         tag_col.addWidget(tags_label)
         self.tags_widget = TagInputWidget()
         tag_col.addWidget(self.tags_widget)
@@ -6546,11 +6997,11 @@ class SaveVexDialog(QtWidgets.QDialog):
         # Collection (with nested subfolders)
         coll_col = QtWidgets.QVBoxLayout()
         coll_label = QtWidgets.QLabel("Collection")
-        coll_label.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px; font-weight: 600;")
+        coll_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)} font-weight: 600;")
         coll_col.addWidget(coll_label)
         self.coll_combo = QtWidgets.QComboBox()
-        self.coll_combo.setFixedHeight(24)
-        self.coll_combo.setMinimumWidth(120)
+        self.coll_combo.setFixedHeight(scale(24))
+        self.coll_combo.setMinimumWidth(scale(120))
         self.coll_combo.addItem("None", None)
         if SOPDROP_AVAILABLE:
             self._add_tree_to_combo(library.get_collection_tree())
@@ -6562,17 +7013,17 @@ class SaveVexDialog(QtWidgets.QDialog):
 
         # Buttons
         btns = QtWidgets.QHBoxLayout()
-        btns.setSpacing(10)
+        btns.setSpacing(scale(10))
 
         cancel = QtWidgets.QPushButton("Cancel")
-        cancel.setFixedHeight(28)
+        cancel.setFixedHeight(scale(28))
         cancel.setCursor(QtCore.Qt.PointingHandCursor)
         cancel.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 3px;
-                padding: 6px 16px;
+                padding: {spx(6)} {spx(16)};
                 color: {COLORS['text']};
             }}
             QPushButton:hover {{
@@ -6584,14 +7035,14 @@ class SaveVexDialog(QtWidgets.QDialog):
         btns.addStretch()
 
         save_btn = QtWidgets.QPushButton("Save VEX Snippet")
-        save_btn.setFixedHeight(28)
+        save_btn.setFixedHeight(scale(28))
         save_btn.setCursor(QtCore.Qt.PointingHandCursor)
         save_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['accent']};
                 border: none;
                 border-radius: 3px;
-                padding: 6px 18px;
+                padding: {spx(6)} {spx(18)};
                 color: white;
                 font-weight: 600;
             }}
@@ -6659,17 +7110,45 @@ class SettingsDialog(QtWidgets.QDialog):
 
     def _setup_ui(self):
         self.setWindowTitle("Sopdrop Settings")
-        self.setFixedWidth(scale(360))
+        self.setMinimumWidth(scale(360))
+        self.setMaximumWidth(scale(420))
+        self.setMinimumHeight(scale(300))
         self.setStyleSheet(STYLESHEET)
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
 
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
+        outer_layout = QtWidgets.QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        # Scroll area wrapping all settings content
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(f"""
+            QScrollArea {{ border: none; background-color: {COLORS['bg_dark']}; }}
+            QScrollBar:vertical {{
+                background-color: {COLORS['bg_base']};
+                width: {spx(8)};
+                margin: 0;
+            }}
+            QScrollBar::handle:vertical {{
+                background-color: {COLORS['border_light']};
+                border-radius: {spx(4)};
+                min-height: {spx(20)};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0;
+            }}
+        """)
+
+        scroll_content = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(scroll_content)
+        layout.setContentsMargins(scale(12), scale(12), scale(12), scale(12))
+        layout.setSpacing(scale(12))
 
         # Header
         title = QtWidgets.QLabel("Settings")
-        title.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {COLORS['text_bright']};")
+        title.setStyleSheet(f"{sfs(14)} font-weight: 600; color: {COLORS['text_bright']};")
         layout.addWidget(title)
 
         # Houdini-style groupbox
@@ -6680,15 +7159,15 @@ class SettingsDialog(QtWidgets.QDialog):
                 background-color: {COLORS['bg_medium']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 3px;
-                margin-top: 10px;
-                padding: 12px 8px 8px 8px;
+                margin-top: {spx(10)};
+                padding: {spx(12)} {spx(8)} {spx(8)} {spx(8)};
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin;
                 left: 8px;
-                padding: 0 4px;
+                padding: 0 {spx(4)};
                 color: {COLORS['text_secondary']};
-                font-size: 10px;
+                {sfs(10)}
             }}
         """
 
@@ -6696,23 +7175,23 @@ class SettingsDialog(QtWidgets.QDialog):
         account_group = QtWidgets.QGroupBox("ACCOUNT")
         account_group.setStyleSheet(groupbox_style)
         account_layout = QtWidgets.QVBoxLayout(account_group)
-        account_layout.setSpacing(8)
+        account_layout.setSpacing(scale(8))
 
         # Login status
         self.login_status = QtWidgets.QLabel()
-        self.login_status.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
+        self.login_status.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(11)}")
         account_layout.addWidget(self.login_status)
 
         # Login/logout button
         self.login_btn = QtWidgets.QPushButton("Login")
-        self.login_btn.setFixedHeight(24)
+        self.login_btn.setFixedHeight(scale(24))
         self.login_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.login_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['accent']};
                 border: none;
                 border-radius: 3px;
-                padding: 4px 12px;
+                padding: {spx(4)} {spx(12)};
                 color: white;
                 font-weight: 600;
             }}
@@ -6729,7 +7208,7 @@ class SettingsDialog(QtWidgets.QDialog):
         tab_group = QtWidgets.QGroupBox("TAB MENU")
         tab_group.setStyleSheet(groupbox_style)
         tab_layout = QtWidgets.QVBoxLayout(tab_group)
-        tab_layout.setSpacing(8)
+        tab_layout.setSpacing(scale(8))
 
         self.tab_menu_checkbox = QtWidgets.QCheckBox("Show library assets in TAB menu")
         self.tab_menu_checkbox.setToolTip(
@@ -6739,11 +7218,11 @@ class SettingsDialog(QtWidgets.QDialog):
         tab_layout.addWidget(self.tab_menu_checkbox)
 
         tab_note = QtWidgets.QLabel("Changes take effect after restarting Houdini.")
-        tab_note.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px;")
+        tab_note.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
         tab_layout.addWidget(tab_note)
 
         clean_tab_btn = QtWidgets.QPushButton("Clean TAB Menu")
-        clean_tab_btn.setFixedHeight(22)
+        clean_tab_btn.setFixedHeight(scale(22))
         clean_tab_btn.setCursor(QtCore.Qt.PointingHandCursor)
         clean_tab_btn.setToolTip("Remove stale entries and regenerate TAB menu from current library")
         clean_tab_btn.setStyleSheet(f"""
@@ -6751,7 +7230,7 @@ class SettingsDialog(QtWidgets.QDialog):
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 2px;
-                padding: 2px 10px;
+                padding: {spx(2)} {spx(10)};
                 color: {COLORS['text']};
             }}
             QPushButton:hover {{
@@ -6768,22 +7247,22 @@ class SettingsDialog(QtWidgets.QDialog):
         personal_group = QtWidgets.QGroupBox("PERSONAL LIBRARY")
         personal_group.setStyleSheet(groupbox_style)
         personal_layout = QtWidgets.QVBoxLayout(personal_group)
-        personal_layout.setSpacing(8)
+        personal_layout.setSpacing(scale(8))
 
         personal_path_label = QtWidgets.QLabel("Library Path:")
-        personal_path_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 10px;")
+        personal_path_label.setStyleSheet(f"color: {COLORS['text_secondary']}; {sfs(10)}")
         personal_layout.addWidget(personal_path_label)
 
         personal_path_row = QtWidgets.QHBoxLayout()
         self.personal_path_input = QtWidgets.QLineEdit()
         self.personal_path_input.setPlaceholderText("~/.sopdrop/library/ (default)")
-        self.personal_path_input.setFixedHeight(22)
+        self.personal_path_input.setFixedHeight(scale(22))
         self.personal_path_input.setStyleSheet(f"""
             QLineEdit {{
                 background-color: {COLORS['bg_dark']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 2px;
-                padding: 2px 6px;
+                padding: {spx(2)} {spx(6)};
                 color: {COLORS['text']};
             }}
             QLineEdit:focus {{
@@ -6793,14 +7272,14 @@ class SettingsDialog(QtWidgets.QDialog):
         personal_path_row.addWidget(self.personal_path_input)
 
         personal_browse_btn = QtWidgets.QPushButton("Browse")
-        personal_browse_btn.setFixedHeight(22)
+        personal_browse_btn.setFixedHeight(scale(22))
         personal_browse_btn.setCursor(QtCore.Qt.PointingHandCursor)
         personal_browse_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 2px;
-                padding: 2px 10px;
+                padding: {spx(2)} {spx(10)};
                 color: {COLORS['text']};
             }}
             QPushButton:hover {{
@@ -6812,7 +7291,7 @@ class SettingsDialog(QtWidgets.QDialog):
         personal_path_row.addWidget(personal_browse_btn)
 
         personal_default_btn = QtWidgets.QPushButton("Default")
-        personal_default_btn.setFixedHeight(22)
+        personal_default_btn.setFixedHeight(scale(22))
         personal_default_btn.setCursor(QtCore.Qt.PointingHandCursor)
         personal_default_btn.setToolTip("Reset to ~/.sopdrop/library/")
         personal_default_btn.setStyleSheet(f"""
@@ -6820,7 +7299,7 @@ class SettingsDialog(QtWidgets.QDialog):
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 2px;
-                padding: 2px 10px;
+                padding: {spx(2)} {spx(10)};
                 color: {COLORS['text']};
             }}
             QPushButton:hover {{
@@ -6833,7 +7312,7 @@ class SettingsDialog(QtWidgets.QDialog):
         personal_layout.addLayout(personal_path_row)
 
         self.personal_info = QtWidgets.QLabel()
-        self.personal_info.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px;")
+        self.personal_info.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
         personal_layout.addWidget(self.personal_info)
 
         layout.addWidget(personal_group)
@@ -6842,7 +7321,7 @@ class SettingsDialog(QtWidgets.QDialog):
         team_group = QtWidgets.QGroupBox("TEAM LIBRARY")
         team_group.setStyleSheet(groupbox_style)
         team_layout = QtWidgets.QVBoxLayout(team_group)
-        team_layout.setSpacing(8)
+        team_layout.setSpacing(scale(8))
 
         # Library type selector
         lib_type_row = QtWidgets.QHBoxLayout()
@@ -6856,18 +7335,18 @@ class SettingsDialog(QtWidgets.QDialog):
 
         # Team library path
         path_label = QtWidgets.QLabel("Team Library Path:")
-        path_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 10px; margin-top: 4px;")
+        path_label.setStyleSheet(f"color: {COLORS['text_secondary']}; {sfs(10)} margin-top: {spx(4)};")
         team_layout.addWidget(path_label)
         path_row = QtWidgets.QHBoxLayout()
         self.team_path_input = QtWidgets.QLineEdit()
         self.team_path_input.setPlaceholderText("/path/to/shared/library")
-        self.team_path_input.setFixedHeight(22)
+        self.team_path_input.setFixedHeight(scale(22))
         self.team_path_input.setStyleSheet(f"""
             QLineEdit {{
                 background-color: {COLORS['bg_dark']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 2px;
-                padding: 2px 6px;
+                padding: {spx(2)} {spx(6)};
                 color: {COLORS['text']};
             }}
             QLineEdit:focus {{
@@ -6877,14 +7356,14 @@ class SettingsDialog(QtWidgets.QDialog):
         path_row.addWidget(self.team_path_input)
 
         browse_btn = QtWidgets.QPushButton("Browse")
-        browse_btn.setFixedHeight(22)
+        browse_btn.setFixedHeight(scale(22))
         browse_btn.setCursor(QtCore.Qt.PointingHandCursor)
         browse_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 2px;
-                padding: 2px 10px;
+                padding: {spx(2)} {spx(10)};
                 color: {COLORS['text']};
             }}
             QPushButton:hover {{
@@ -6898,18 +7377,18 @@ class SettingsDialog(QtWidgets.QDialog):
 
         # Team selection (fetch from server)
         team_select_label = QtWidgets.QLabel("Team:")
-        team_select_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 10px; margin-top: 4px;")
+        team_select_label.setStyleSheet(f"color: {COLORS['text_secondary']}; {sfs(10)} margin-top: {spx(4)};")
         team_layout.addWidget(team_select_label)
         team_select_row = QtWidgets.QHBoxLayout()
         self.team_combo = QtWidgets.QComboBox()
-        self.team_combo.setFixedHeight(22)
+        self.team_combo.setFixedHeight(scale(22))
         self.team_combo.addItem("None", "")
         self.team_combo.setStyleSheet(f"""
             QComboBox {{
                 background-color: {COLORS['bg_dark']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 2px;
-                padding: 2px 6px;
+                padding: {spx(2)} {spx(6)};
                 color: {COLORS['text']};
             }}
             QComboBox:focus {{
@@ -6923,14 +7402,14 @@ class SettingsDialog(QtWidgets.QDialog):
         team_select_row.addWidget(self.team_combo, 1)
 
         self.fetch_teams_btn = QtWidgets.QPushButton("Fetch Teams")
-        self.fetch_teams_btn.setFixedHeight(22)
+        self.fetch_teams_btn.setFixedHeight(scale(22))
         self.fetch_teams_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.fetch_teams_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 2px;
-                padding: 2px 10px;
+                padding: {spx(2)} {spx(10)};
                 color: {COLORS['text']};
             }}
             QPushButton:hover {{
@@ -6953,7 +7432,7 @@ class SettingsDialog(QtWidgets.QDialog):
 
         # Team library info
         self.team_info = QtWidgets.QLabel()
-        self.team_info.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px;")
+        self.team_info.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
         self.team_info.setWordWrap(True)
         team_layout.addWidget(self.team_info)
 
@@ -6963,10 +7442,10 @@ class SettingsDialog(QtWidgets.QDialog):
         scale_group = QtWidgets.QGroupBox("UI SCALE")
         scale_group.setStyleSheet(groupbox_style)
         scale_layout = QtWidgets.QVBoxLayout(scale_group)
-        scale_layout.setSpacing(8)
+        scale_layout.setSpacing(scale(8))
 
         scale_row = QtWidgets.QHBoxLayout()
-        scale_row.setSpacing(6)
+        scale_row.setSpacing(scale(6))
 
         self.scale_down_btn = QtWidgets.QPushButton("\u2212")  # minus sign
         self.scale_down_btn.setFixedSize(scale(24), scale(24))
@@ -6977,7 +7456,7 @@ class SettingsDialog(QtWidgets.QDialog):
                 border: 1px solid {COLORS['border']};
                 border-radius: 3px;
                 color: {COLORS['text']};
-                font-size: 14px;
+                {sfs(14)}
                 font-weight: bold;
             }}
             QPushButton:hover {{
@@ -7003,7 +7482,7 @@ class SettingsDialog(QtWidgets.QDialog):
                 border: 1px solid {COLORS['border']};
                 border-radius: 3px;
                 color: {COLORS['text']};
-                font-size: 14px;
+                {sfs(14)}
                 font-weight: bold;
             }}
             QPushButton:hover {{
@@ -7022,7 +7501,7 @@ class SettingsDialog(QtWidgets.QDialog):
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 2px;
-                padding: 2px 10px;
+                padding: {spx(2)} {spx(10)};
                 color: {COLORS['text']};
             }}
             QPushButton:hover {{
@@ -7036,8 +7515,8 @@ class SettingsDialog(QtWidgets.QDialog):
         scale_row.addStretch()
         scale_layout.addLayout(scale_row)
 
-        scale_note = QtWidgets.QLabel("Changes take effect after reopening the library panel.")
-        scale_note.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px;")
+        scale_note = QtWidgets.QLabel("Save settings, then close and reopen the library panel.")
+        scale_note.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
         scale_layout.addWidget(scale_note)
 
         layout.addWidget(scale_group)
@@ -7046,20 +7525,20 @@ class SettingsDialog(QtWidgets.QDialog):
         server_group = QtWidgets.QGroupBox("SERVER")
         server_group.setStyleSheet(groupbox_style)
         server_layout = QtWidgets.QVBoxLayout(server_group)
-        server_layout.setSpacing(8)
+        server_layout.setSpacing(scale(8))
 
         url_label = QtWidgets.QLabel("Server URL")
-        url_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 10px;")
+        url_label.setStyleSheet(f"color: {COLORS['text_secondary']}; {sfs(10)}")
         server_layout.addWidget(url_label)
         self.server_input = QtWidgets.QLineEdit()
         self.server_input.setPlaceholderText("https://sopdrop.com")
-        self.server_input.setFixedHeight(22)
+        self.server_input.setFixedHeight(scale(22))
         self.server_input.setStyleSheet(f"""
             QLineEdit {{
                 background-color: {COLORS['bg_dark']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 2px;
-                padding: 2px 6px;
+                padding: {spx(2)} {spx(6)};
                 color: {COLORS['text']};
             }}
             QLineEdit:focus {{
@@ -7070,21 +7549,26 @@ class SettingsDialog(QtWidgets.QDialog):
 
         layout.addWidget(server_group)
 
-        layout.addStretch()
+        # Finish scroll area
+        scroll.setWidget(scroll_content)
+        outer_layout.addWidget(scroll, 1)
 
-        # Buttons
-        btns = QtWidgets.QHBoxLayout()
-        btns.setSpacing(10)
+        # Buttons — outside scroll so always visible
+        btn_container = QtWidgets.QWidget()
+        btn_container.setStyleSheet(f"background-color: {COLORS['bg_dark']}; border-top: 1px solid {COLORS['border']};")
+        btns = QtWidgets.QHBoxLayout(btn_container)
+        btns.setContentsMargins(scale(12), scale(8), scale(12), scale(8))
+        btns.setSpacing(scale(10))
 
         cancel = QtWidgets.QPushButton("Cancel")
-        cancel.setFixedHeight(24)
+        cancel.setFixedHeight(scale(24))
         cancel.setCursor(QtCore.Qt.PointingHandCursor)
         cancel.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 3px;
-                padding: 4px 12px;
+                padding: {spx(4)} {spx(12)};
                 color: {COLORS['text']};
             }}
             QPushButton:hover {{
@@ -7098,14 +7582,14 @@ class SettingsDialog(QtWidgets.QDialog):
         btns.addStretch()
 
         save = QtWidgets.QPushButton("Save Settings")
-        save.setFixedHeight(24)
+        save.setFixedHeight(scale(24))
         save.setCursor(QtCore.Qt.PointingHandCursor)
         save.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['accent']};
                 border: none;
                 border-radius: 3px;
-                padding: 4px 14px;
+                padding: {spx(4)} {spx(14)};
                 color: white;
                 font-weight: 600;
             }}
@@ -7116,7 +7600,7 @@ class SettingsDialog(QtWidgets.QDialog):
         save.clicked.connect(self._save_settings)
         btns.addWidget(save)
 
-        layout.addLayout(btns)
+        outer_layout.addWidget(btn_container)
 
     def _load_settings(self):
         """Load current settings."""
@@ -7135,11 +7619,11 @@ class SettingsDialog(QtWidgets.QDialog):
                     user = client._get("auth/me")
                     username = user.get('username', user.get('email', 'Unknown'))
                     self.login_status.setText(f"Logged in as: {username}")
-                    self.login_status.setStyleSheet(f"color: {COLORS['success']}; font-size: 11px;")
+                    self.login_status.setStyleSheet(f"color: {COLORS['success']}; {sfs(11)}")
                     self.login_btn.setText("Logout")
                 except Exception:
                     self.login_status.setText("Token invalid or expired")
-                    self.login_status.setStyleSheet(f"color: {COLORS['warning']}; font-size: 11px;")
+                    self.login_status.setStyleSheet(f"color: {COLORS['warning']}; {sfs(11)}")
                     self.login_btn.setText("Login")
             else:
                 self.login_status.setText("Not logged in")
@@ -7206,7 +7690,7 @@ class SettingsDialog(QtWidgets.QDialog):
             # Logout
             clear_token()
             self.login_status.setText("Not logged in")
-            self.login_status.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
+            self.login_status.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(11)}")
             self.login_btn.setText("Login")
         else:
             # Login - use inline login flow
@@ -7362,7 +7846,7 @@ class SettingsDialog(QtWidgets.QDialog):
 
         if not lib_path.exists():
             self.personal_info.setText(f"Path: {lib_path}\nFolder will be created on first save.")
-            self.personal_info.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px;")
+            self.personal_info.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
             return
 
         db_path = lib_path / "library.db"
@@ -7373,13 +7857,13 @@ class SettingsDialog(QtWidgets.QDialog):
                 count = conn.execute("SELECT COUNT(*) FROM library_assets").fetchone()[0]
                 conn.close()
                 self.personal_info.setText(f"Path: {lib_path}\n{count} asset(s)")
-                self.personal_info.setStyleSheet(f"color: {COLORS['success']}; font-size: 10px;")
+                self.personal_info.setStyleSheet(f"color: {COLORS['success']}; {sfs(10)}")
             except Exception:
                 self.personal_info.setText(f"Path: {lib_path}")
-                self.personal_info.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px;")
+                self.personal_info.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
         else:
             self.personal_info.setText(f"Path: {lib_path}\nEmpty library (no database yet)")
-            self.personal_info.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px;")
+            self.personal_info.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
 
     def _browse_team_path(self):
         """Browse for team library folder."""
@@ -7405,7 +7889,7 @@ class SettingsDialog(QtWidgets.QDialog):
         lib_type = self.library_combo.currentData()
         if lib_type == "team" and not self.team_path_input.text().strip():
             self.team_info.setText("Set a team library path to enable team mode.")
-            self.team_info.setStyleSheet(f"color: {COLORS['warning']}; font-size: 10px;")
+            self.team_info.setStyleSheet(f"color: {COLORS['warning']}; {sfs(10)}")
         else:
             self._update_team_info()
 
@@ -7420,7 +7904,7 @@ class SettingsDialog(QtWidgets.QDialog):
                 "Set a shared folder path to enable team library.\n"
                 "All team members should point to the same folder."
             )
-            self.team_info.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px;")
+            self.team_info.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
             return
 
         import os
@@ -7431,7 +7915,7 @@ class SettingsDialog(QtWidgets.QDialog):
 
         if not path.exists():
             self.team_info.setText(f"Folder does not exist. It will be created on save.")
-            self.team_info.setStyleSheet(f"color: {COLORS['warning']}; font-size: 10px;")
+            self.team_info.setStyleSheet(f"color: {COLORS['warning']}; {sfs(10)}")
         elif lib_path.exists():
             # Count assets in team library
             db_path = lib_path / "library.db"
@@ -7442,16 +7926,16 @@ class SettingsDialog(QtWidgets.QDialog):
                     count = conn.execute("SELECT COUNT(*) FROM library_assets").fetchone()[0]
                     conn.close()
                     self.team_info.setText(f"Team library found: {count} assets")
-                    self.team_info.setStyleSheet(f"color: {COLORS['success']}; font-size: 10px;")
+                    self.team_info.setStyleSheet(f"color: {COLORS['success']}; {sfs(10)}")
                 except Exception:
                     self.team_info.setText("Team library folder found (new)")
-                    self.team_info.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px;")
+                    self.team_info.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
             else:
                 self.team_info.setText("Team library folder found (empty)")
-                self.team_info.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px;")
+                self.team_info.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
         else:
             self.team_info.setText("Library will be created in this folder.")
-            self.team_info.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px;")
+            self.team_info.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
 
     def _fetch_teams(self):
         """Fetch teams from the server and populate the dropdown."""
@@ -7498,7 +7982,7 @@ class SettingsDialog(QtWidgets.QDialog):
             self.team_combo.blockSignals(False)
 
             self.team_info.setText(f"Found {len(teams)} team(s)")
-            self.team_info.setStyleSheet(f"color: {COLORS['success']}; font-size: 10px;")
+            self.team_info.setStyleSheet(f"color: {COLORS['success']}; {sfs(10)}")
 
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to fetch teams: {e}")
@@ -7546,7 +8030,7 @@ class SettingsDialog(QtWidgets.QDialog):
                         self.team_combo.blockSignals(False)
 
                 self.team_info.setText(f"Detected team: {team_name or team_slug}")
-                self.team_info.setStyleSheet(f"color: {COLORS['success']}; font-size: 10px;")
+                self.team_info.setStyleSheet(f"color: {COLORS['success']}; {sfs(10)}")
         except Exception as e:
             print(f"[Sopdrop] Team detection failed: {e}")
 
@@ -7612,14 +8096,14 @@ class AssetDetailDialog(QtWidgets.QDialog):
         # -- Info area --
         info_widget = QtWidgets.QWidget()
         info_layout = QtWidgets.QVBoxLayout(info_widget)
-        info_layout.setContentsMargins(16, 12, 16, 12)
-        info_layout.setSpacing(8)
+        info_layout.setContentsMargins(scale(16), scale(12), scale(16), scale(12))
+        info_layout.setSpacing(scale(8))
 
         # Name + context badge row
         name_row = QtWidgets.QHBoxLayout()
-        name_row.setSpacing(8)
+        name_row.setSpacing(scale(8))
         name_label = QtWidgets.QLabel(self.asset.get('name', 'Untitled'))
-        name_label.setStyleSheet(f"font-size: 16px; font-weight: 700; color: {COLORS['text_bright']};")
+        name_label.setStyleSheet(f"{sfs(16)} font-weight: 700; color: {COLORS['text_bright']};")
         name_label.setWordWrap(True)
         name_row.addWidget(name_label, 1)
 
@@ -7627,8 +8111,8 @@ class AssetDetailDialog(QtWidgets.QDialog):
         ctx_badge = QtWidgets.QLabel(context.upper())
         ctx_badge.setStyleSheet(f"""
             background-color: {get_context_color(context)};
-            color: white; font-size: 10px; font-weight: bold;
-            padding: 3px 8px; border-radius: 3px;
+            color: white; {sfs(10)} font-weight: bold;
+            padding: {spx(3)} {spx(8)}; border-radius: 3px;
         """)
         name_row.addWidget(ctx_badge, 0, QtCore.Qt.AlignTop)
 
@@ -7636,8 +8120,8 @@ class AssetDetailDialog(QtWidgets.QDialog):
             hda_badge = QtWidgets.QLabel("HDA")
             hda_badge.setStyleSheet(f"""
                 background-color: rgba(224, 145, 192, 0.9);
-                color: white; font-size: 10px; font-weight: bold;
-                padding: 3px 8px; border-radius: 3px;
+                color: white; {sfs(10)} font-weight: bold;
+                padding: {spx(3)} {spx(8)}; border-radius: 3px;
             """)
             name_row.addWidget(hda_badge, 0, QtCore.Qt.AlignTop)
 
@@ -7647,7 +8131,7 @@ class AssetDetailDialog(QtWidgets.QDialog):
         desc = self.asset.get('description', '')
         if desc:
             desc_label = QtWidgets.QLabel(desc)
-            desc_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 11px;")
+            desc_label.setStyleSheet(f"color: {COLORS['text_secondary']}; {sfs(11)}")
             desc_label.setWordWrap(True)
             info_layout.addWidget(desc_label)
 
@@ -7661,7 +8145,7 @@ class AssetDetailDialog(QtWidgets.QDialog):
                 tags = []
         if tags:
             tags_row = QtWidgets.QHBoxLayout()
-            tags_row.setSpacing(4)
+            tags_row.setSpacing(scale(4))
             for t in tags:
                 tag_btn = QtWidgets.QPushButton(t)
                 tag_btn.setCursor(QtCore.Qt.PointingHandCursor)
@@ -7669,7 +8153,7 @@ class AssetDetailDialog(QtWidgets.QDialog):
                     QPushButton {{
                         background-color: rgba(255,255,255,0.1);
                         color: {COLORS['text_secondary']};
-                        font-size: 10px; padding: 2px 8px;
+                        {sfs(10)} padding: {spx(2)} {spx(8)};
                         border-radius: 3px; border: none;
                     }}
                     QPushButton:hover {{
@@ -7692,7 +8176,7 @@ class AssetDetailDialog(QtWidgets.QDialog):
 
         # Metadata grid
         meta_grid = QtWidgets.QGridLayout()
-        meta_grid.setSpacing(4)
+        meta_grid.setSpacing(scale(4))
         meta_grid.setColumnStretch(1, 1)
         row = 0
 
@@ -7701,9 +8185,9 @@ class AssetDetailDialog(QtWidgets.QDialog):
             if not value:
                 return
             lbl = QtWidgets.QLabel(label)
-            lbl.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 10px;")
+            lbl.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
             val = QtWidgets.QLabel(str(value))
-            val.setStyleSheet(f"color: {COLORS['text']}; font-size: 10px;")
+            val.setStyleSheet(f"color: {COLORS['text']}; {sfs(10)}")
             val.setWordWrap(True)
             meta_grid.addWidget(lbl, row, 0, QtCore.Qt.AlignTop)
             meta_grid.addWidget(val, row, 1)
@@ -7754,6 +8238,41 @@ class AssetDetailDialog(QtWidgets.QDialog):
 
         info_layout.addLayout(meta_grid)
 
+        # -- HDA Dependencies --
+        deps = self.asset.get('dependencies', [])
+        if isinstance(deps, str):
+            import json as _json
+            try:
+                deps = _json.loads(deps)
+            except Exception:
+                deps = []
+        if deps and isinstance(deps, list) and len(deps) > 0:
+            dep_sep = QtWidgets.QFrame()
+            dep_sep.setFixedHeight(1)
+            dep_sep.setStyleSheet(f"background-color: {COLORS['border']};")
+            info_layout.addWidget(dep_sep)
+
+            dep_header = QtWidgets.QLabel(f"Required HDAs ({len(deps)})")
+            dep_header.setStyleSheet(
+                f"color: #f59e0b; {sfs(11)} font-weight: 600;"
+            )
+            info_layout.addWidget(dep_header)
+
+            for dep in deps:
+                dep_label = dep.get('label') or dep.get('name', 'Unknown')
+                cat = dep.get('category', '')
+                slug = dep.get('sopdrop_slug', '')
+                text = f"  {dep_label}"
+                if cat:
+                    text += f"  ({cat})"
+                if slug:
+                    text += f"  \u2192 {slug}"
+
+                dep_lbl = QtWidgets.QLabel(text)
+                dep_lbl.setStyleSheet(f"color: {COLORS['text_secondary']}; {sfs(10)}")
+                dep_lbl.setWordWrap(True)
+                info_layout.addWidget(dep_lbl)
+
         # -- Version History --
         if SOPDROP_AVAILABLE:
             versions = library.get_asset_versions(self.asset['id'])
@@ -7764,7 +8283,7 @@ class AssetDetailDialog(QtWidgets.QDialog):
                 info_layout.addWidget(ver_sep)
 
                 ver_header = QtWidgets.QLabel(f"Version History ({len(versions)})")
-                ver_header.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px; font-weight: 600;")
+                ver_header.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)} font-weight: 600;")
                 info_layout.addWidget(ver_header)
 
                 for v in versions:
@@ -7777,12 +8296,12 @@ class AssetDetailDialog(QtWidgets.QDialog):
                         }}
                     """)
                     vr_layout = QtWidgets.QHBoxLayout(ver_row)
-                    vr_layout.setContentsMargins(8, 4, 8, 4)
-                    vr_layout.setSpacing(8)
+                    vr_layout.setContentsMargins(scale(8), scale(4), scale(8), scale(4))
+                    vr_layout.setSpacing(scale(8))
 
                     # Version label
                     ver_label = QtWidgets.QLabel(f"v{v.get('version', '?')}")
-                    ver_label.setStyleSheet(f"color: {COLORS['accent']}; font-size: 11px; font-weight: 700; border: none; background: transparent;")
+                    ver_label.setStyleSheet(f"color: {COLORS['accent']}; {sfs(11)} font-weight: 700; border: none; background: transparent;")
                     vr_layout.addWidget(ver_label)
 
                     # Changelog or metadata
@@ -7799,7 +8318,7 @@ class AssetDetailDialog(QtWidgets.QDialog):
                     detail_text = ' \u2022 '.join(detail_parts) if detail_parts else ''
                     if detail_text:
                         detail_label = QtWidgets.QLabel(detail_text)
-                        detail_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 10px; border: none; background: transparent;")
+                        detail_label.setStyleSheet(f"color: {COLORS['text_secondary']}; {sfs(10)} border: none; background: transparent;")
                         vr_layout.addWidget(detail_label, 1)
                     else:
                         vr_layout.addStretch()
@@ -7809,8 +8328,8 @@ class AssetDetailDialog(QtWidgets.QDialog):
                         QPushButton {{
                             background-color: {COLORS['bg_light']};
                             border: 1px solid {COLORS['border']};
-                            border-radius: 2px; padding: 2px 8px;
-                            color: {COLORS['text']}; font-size: 9px;
+                            border-radius: 2px; padding: {spx(2)} {spx(8)};
+                            color: {COLORS['text']}; {sfs(9)}
                         }}
                         QPushButton:hover {{
                             border-color: {COLORS['accent']};
@@ -7819,7 +8338,7 @@ class AssetDetailDialog(QtWidgets.QDialog):
                     """
 
                     paste_btn = QtWidgets.QPushButton("Paste")
-                    paste_btn.setFixedHeight(20)
+                    paste_btn.setFixedHeight(scale(20))
                     paste_btn.setCursor(QtCore.Qt.PointingHandCursor)
                     paste_btn.setToolTip("Paste this version into the network")
                     paste_btn.setStyleSheet(ver_btn_style)
@@ -7829,7 +8348,7 @@ class AssetDetailDialog(QtWidgets.QDialog):
                     vr_layout.addWidget(paste_btn)
 
                     revert_btn = QtWidgets.QPushButton("Revert")
-                    revert_btn.setFixedHeight(20)
+                    revert_btn.setFixedHeight(scale(20))
                     revert_btn.setCursor(QtCore.Qt.PointingHandCursor)
                     revert_btn.setToolTip("Revert asset to this version")
                     revert_btn.setStyleSheet(ver_btn_style)
@@ -7850,17 +8369,17 @@ class AssetDetailDialog(QtWidgets.QDialog):
 
         # Bottom buttons
         btn_bar = QtWidgets.QHBoxLayout()
-        btn_bar.setContentsMargins(16, 8, 16, 12)
-        btn_bar.setSpacing(8)
+        btn_bar.setContentsMargins(scale(16), scale(8), scale(16), scale(12))
+        btn_bar.setSpacing(scale(8))
 
         edit_btn = QtWidgets.QPushButton("Edit Details")
-        edit_btn.setFixedHeight(26)
+        edit_btn.setFixedHeight(scale(26))
         edit_btn.setCursor(QtCore.Qt.PointingHandCursor)
         edit_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border']};
-                border-radius: 3px; padding: 4px 14px;
+                border-radius: 3px; padding: {spx(4)} {spx(14)};
                 color: {COLORS['text']};
             }}
             QPushButton:hover {{
@@ -7873,13 +8392,13 @@ class AssetDetailDialog(QtWidgets.QDialog):
         btn_bar.addStretch()
 
         close_btn = QtWidgets.QPushButton("Close")
-        close_btn.setFixedHeight(26)
+        close_btn.setFixedHeight(scale(26))
         close_btn.setCursor(QtCore.Qt.PointingHandCursor)
         close_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['accent']};
                 border: none; border-radius: 3px;
-                padding: 4px 14px; color: white; font-weight: 600;
+                padding: {spx(4)} {spx(14)}; color: white; font-weight: 600;
             }}
             QPushButton:hover {{
                 background-color: {COLORS['accent_hover']};
@@ -7912,7 +8431,7 @@ class AssetDetailDialog(QtWidgets.QDialog):
         self.thumb_label.setText(context.upper())
         self.thumb_label.setStyleSheet(f"""
             color: {get_context_color(context)};
-            font-size: 28px; font-weight: bold; opacity: 0.3;
+            {sfs(28)} font-weight: bold; opacity: 0.3;
         """)
 
     def _on_tag_clicked(self, tag):
@@ -8006,11 +8525,11 @@ class EditAssetDialog(QtWidgets.QDialog):
         self.setStyleSheet(STYLESHEET)
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(scale(16), scale(16), scale(16), scale(16))
+        layout.setSpacing(scale(10))
 
         title = QtWidgets.QLabel("Edit Asset")
-        title.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {COLORS['text_bright']};")
+        title.setStyleSheet(f"{sfs(14)} font-weight: 600; color: {COLORS['text_bright']};")
         layout.addWidget(title)
 
         # -- Thumbnail section --
@@ -8023,8 +8542,8 @@ class EditAssetDialog(QtWidgets.QDialog):
             }}
         """)
         thumb_layout = QtWidgets.QHBoxLayout(thumb_section)
-        thumb_layout.setContentsMargins(10, 10, 10, 10)
-        thumb_layout.setSpacing(10)
+        thumb_layout.setContentsMargins(scale(10), scale(10), scale(10), scale(10))
+        thumb_layout.setSpacing(scale(10))
 
         # Current thumbnail preview
         self.thumb_preview = QtWidgets.QLabel()
@@ -8040,18 +8559,18 @@ class EditAssetDialog(QtWidgets.QDialog):
 
         # Thumbnail actions
         thumb_actions = QtWidgets.QVBoxLayout()
-        thumb_actions.setSpacing(4)
+        thumb_actions.setSpacing(scale(4))
 
         thumb_label = QtWidgets.QLabel("Thumbnail")
-        thumb_label.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px; font-weight: 600; border: none; background: transparent;")
+        thumb_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)} font-weight: 600; border: none; background: transparent;")
         thumb_actions.addWidget(thumb_label)
 
         btn_style = f"""
             QPushButton {{
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border']};
-                border-radius: 3px; padding: 3px 10px;
-                color: {COLORS['text']}; font-size: 10px;
+                border-radius: 3px; padding: {spx(3)} {spx(10)};
+                color: {COLORS['text']}; {sfs(10)}
             }}
             QPushButton:hover {{
                 border-color: {COLORS['accent']};
@@ -8059,21 +8578,21 @@ class EditAssetDialog(QtWidgets.QDialog):
         """
 
         screenshot_btn = QtWidgets.QPushButton("Screenshot")
-        screenshot_btn.setFixedHeight(22)
+        screenshot_btn.setFixedHeight(scale(22))
         screenshot_btn.setCursor(QtCore.Qt.PointingHandCursor)
         screenshot_btn.setStyleSheet(btn_style)
         screenshot_btn.clicked.connect(self._take_screenshot)
         thumb_actions.addWidget(screenshot_btn)
 
         paste_btn = QtWidgets.QPushButton("From Clipboard")
-        paste_btn.setFixedHeight(22)
+        paste_btn.setFixedHeight(scale(22))
         paste_btn.setCursor(QtCore.Qt.PointingHandCursor)
         paste_btn.setStyleSheet(btn_style)
         paste_btn.clicked.connect(self._paste_clipboard)
         thumb_actions.addWidget(paste_btn)
 
         browse_btn = QtWidgets.QPushButton("Browse File...")
-        browse_btn.setFixedHeight(22)
+        browse_btn.setFixedHeight(scale(22))
         browse_btn.setCursor(QtCore.Qt.PointingHandCursor)
         browse_btn.setStyleSheet(btn_style)
         browse_btn.clicked.connect(self._browse_image)
@@ -8085,25 +8604,25 @@ class EditAssetDialog(QtWidgets.QDialog):
 
         # -- Name --
         name_label = QtWidgets.QLabel("Name")
-        name_label.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px;")
+        name_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)}")
         layout.addWidget(name_label)
         self.name_input = QtWidgets.QLineEdit()
         self.name_input.setText(self.asset.get('name', ''))
-        self.name_input.setFixedHeight(24)
+        self.name_input.setFixedHeight(scale(24))
         layout.addWidget(self.name_input)
 
         # -- Description --
         desc_label = QtWidgets.QLabel("Description")
-        desc_label.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px;")
+        desc_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)}")
         layout.addWidget(desc_label)
         self.desc_input = QtWidgets.QTextEdit()
-        self.desc_input.setMaximumHeight(60)
+        self.desc_input.setMaximumHeight(scale(60))
         self.desc_input.setText(self.asset.get('description', ''))
         layout.addWidget(self.desc_input)
 
         # -- Tags --
         tags_label = QtWidgets.QLabel("Tags")
-        tags_label.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px;")
+        tags_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)}")
         layout.addWidget(tags_label)
         self.tags_widget = TagInputWidget()
         self.tags_widget.set_tags(self.asset.get('tags', []))
@@ -8113,16 +8632,16 @@ class EditAssetDialog(QtWidgets.QDialog):
 
         # -- Buttons --
         btns = QtWidgets.QHBoxLayout()
-        btns.setSpacing(10)
+        btns.setSpacing(scale(10))
 
         cancel = QtWidgets.QPushButton("Cancel")
-        cancel.setFixedHeight(26)
+        cancel.setFixedHeight(scale(26))
         cancel.setCursor(QtCore.Qt.PointingHandCursor)
         cancel.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['bg_light']};
                 border: 1px solid {COLORS['border']};
-                border-radius: 3px; padding: 4px 12px;
+                border-radius: 3px; padding: {spx(4)} {spx(12)};
                 color: {COLORS['text']};
             }}
             QPushButton:hover {{
@@ -8136,13 +8655,13 @@ class EditAssetDialog(QtWidgets.QDialog):
         btns.addStretch()
 
         save = QtWidgets.QPushButton("Save Changes")
-        save.setFixedHeight(26)
+        save.setFixedHeight(scale(26))
         save.setCursor(QtCore.Qt.PointingHandCursor)
         save.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['accent']};
                 border: none; border-radius: 3px;
-                padding: 4px 14px; color: white; font-weight: 600;
+                padding: {spx(4)} {spx(14)}; color: white; font-weight: 600;
             }}
             QPushButton:hover {{
                 background-color: {COLORS['accent_hover']};
@@ -8173,7 +8692,7 @@ class EditAssetDialog(QtWidgets.QDialog):
         self.thumb_preview.setText("No thumbnail")
         self.thumb_preview.setStyleSheet(
             self.thumb_preview.styleSheet() +
-            f" color: {COLORS['text_dim']}; font-size: 9px;"
+            f" color: {COLORS['text_dim']}; {sfs(9)}"
         )
 
     def _set_preview_from_image(self, image):

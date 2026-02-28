@@ -1337,8 +1337,9 @@ def delete_asset(asset_id: str):
     db.execute("DELETE FROM library_assets WHERE id = ?", (asset_id,))
     db.commit()
 
-    # Trigger menu regeneration
-    _trigger_menu_regenerate()
+    # Trigger menu regeneration — skip_reload=False so Houdini picks up
+    # the removal immediately (deletes happen outside modal dialogs).
+    _trigger_menu_regenerate(skip_reload=False)
 
 
 # ==============================================================================
@@ -1537,6 +1538,20 @@ def get_all_tags() -> List[Dict[str, Any]]:
     return [{'tag': r[0], 'count': r[1]} for r in rows]
 
 
+def get_all_artists() -> List[Dict[str, Any]]:
+    """Get all unique artists (from remote_slug user/name) with asset counts."""
+    db = get_db()
+    rows = db.execute("""
+        SELECT SUBSTR(remote_slug, 1, INSTR(remote_slug, '/') - 1) as artist,
+               COUNT(*) as count
+        FROM library_assets
+        WHERE remote_slug IS NOT NULL AND remote_slug LIKE '%/%'
+        GROUP BY artist
+        ORDER BY count DESC, artist ASC
+    """).fetchall()
+    return [{'artist': r[0], 'count': r[1]} for r in rows if r[0]]
+
+
 def get_recent_assets(limit: int = 10) -> List[Dict[str, Any]]:
     """Get recently used assets."""
     return search_assets(sort_by='last_used_at', sort_order='desc', limit=limit)
@@ -1639,11 +1654,16 @@ def set_pref(key: str, value: Any):
 # Menu Regeneration Hook
 # ==============================================================================
 
-def _trigger_menu_regenerate():
-    """Trigger TAB menu regeneration (lazy import to avoid circular deps)."""
+def _trigger_menu_regenerate(skip_reload: bool = True):
+    """Trigger TAB menu regeneration (lazy import to avoid circular deps).
+
+    Args:
+        skip_reload: If True, skip hou.shelves.loadFile() (safe for modal dialogs).
+                     If False, also reload the shelf so Houdini picks up changes immediately.
+    """
     try:
         from . import menu
-        menu.trigger_regenerate()
+        menu.trigger_regenerate(skip_reload=skip_reload)
     except Exception as e:
         # Silently fail - menu regeneration is not critical
         pass

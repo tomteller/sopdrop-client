@@ -532,7 +532,39 @@ class SopdropClient:
             except importer.ContextMismatchError as e:
                 raise SopdropError(str(e))
             except importer.MissingDependencyError as e:
-                raise SopdropError(str(e))
+                # Offer placeholder option for V1 packages
+                fmt = package.get("format", "")
+                is_v1 = (fmt == "sopdrop-v1" or fmt == "chopsop-v1")
+                if is_v1:
+                    use_placeholders = False
+                    try:
+                        result_choice = hou.ui.displayMessage(
+                            str(e) + "\n\nYou can paste with red placeholder subnets for the missing nodes.",
+                            buttons=("Paste with Placeholders", "Cancel"),
+                            severity=hou.severityType.Warning,
+                            default_choice=1,
+                            close_choice=1,
+                            title="Missing Dependencies",
+                        )
+                        use_placeholders = (result_choice == 0)
+                    except Exception:
+                        response = input("\nPaste with placeholder subnets for missing HDAs? (y/N): ").strip().lower()
+                        use_placeholders = (response == 'y')
+
+                    if use_placeholders:
+                        try:
+                            items = importer.import_at_cursor(package, allow_placeholders=True)
+                            if items:
+                                print(f"✓ Pasted {len(items)} items from {asset_ref} (with placeholders)")
+                            else:
+                                print(f"✓ Paste completed for {asset_ref} (with placeholders)")
+                        except importer.ImportError as e2:
+                            raise SopdropError(f"Import failed: {e2}")
+                    else:
+                        print("Paste cancelled.")
+                        return
+                else:
+                    raise SopdropError(str(e))
             except importer.ChecksumError as e:
                 raise SopdropError(f"Security check failed: {e}")
             except importer.ImportError as e:

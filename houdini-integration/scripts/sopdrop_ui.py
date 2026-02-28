@@ -876,13 +876,23 @@ class SnippingTool(QtWidgets.QWidget):
         # Take a screenshot FIRST, before setting up the window
         self._capture_screen()
 
-        # Make fullscreen transparent overlay
-        self.setWindowFlags(
-            QtCore.Qt.FramelessWindowHint |
-            QtCore.Qt.WindowStaysOnTopHint |
-            QtCore.Qt.Tool
-        )
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+        # Make fullscreen overlay
+        import platform
+        if platform.system() == 'Darwin':
+            # On macOS, WA_TranslucentBackground + Qt.Tool can prevent
+            # mouse events from being received. Since we paint the entire
+            # surface (captured screen + overlay), transparency isn't needed.
+            self.setWindowFlags(
+                QtCore.Qt.FramelessWindowHint |
+                QtCore.Qt.WindowStaysOnTopHint
+            )
+        else:
+            self.setWindowFlags(
+                QtCore.Qt.FramelessWindowHint |
+                QtCore.Qt.WindowStaysOnTopHint |
+                QtCore.Qt.Tool
+            )
+            self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
 
         # Position window to cover the screen
@@ -903,6 +913,17 @@ class SnippingTool(QtWidgets.QWidget):
             self.setGeometry(0, 0, 1920, 1080)
 
         self.setCursor(QtCore.Qt.CrossCursor)
+
+        # On macOS, ensure the window receives focus and mouse events
+        if platform.system() == 'Darwin':
+            self.setFocusPolicy(QtCore.Qt.StrongFocus)
+            QtCore.QTimer.singleShot(50, self._activate_on_mac)
+
+    def _activate_on_mac(self):
+        """Activate window on macOS to ensure mouse events are received."""
+        self.raise_()
+        self.activateWindow()
+        self.setFocus()
 
     def _capture_screen(self):
         """Capture the entire screen before showing overlay."""

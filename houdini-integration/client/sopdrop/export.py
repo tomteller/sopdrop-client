@@ -82,53 +82,122 @@ def export_items(items) -> Dict[str, Any]:
 
     code_parts = []
 
-    # Export each node via asCode, with unique variable suffix per node
-    # to avoid variable name collisions between multiple asCode outputs.
-    # recurse=True ensures children inside subnets/containers are captured.
+    # Export each node via asCode, wrapped in a function to isolate scope.
+    #
+    # WHY FUNCTION WRAPPING IS NECESSARY:
+    # asCode(recurse=True) generates code that mutates `hou_parent` and
+    # `hou_node` as navigation variables — it does "hou_parent = hou_node"
+    # to descend into children, then ".parent()" to restore. After the
+    # restoration chain finishes, hou_node ends up pointing to the node's
+    # PARENT (not the node itself), and hou_parent is back to original.
+    #
+    # When we concatenate multiple asCode blocks with shared variables,
+    # this causes:
+    # 1. hou_node__N points to WRONG node after asCode finishes
+    # 2. Manual connection code uses wrong references → broken wires
+    # 3. asCode's internal connection code can crash if name lookups fail
+    #
+    # By wrapping each node's asCode in a function:
+    # - hou_parent modifications stay LOCAL (don't affect outer scope)
+    # - No variable collisions between nodes (each has own scope)
+    # - We capture the node reference right after createNode (before
+    #   navigation mutates it) and return it
+    # - asCode's internal connection code runs harmlessly in isolation
+
     for idx, node in enumerate(nodes):
         code = node.asCode(
             brief=True,
             recurse=True,
             save_box_membership=False,
-            save_outgoing_wires=True,
+            save_outgoing_wires=False,
         )
-        # Suffix variable names to avoid collisions between nodes.
-        # asCode generates: hou_node, hou_node2, hou_node3, etc. for children
-        # when recurse=True. We must rename ALL numbered variants to prevent
-        # collisions when multiple top-level nodes are selected.
-        # Process longer names first so 'hou_parm_template' doesn't match
-        # inside 'hou_parm_template_group'.
-        for var in ['hou_parm_template_group', 'hou_parm_template', 'hou_parm', 'hou_node']:
-            code = re.sub(
-                r'\b(' + var + r'(?:\d+)?)\b',
-                r'\g<1>__' + str(idx),
-                code,
-            )
-        code_parts.append(code)
 
-    # Export network boxes with explicit creation code
+        # Strip asCode's inline connection block — we handle all wiring
+        # explicitly in Pass 1 (direct) and Pass 2 (dot rewire).
+        # The inline block starts with "# Code to establish connections for"
+        # and sets redundant setInput calls that flood the undo history.
+        conn_marker = '# Code to establish connections for '
+        if conn_marker in code:
+            code = code[:code.index(conn_marker)].rstrip() + '\n'
+
+        # Inject a reference save right after the first createNode call.
+        # This captures the top-level node before asCode's navigation
+        # reassigns the variable to children/parent.
+        create_marker = 'hou_node = hou_parent.createNode('
+        if create_marker in code:
+            pos = code.index(create_marker)
+            newline_pos = code.index('\n', pos)
+            code = (code[:newline_pos + 1]
+                    + '_sdrop_result = hou_node\n'
+                    + code[newline_pos + 1:])
+
+        # Indent all lines for function body
+        indented_lines = []
+        for line in code.split('\n'):
+            if line.strip():
+                indented_lines.append('    ' + line)
+            else:
+                indented_lines.append('')
+        indented = '\n'.join(indented_lines)
+
+        func_name = f'_sdrop_create_{idx}'
+        node_name_escaped = node.name().replace("'", "\\'")
+        wrapped = (f'def {func_name}(hou_parent, hou):\n'
+                   f'    _sdrop_result = None\n'
+                   f'{indented}\n'
+                   f'    return _sdrop_result\n')
+        code_parts.append(wrapped)
+        # Call the function; fall back to name lookup if _sdrop_result is None
+        code_parts.append(f'_sdrop_node_{idx} = {func_name}(hou_parent, hou)')
+        code_parts.append(
+            f'if _sdrop_node_{idx} is None:\n'
+            f'    _sdrop_node_{idx} = hou_parent.node(\'{node_name_escaped}\')'
+        )
+
+    # Build node name -> variable mapping for connection code.
+    # Each function returns the created node, stored in _sdrop_node_N.
+    node_name_to_var = {}
+    for idx, node in enumerate(nodes):
+        node_name_to_var[node.name()] = f'_sdrop_node_{idx}'
+
+    # Build a lookup of which items belong to which network boxes.
+    # We need this because network box item addition must happen AFTER
+    # all items (nodes, stickies, dots) are created. Sticky notes and dots
+    # get auto-generated names on creation, so we track them by variable
+    # reference instead of by original name.
+    sticky_var_by_obj = {}  # sticky note object -> variable name
+    dot_var_by_obj = {}     # populated later during dot export
+
+    # Export network boxes — creation only (item addition is deferred)
+    netbox_items_deferred = []  # [(netbox_var, [(item_type, ref)])]
     for i, netbox in enumerate(network_boxes):
         pos = netbox.position()
         size = netbox.size()
         color = netbox.color()
         comment = netbox.comment()
         name = netbox.name()
+        netbox_var = f'hou_netbox_{i}'
         code_parts.append(f"""
 # Network box: {name}
-hou_netbox_{i} = hou_parent.createNetworkBox("{name}")
-hou_netbox_{i}.setPosition(hou.Vector2({pos[0]}, {pos[1]}))
-hou_netbox_{i}.setSize(hou.Vector2({size[0]}, {size[1]}))
-hou_netbox_{i}.setColor(hou.Color(({color.rgb()[0]}, {color.rgb()[1]}, {color.rgb()[2]})))
-hou_netbox_{i}.setComment({repr(comment)})""")
-        # Add contained items by name
+{netbox_var} = hou_parent.createNetworkBox("{name}")
+{netbox_var}.setPosition(hou.Vector2({pos[0]}, {pos[1]}))
+{netbox_var}.setSize(hou.Vector2({size[0]}, {size[1]}))
+{netbox_var}.setColor(hou.Color(({color.rgb()[0]}, {color.rgb()[1]}, {color.rgb()[2]})))
+{netbox_var}.setComment({repr(comment)})""")
+
+        # Record contained items for deferred addition
+        contained = []
         for item in netbox.items():
-            item_name = item.name()
-            code_parts.append(
-                f'try:\n'
-                f'    _item = hou_parent.item("{item_name}")\n'
-                f'    if _item: hou_netbox_{i}.addItem(_item)\n'
-                f'except: pass'
-            )
+            if isinstance(item, hou.Node):
+                # Nodes keep their original names from asCode
+                contained.append(('node', item.name(), item))
+            elif isinstance(item, hou.StickyNote):
+                contained.append(('sticky', None, item))  # ref filled in later
+            elif isinstance(item, hou.NetworkDot):
+                contained.append(('dot', None, item))      # ref filled in later
+            elif isinstance(item, hou.NetworkBox):
+                contained.append(('node', item.name(), item))  # nested boxes use name
+        netbox_items_deferred.append((netbox_var, contained))
 
     # Export sticky notes with explicit creation code to preserve positions
     for i, sticky in enumerate(sticky_notes):
@@ -148,43 +217,71 @@ hou_netbox_{i}.setComment({repr(comment)})""")
         except Exception:
             bg_rgb = (0.3, 0.3, 0.3)
 
+        var = f'hou_sticky_{i}'
+        sticky_var_by_obj[sticky] = var
+
         code_parts.append(f"""
 # Sticky note {i}
-hou_sticky_{i} = hou_parent.createStickyNote()
-hou_sticky_{i}.setPosition(hou.Vector2({pos[0]}, {pos[1]}))
-hou_sticky_{i}.setSize(hou.Vector2({size[0]}, {size[1]}))
-hou_sticky_{i}.setText({repr(text)})
-hou_sticky_{i}.setTextSize({text_size})
-hou_sticky_{i}.setDrawBackground({draw_bg})
-hou_sticky_{i}.setTextColor(hou.Color(({tc_rgb[0]}, {tc_rgb[1]}, {tc_rgb[2]})))
-hou_sticky_{i}.setColor(hou.Color(({bg_rgb[0]}, {bg_rgb[1]}, {bg_rgb[2]})))""")
+{var} = hou_parent.createStickyNote()
+{var}.setPosition(hou.Vector2({pos[0]}, {pos[1]}))
+{var}.setSize(hou.Vector2({size[0]}, {size[1]}))
+{var}.setText({repr(text)})
+{var}.setTextSize({text_size})
+{var}.setDrawBackground({draw_bg})
+{var}.setTextColor(hou.Color(({tc_rgb[0]}, {tc_rgb[1]}, {tc_rgb[2]})))
+{var}.setColor(hou.Color(({bg_rgb[0]}, {bg_rgb[1]}, {bg_rgb[2]})))""")
 
     # Export network dots (wire reroute points)
-    # Build a lookup of which (upstream_name, output_idx) has a dot on it,
-    # so we can rewire downstream nodes through the dot after creation.
-    dot_lookup = {}  # (upstream_name, output_idx) -> dot variable name
+    #
+    # Dots are visual wire routing points. asCode() ignores them entirely,
+    # creating direct node-to-node connections. We must:
+    # 1. Create each dot and wire its input (handling dot chains correctly)
+    # 2. Figure out which downstream node+input each dot feeds into
+    # 3. Rewire those connections through the appropriate dot
+    #
+    # Challenges:
+    # - Multiple dots can share the same upstream (one output splitting to two dots)
+    # - Dots can chain through other dots (Dot1 → Dot2 → Node)
+    # - The Houdini API doesn't expose what a dot outputs to (only inputItem())
+    # - We use position-based heuristics to match dots to downstream connections
+
+    selected_dot_set = set(network_dots)
+    dot_vars = {}       # dot object -> Python variable name (for rewiring)
+    dot_var_by_obj = {}  # also track for network box membership
+
     for i, dot in enumerate(network_dots):
         pos = dot.position()
         var = f'hou_dot_{i}'
+        dot_vars[dot] = var
+        dot_var_by_obj[dot] = var
 
         code_parts.append(f"""
 # Network dot {i}
 {var} = hou_parent.createNetworkDot()
 {var}.setPosition(hou.Vector2({pos[0]}, {pos[1]}))""")
 
-        # Set the dot's input connection
+        # Wire the dot's input — handle chained dots vs node inputs
         try:
             input_item = dot.inputItem()
             if input_item:
-                input_name = input_item.name()
-                input_out_idx = dot.inputItemOutputIndex()
-                code_parts.append(
-                    f'try:\n'
-                    f'    _up = hou_parent.item("{input_name}")\n'
-                    f'    if _up: {var}.setInput(_up, {input_out_idx})\n'
-                    f'except: pass'
-                )
-                dot_lookup[(input_name, input_out_idx)] = var
+                if input_item in selected_dot_set:
+                    # Chained dot: reference the upstream dot's variable directly
+                    upstream_var = dot_vars[input_item]
+                    code_parts.append(f'{var}.setInput({upstream_var}, 0)')
+                else:
+                    # Input is a node: use its asCode variable reference
+                    input_name = input_item.name()
+                    input_out_idx = dot.inputItemOutputIndex()
+                    node_var = node_name_to_var.get(input_name)
+                    if node_var:
+                        code_parts.append(f'{var}.setInput({node_var}, {input_out_idx})')
+                    else:
+                        code_parts.append(
+                            f'try:\n'
+                            f'    _up = hou_parent.item("{input_name}")\n'
+                            f'    if _up: {var}.setInput(_up, {input_out_idx})\n'
+                            f'except: pass'
+                        )
         except Exception:
             pass
 
@@ -194,28 +291,198 @@ hou_sticky_{i}.setColor(hou.Color(({bg_rgb[0]}, {bg_rgb[1]}, {bg_rgb[2]})))""")
         except Exception:
             pass
 
-    # Rewire downstream nodes through dots.
-    # asCode(save_outgoing_wires=True) creates direct connections that skip dots.
-    # For each selected node, check if any of its inputs match a dot's upstream —
-    # if so, rewire that input through the dot.
-    if dot_lookup:
-        for node in nodes:
+    # Generate all connections between selected nodes.
+    #
+    # Strategy: two-pass approach.
+    #   Pass 1: Wire ALL connections directly (node→node, using variable refs).
+    #   Pass 2: For connections that should route through dots, overwrite with
+    #           dot-routed connections. setInput() on the same input index just
+    #           replaces the previous connection, so pass 2 cleanly overwrites pass 1.
+    #
+    # This avoids the previous bug where connections from a source+output that
+    # had SOME dots would ALL get routed through dots, dropping direct connections
+    # when there were more connections than dots.
+
+    from collections import defaultdict
+    selected_node_names = set(n.name() for n in nodes)
+
+    # Collect ALL connections between selected nodes
+    # NodeConnection API (from node.inputConnections()):
+    #   conn.inputNode()  = upstream node (provides data into the wire)
+    #   conn.inputIndex() = input connector index on the DOWNSTREAM node (this node)
+    #   conn.outputNode() = downstream node (this node, receives data)
+    #   conn.outputIndex()= output connector index on the UPSTREAM node
+    all_connections = []  # (dn_name, dn_input, up_name, up_output, dn_x, dn_y)
+    for node in nodes:
+        try:
+            node_pos = node.position()
+            for conn in node.inputConnections():
+                upstream = conn.inputNode()
+                if upstream is None:
+                    continue
+                if upstream.name() not in selected_node_names:
+                    continue
+                downstream_input = conn.inputIndex()
+                upstream_output = conn.outputIndex()
+                all_connections.append((
+                    node.name(), downstream_input,
+                    upstream.name(), upstream_output,
+                    node_pos[0], node_pos[1]
+                ))
+        except Exception:
+            pass
+
+    # Pass 1: Wire ALL connections directly
+    code_parts.append("\n# Wire connections (direct)")
+    for dn_name, dn_input, up_name, up_output, _, _ in all_connections:
+        dn_var = node_name_to_var.get(dn_name)
+        up_var = node_name_to_var.get(up_name)
+        if dn_var and up_var:
+            code_parts.append(
+                f'try: {dn_var}.setInput({dn_input}, {up_var}, {up_output})\n'
+                f'except Exception: pass'
+            )
+
+    # Pass 2: Overwrite dot-routed connections
+    # Build dot routing info: which (source, output) pairs have terminal dots
+    if network_dots:
+        # Trace each dot back through any chain to find the source NODE
+        dot_source = {}  # dot -> (source_node_name, source_output_idx)
+        for dot in network_dots:
             try:
-                for conn in node.inputConnections():
-                    upstream = conn.inputNode()
-                    if upstream is None:
-                        continue
-                    key = (upstream.name(), conn.inputIndex())
-                    if key in dot_lookup:
-                        input_idx = conn.outputIndex()
-                        dot_var = dot_lookup[key]
-                        code_parts.append(
-                            f'try:\n'
-                            f'    hou_parent.item("{node.name()}").setInput({input_idx}, {dot_var}, 0)\n'
-                            f'except: pass'
-                        )
+                out_idx = dot.inputItemOutputIndex()
+                up = dot.inputItem()
+                while up in selected_dot_set:
+                    out_idx = up.inputItemOutputIndex()
+                    up = up.inputItem()
+                if up and isinstance(up, hou.Node):
+                    dot_source[dot] = (up.name(), out_idx)
             except Exception:
                 pass
+
+        # Terminal dots: dots whose output goes to a node, not another dot
+        has_dot_downstream = set()
+        for dot in network_dots:
+            try:
+                up = dot.inputItem()
+                if up in selected_dot_set:
+                    has_dot_downstream.add(up)
+            except Exception:
+                pass
+        terminal_dots = [d for d in network_dots if d not in has_dot_downstream]
+
+        # Group terminal dots by their source
+        rewire_candidates = defaultdict(list)  # (source_name, source_output) -> [(dot_var, x, y)]
+        for dot in terminal_dots:
+            source = dot_source.get(dot)
+            if source:
+                var = dot_vars[dot]
+                pos = dot.position()
+                rewire_candidates[source].append((var, pos[0], pos[1]))
+
+        if rewire_candidates:
+            code_parts.append("\n# Rewire through dots")
+
+            # For each source+output, match dots to connections by position
+            for source_key, dot_list in rewire_candidates.items():
+                # Find connections from this source+output
+                matching = [
+                    (dn_name, dn_input, dn_x, dn_y)
+                    for dn_name, dn_input, up_name, up_output, dn_x, dn_y
+                    in all_connections
+                    if (up_name, up_output) == source_key
+                ]
+                if not matching:
+                    continue
+
+                # Sort dots by X position, connections by downstream input index
+                dots_sorted = sorted(dot_list, key=lambda c: c[1])
+                conns_sorted = sorted(matching, key=lambda c: (c[0], c[1]))
+
+                if len(conns_sorted) == 1 and len(dots_sorted) == 1:
+                    # Simple 1:1 match
+                    dn_name, dn_input, _, _ = conns_sorted[0]
+                    dot_var = dots_sorted[0][0]
+                    dn_var = node_name_to_var.get(dn_name)
+                    if dn_var:
+                        code_parts.append(
+                            f'try: {dn_var}.setInput({dn_input}, {dot_var}, 0)\n'
+                            f'except Exception: pass'
+                        )
+
+                elif len(conns_sorted) <= len(dots_sorted):
+                    # Enough dots for all connections — match by position proximity
+                    remaining_dots = list(dots_sorted)
+                    for dn_name, dn_input, dn_x, dn_y in conns_sorted:
+                        best_i = min(
+                            range(len(remaining_dots)),
+                            key=lambda j: (remaining_dots[j][1] - dn_x) ** 2
+                                        + (remaining_dots[j][2] - dn_y) ** 2
+                        )
+                        dot_var = remaining_dots.pop(best_i)[0]
+                        dn_var = node_name_to_var.get(dn_name)
+                        if dn_var:
+                            code_parts.append(
+                                f'try: {dn_var}.setInput({dn_input}, {dot_var}, 0)\n'
+                                f'except Exception: pass'
+                            )
+
+                else:
+                    # More connections than dots — match dots to closest, rest stay direct
+                    remaining_conns = list(conns_sorted)
+                    for dot_var, dx, dy in dots_sorted:
+                        if not remaining_conns:
+                            break
+                        best_i = min(
+                            range(len(remaining_conns)),
+                            key=lambda j: (remaining_conns[j][2] - dx) ** 2
+                                        + (remaining_conns[j][3] - dy) ** 2
+                        )
+                        dn_name, dn_input, _, _ = remaining_conns.pop(best_i)
+                        dn_var = node_name_to_var.get(dn_name)
+                        if dn_var:
+                            code_parts.append(
+                                f'try: {dn_var}.setInput({dn_input}, {dot_var}, 0)\n'
+                                f'except Exception: pass'
+                            )
+                    # Remaining connections keep their direct wiring from pass 1
+
+    # Add items to network boxes (deferred until all items exist).
+    # Use variable references for nodes (avoids name lookup failures if
+    # asCode renamed a node to avoid conflicts). Sticky notes and dots
+    # also use their variable references since they get auto-generated names.
+    if netbox_items_deferred:
+        code_parts.append("\n# Add items to network boxes")
+        for netbox_var, contained in netbox_items_deferred:
+            for item_type, ref, obj in contained:
+                if item_type == 'node':
+                    # Use asCode variable if available, fall back to name lookup
+                    node_var = node_name_to_var.get(ref)
+                    if node_var:
+                        code_parts.append(f'{netbox_var}.addItem({node_var})')
+                    else:
+                        code_parts.append(
+                            f'try:\n'
+                            f'    _item = hou_parent.item("{ref}")\n'
+                            f'    if _item: {netbox_var}.addItem(_item)\n'
+                            f'except: pass'
+                        )
+                elif item_type == 'sticky':
+                    var = sticky_var_by_obj.get(obj)
+                    if var:
+                        code_parts.append(
+                            f'try:\n'
+                            f'    {netbox_var}.addItem({var})\n'
+                            f'except: pass'
+                        )
+                elif item_type == 'dot':
+                    var = dot_var_by_obj.get(obj)
+                    if var:
+                        code_parts.append(
+                            f'try:\n'
+                            f'    {netbox_var}.addItem({var})\n'
+                            f'except: pass'
+                        )
 
     # Join all code
     raw_code = "\n".join(code_parts)
@@ -293,6 +560,7 @@ def _detect_hda_dependencies(nodes) -> List[Dict[str, str]]:
     Detect custom HDA dependencies in the selected nodes.
 
     Returns list of HDAs that are not built-in Houdini assets.
+    Each entry includes: name, library, category, operator_type, version, label.
     """
     import hou
 
@@ -308,10 +576,41 @@ def _detect_hda_dependencies(nodes) -> List[Dict[str, str]]:
 
                 if type_name not in seen and not _is_builtin_hda(lib_path):
                     seen.add(type_name)
+                    node_type = node.type()
+                    category = node_type.category().name()
+
+                    # Full namespaced type e.g. "Sop/com.artist::scatter::2.0"
+                    operator_type = f"{category}/{type_name}"
+                    try:
+                        operator_type = node_type.nameWithCategory()
+                    except Exception:
+                        pass
+
+                    # HDA version from definition
+                    version = None
+                    try:
+                        v = definition.version()
+                        if v:
+                            version = v
+                    except Exception:
+                        pass
+
+                    # Human-readable label
+                    label = None
+                    try:
+                        desc = node_type.description()
+                        if desc:
+                            label = desc
+                    except Exception:
+                        pass
+
                     dependencies.append({
                         "name": type_name,
+                        "operator_type": operator_type,
+                        "label": label,
+                        "category": category,
                         "library": lib_path,
-                        "category": node.type().category().name(),
+                        "version": version,
                     })
         except Exception:
             pass

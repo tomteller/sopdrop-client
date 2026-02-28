@@ -82,7 +82,22 @@ try:
         else:
             # Show save dialog
             dialog = sopdrop_library_panel.SaveToLibraryDialog(items)
-            dialog.exec_()
+            result = dialog.exec_()
+
+            # Refresh any open library panels and reload TAB menu
+            try:
+                if result:
+                    sopdrop_library_panel.refresh_all_panels()
+                    # Reload TAB menu shelf so new asset appears immediately
+                    try:
+                        from sopdrop.menu import get_shelf_file
+                        _sf = get_shelf_file()
+                        if _sf.exists():
+                            hou.shelves.loadFile(str(_sf))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
 except ImportError as e:
     import hou

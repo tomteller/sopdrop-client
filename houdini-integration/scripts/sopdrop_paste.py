@@ -121,7 +121,7 @@ def _check_system_clipboard():
         if not text:
             return None
 
-        # Look for sopdrop.paste("user/asset") or sopdrop.paste("s/CODE") pattern
+        # Look for sopdrop.paste("user/asset"), sopdrop.paste("s/CODE"), or sopdrop.paste("t/CODE") pattern
         match = re.search(r'sopdrop\.paste\(["\']([^"\']+)["\']\)', text)
         if match:
             return match.group(1)
@@ -130,6 +130,11 @@ def _check_system_clipboard():
         match = re.search(r'(?:sopdrop\.com|localhost:\d+)/s/([A-Z]{2}-[A-Z0-9]{4})\b', text)
         if match:
             return f"s/{match.group(1)}"
+
+        # Look for team share code pattern: t/XX-XXXX (bare, not in a paste command)
+        match = re.search(r'\bt/([A-Z]{2}-[A-Z0-9]{4})\b', text)
+        if match:
+            return f"t/{match.group(1)}"
 
     except Exception as e:
         print(f"Could not check system clipboard: {e}")
@@ -526,8 +531,18 @@ def _show_paste_dialog(slug, pane):
     # Try to get asset info
     asset_info = {}
     try:
-        if slug.startswith("s/"):
-            # Temporary share — get info from share endpoint
+        if slug.startswith("t/"):
+            # Team (local) share — read manifest from team shares dir
+            share_info = _get_team_share_info(slug[2:])
+            if share_info:
+                asset_info = {
+                    "name": share_info.get("name") or f"Team Share {slug[2:]}",
+                    "context": share_info.get("context", "?"),
+                    "nodeCount": share_info.get("nodeCount", "?"),
+                    "owner": {"username": share_info.get("createdBy", "someone")},
+                }
+        elif slug.startswith("s/"):
+            # Cloud share — get info from share endpoint
             from sopdrop.api import SopdropClient
             client = SopdropClient()
             share_info = client.share_info(slug[2:])
@@ -567,8 +582,21 @@ def _confirm_and_paste_fallback(slug, pane):
     import sopdrop
 
     try:
-        if slug.startswith("s/"):
-            # Temporary share
+        if slug.startswith("t/"):
+            # Team (local) share
+            info = _get_team_share_info(slug[2:])
+            if info:
+                name = info.get("name") or f"Team Share {slug[2:]}"
+                context = info.get("context", "?").upper()
+                node_count = info.get("nodeCount", "?")
+                owner_name = info.get("createdBy", "someone")
+            else:
+                name = f"Team Share {slug[2:]}"
+                context = "?"
+                node_count = "?"
+                owner_name = "unknown"
+        elif slug.startswith("s/"):
+            # Cloud share
             from sopdrop.api import SopdropClient
             client = SopdropClient()
             info = client.share_info(slug[2:])
@@ -645,6 +673,59 @@ def _show_browse_dialog_fallback():
 # Core Paste Functions
 # ============================================================
 
+def _offer_placeholders_and_paste(package, target_node, position):
+    """Try to paste; on missing HDA deps, offer placeholder mode for V1 packages.
+
+    Returns True on success, False if cancelled/error.
+    """
+    from sopdrop.importer import import_items, MissingDependencyError, _check_missing_hdas
+
+    try:
+        import_items(package, target_node, position)
+        return True
+    except MissingDependencyError:
+        pass
+
+    # Missing deps — check if V1 and offer placeholders
+    fmt = package.get("format", "")
+    is_v1 = fmt in ("sopdrop-v1", "chopsop-v1")
+
+    deps = package.get("dependencies", [])
+    missing = _check_missing_hdas(deps) if deps else []
+    lines = []
+    if missing:
+        lines.append(f"Missing {len(missing)} HDA dependency(ies):\n")
+        for dep in missing:
+            label = dep.get("label") or dep.get("name", "unknown")
+            cat = dep.get("category", "")
+            lines.append(f"  - {label} ({cat})")
+    else:
+        lines.append("Missing HDA dependencies (types not installed).")
+
+    if is_v1:
+        lines.append("\nPaste with red placeholder subnets for the missing nodes?")
+        reply = hou.ui.displayMessage(
+            "\n".join(lines),
+            buttons=("Paste with Placeholders", "Cancel"),
+            title="Sopdrop - Missing Dependencies",
+            severity=hou.severityType.Warning,
+            default_choice=1,
+        )
+        if reply != 0:
+            return False
+        import_items(package, target_node, position, allow_placeholders=True)
+        return True
+    else:
+        lines.append("\nInstall the missing HDAs and try again.")
+        lines.append("(Placeholder mode is only available for code-based packages.)")
+        hou.ui.displayMessage(
+            "\n".join(lines),
+            title="Sopdrop - Missing Dependencies",
+            severity=hou.severityType.Warning,
+        )
+        return False
+
+
 def _quick_paste(clipboard, pane):
     """Quickly paste from local clipboard at cursor/view position."""
     from sopdrop.importer import import_items, ContextMismatchError, MissingDependencyError
@@ -684,18 +765,15 @@ def _quick_paste(clipboard, pane):
     # Get paste position
     position = _get_paste_position(pane)
 
-    # Do the paste
+    # Do the paste (with placeholder offer on missing deps)
     try:
-        items = import_items(package, target_node, position)
-
-        meta = package.get("metadata", {})
-        node_count = meta.get("node_count", len(items) if items else "?")
-        print(f"Sopdrop: Pasted {node_count} nodes from {slug}")
+        if _offer_placeholders_and_paste(package, target_node, position):
+            meta = package.get("metadata", {})
+            node_count = meta.get("node_count", "?")
+            print(f"Sopdrop: Pasted {node_count} nodes from {slug}")
 
     except ContextMismatchError as e:
         hou.ui.displayMessage(str(e), title="Sopdrop - Context Error", severity=hou.severityType.Error)
-    except MissingDependencyError as e:
-        hou.ui.displayMessage(str(e), title="Sopdrop - Missing HDAs", severity=hou.severityType.Error)
     except Exception as e:
         hou.ui.displayMessage(f"Paste failed: {e}", title="Sopdrop - Error", severity=hou.severityType.Error)
 
@@ -704,32 +782,51 @@ def _paste_by_slug(slug, pane=None):
     """Fetch and paste an asset by its slug (or share code like 's/TC-XXXX')."""
     import sopdrop
     from sopdrop.api import SopdropClient
-    from sopdrop.importer import import_items
 
     if pane is None:
         pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
 
     try:
+        if slug.startswith("t/"):
+            # Team (local) share — read from team shares directory
+            share_code = slug[2:]
+            package = _fetch_team_share(share_code)
+            if package is None:
+                hou.ui.displayMessage(
+                    f"Team share not found: {share_code}\n\n"
+                    "The share file may have been deleted, or your\n"
+                    "team library path may not be configured.",
+                    title="Sopdrop - Not Found",
+                    severity=hou.severityType.Error,
+                )
+                return
+
+            position = _get_paste_position(pane) if pane else (0, 0)
+            target_node = pane.pwd() if pane else None
+
+            if _offer_placeholders_and_paste(package, target_node, position):
+                meta = package.get("metadata", {})
+                node_count = meta.get("node_count", "?")
+                print(f"Sopdrop: Pasted {node_count} nodes from team share {share_code}")
+            return
+
         if slug.startswith("s/"):
-            # Temporary share — fetch from share endpoint
+            # Cloud share — fetch from share endpoint
             share_code = slug[2:]
             with hou.InterruptableOperation(f"Fetching share {share_code}...", open_interrupt_dialog=True):
                 client = SopdropClient()
                 package = client.fetch_share(share_code)
 
-            # Get paste position
             position = _get_paste_position(pane) if pane else (0, 0)
             target_node = pane.pwd() if pane else None
 
-            items = import_items(package, target_node, position)
-
-            meta = package.get("metadata", {})
-            node_count = meta.get("node_count", len(items) if items else "?")
-            print(f"Sopdrop: Pasted {node_count} nodes from share {share_code}")
+            if _offer_placeholders_and_paste(package, target_node, position):
+                meta = package.get("metadata", {})
+                node_count = meta.get("node_count", "?")
+                print(f"Sopdrop: Pasted {node_count} nodes from share {share_code}")
             return
 
         # Regular asset slug
-        # Show progress
         with hou.InterruptableOperation(f"Fetching {slug}...", open_interrupt_dialog=True):
             client = SopdropClient()
             result = client.install(slug)
@@ -744,21 +841,56 @@ def _paste_by_slug(slug, pane=None):
         # Save to clipboard for quick re-paste
         _save_to_clipboard(slug, package)
 
-        # Get paste position
         position = _get_paste_position(pane) if pane else (0, 0)
         target_node = pane.pwd() if pane else None
 
-        # Paste
-        items = import_items(package, target_node, position)
-
-        meta = package.get("metadata", {})
-        node_count = meta.get("node_count", len(items) if items else "?")
-        print(f"Sopdrop: Pasted {node_count} nodes from {slug}")
+        if _offer_placeholders_and_paste(package, target_node, position):
+            meta = package.get("metadata", {})
+            node_count = meta.get("node_count", "?")
+            print(f"Sopdrop: Pasted {node_count} nodes from {slug}")
 
     except hou.OperationInterrupted:
         pass
     except Exception as e:
         hou.ui.displayMessage(f"Failed to paste: {e}", title="Sopdrop - Error", severity=hou.severityType.Error)
+
+
+# ============================================================
+# Team Share Helpers
+# ============================================================
+
+def _get_team_share_info(code):
+    """Read team share manifest from local shares directory. Returns dict or None."""
+    try:
+        from sopdrop.config import get_team_library_path
+
+        team_path = get_team_library_path()
+        if not team_path:
+            return None
+
+        manifest_file = team_path / "shares" / f"{code}.json"
+        if manifest_file.exists():
+            return json.loads(manifest_file.read_text())
+    except Exception as e:
+        print(f"Could not read team share manifest: {e}")
+    return None
+
+
+def _fetch_team_share(code):
+    """Read team share package from local shares directory. Returns package dict or None."""
+    try:
+        from sopdrop.config import get_team_library_path
+
+        team_path = get_team_library_path()
+        if not team_path:
+            return None
+
+        package_file = team_path / "shares" / f"{code}.sopdrop"
+        if package_file.exists():
+            return json.loads(package_file.read_text())
+    except Exception as e:
+        print(f"Could not read team share package: {e}")
+    return None
 
 
 # Entry point
