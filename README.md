@@ -6,9 +6,17 @@ Houdini asset registry client. Save, share, and install procedural nodes and HDA
 
 Sopdrop uses Houdini's built-in package system. No pip, no terminal, no Python environments.
 
-1. **Download** the [latest release](https://github.com/tomteller/sopdrop-client/releases/latest) and extract it anywhere on your machine.
+### Option A: Git Clone (Recommended)
 
-2. **Copy** `sopdrop.json` from the release into your Houdini packages folder:
+Cloning the repo makes updating easy — just `git pull` to get the latest version.
+
+1. **Clone** the repo anywhere on your machine:
+
+   ```bash
+   git clone https://github.com/tomteller/sopdrop-client.git
+   ```
+
+2. **Copy** `sopdrop.json` from the cloned folder into your Houdini packages folder:
 
    ```
    # macOS
@@ -23,12 +31,12 @@ Sopdrop uses Houdini's built-in package system. No pip, no terminal, no Python e
 
    Create the `packages` folder if it doesn't exist.
 
-3. **Edit** `sopdrop.json` and set the path to where you extracted the release:
+3. **Edit** `sopdrop.json` and set the path to where you cloned the repo:
 
    ```json
    {
        "env": [
-           { "SOPDROP": "/path/to/sopdrop-houdini" }
+           { "SOPDROP": "/path/to/sopdrop-client" }
        ],
        "path": "$SOPDROP"
    }
@@ -36,7 +44,17 @@ Sopdrop uses Houdini's built-in package system. No pip, no terminal, no Python e
 
 4. **Restart Houdini.** The Sopdrop shelf and TAB menu entries appear automatically.
 
-That's it — no pip, no git, no Python path configuration.
+To update later, just run `git pull` in the cloned folder and restart Houdini.
+
+### Option B: Download Release
+
+If you don't have git or prefer a manual install:
+
+1. **Download** the [latest release](https://github.com/tomteller/sopdrop-client/releases/latest) and extract it anywhere on your machine.
+
+2. Follow steps 2–4 above, pointing the path to where you extracted the release.
+
+To update, download the new release and replace the old folder.
 
 ## Quick Start
 

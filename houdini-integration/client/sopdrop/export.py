@@ -112,14 +112,6 @@ def export_items(items) -> Dict[str, Any]:
             save_outgoing_wires=False,
         )
 
-        # Strip asCode's inline connection block — we handle all wiring
-        # explicitly in Pass 1 (direct) and Pass 2 (dot rewire).
-        # The inline block starts with "# Code to establish connections for"
-        # and sets redundant setInput calls that flood the undo history.
-        conn_marker = '# Code to establish connections for '
-        if conn_marker in code:
-            code = code[:code.index(conn_marker)].rstrip() + '\n'
-
         # Inject a reference save right after the first createNode call.
         # This captures the top-level node before asCode's navigation
         # reassigns the variable to children/parent.

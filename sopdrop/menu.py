@@ -114,9 +114,20 @@ def generate_tool_xml(asset: Dict[str, Any], library_type: str = 'personal') -> 
     if tags:
         keywords += "," + ",".join(t.lower() for t in tags[:3])
 
-    # Script
-    script = f'''import sopdrop.menu
-sopdrop.menu.paste_asset("{asset_id}")'''
+    # Script — wrapped with error handling so TAB menu doesn't crash
+    # if Sopdrop modules aren't loaded yet (e.g. fresh Houdini startup
+    # before the Library panel has been opened).
+    script = f'''try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("{asset_id}")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")'''
 
     # Help text
     help_text = description if description else f"Paste {name} from Sopdrop library"
@@ -378,9 +389,19 @@ def paste_asset(asset_id: str):
     """
     try:
         import hou
+    except ImportError:
+        return
+
+    try:
         from .library import load_asset_package, record_asset_use, get_asset
         from .importer import import_items
+    except ImportError:
+        hou.ui.displayMessage(
+            "Sopdrop library not loaded.\nOpen the Library panel first, then try again.",
+            title="Sopdrop", severity=hou.severityType.Warning)
+        return
 
+    try:
         # Get current network editor
         pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
         if not pane:
@@ -401,7 +422,10 @@ def paste_asset(asset_id: str):
         # Load the package for node assets
         package = load_asset_package(asset_id)
         if not package:
-            hou.ui.displayMessage("Failed to load asset from library")
+            hou.ui.displayMessage(
+                "Asset not found in library.\n"
+                "It may have been deleted or the library database may need rebuilding.",
+                title="Sopdrop")
             return
 
         # Check context compatibility (case-insensitive)

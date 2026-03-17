@@ -207,6 +207,41 @@ class _PlaceholderParent:
         return getattr(self._real_parent, name)
 
 
+class _PlaceholderNamespace(dict):
+    """Custom exec namespace that keeps hou_parent wrapped through asCode navigation.
+
+    Old-format asCode output (flat, no function wrapping) navigates into nodes
+    by reassigning hou_parent:
+
+        hou_node = hou_parent.createNode(...)
+        hou_parent = hou_node          # navigate in
+        hou_parent = hou_node.parent() # navigate back out
+
+    These reassignments lose the _PlaceholderParent wrapper, so subsequent
+    createNode calls for missing types hit the real Houdini API and fail.
+
+    This namespace intercepts every assignment to 'hou_parent' and re-wraps
+    the value with _PlaceholderParent so placeholder interception stays active
+    at every nesting level.
+    """
+
+    def __init__(self, initial, missing_types):
+        super().__init__(initial)
+        self._missing_types = set(missing_types)
+
+    def __setitem__(self, key, value):
+        if key == 'hou_parent' and value is not None:
+            if isinstance(value, _PlaceholderParent):
+                pass  # Already wrapped
+            elif isinstance(value, _PlaceholderNode):
+                # Unwrap PlaceholderNode, wrap the underlying subnet
+                value = _PlaceholderParent(value._subnet, self._missing_types)
+            else:
+                # Wrap regular Houdini node
+                value = _PlaceholderParent(value, self._missing_types)
+        super().__setitem__(key, value)
+
+
 def import_items(
     package: Dict[str, Any],
     target_node=None,
@@ -656,16 +691,18 @@ def _import_v1(
 
     # Wrap the entire import in an undo group so the user can undo the
     # paste with a single Ctrl+Z instead of one undo per setInput/createNode.
+    package_meta = package.get("metadata", {})
+
     with hou.undos.group("Sopdrop Paste"):
         return _import_v1_inner(
             code, target_node, exec_parent, use_placeholders,
-            missing_type_names, items_before, position,
+            missing_type_names, items_before, position, package_meta,
         )
 
 
 def _import_v1_inner(
     code, target_node, exec_parent, use_placeholders,
-    missing_type_names, items_before, position,
+    missing_type_names, items_before, position, package_meta=None,
 ):
     """Inner import logic, runs inside an undo group."""
     import hou
@@ -674,7 +711,17 @@ def _import_v1_inner(
     # Strategy: try the full code first. If it fails, make connection/addItem
     # calls resilient (wrap in try/except) and retry so nodes are still created
     # even if some wiring fails.
-    namespace = {"hou": hou, "hou_parent": exec_parent}
+    #
+    # For placeholder mode, use _PlaceholderNamespace so that asCode's
+    # hou_parent navigation (hou_parent = hou_node / hou_parent = hou_node.parent())
+    # doesn't lose the _PlaceholderParent wrapper.
+    if use_placeholders:
+        namespace = _PlaceholderNamespace(
+            {"hou": hou, "hou_parent": exec_parent},
+            missing_type_names,
+        )
+    else:
+        namespace = {"hou": hou, "hou_parent": exec_parent}
     exec_error = None
     try:
         exec(code, namespace)
@@ -689,7 +736,7 @@ def _import_v1_inner(
         # Show the failing line for debugging
         try:
             import re as _re
-            line_match = _re.search(r'line (\d+)', tb)
+            line_match = _re.search(r'File "<string>", line (\d+)', tb) or _re.search(r'line (\d+)', tb)
             if line_match:
                 line_num = int(line_match.group(1))
                 code_lines = code.split('\n')
@@ -706,12 +753,35 @@ def _import_v1_inner(
         # calls in try/except so node creation can complete even if
         # some wiring fails.
         items_after_fail = set(target_node.allItems())
-        if items_after_fail == items_before:
-            # Nothing was created — retry with resilient code
+        partial_count = len(items_after_fail - items_before)
+
+        # Decide whether to retry: if nothing was created, or if very
+        # few items were created relative to expected (e.g., 3 out of 1600).
+        expected = package_meta.get("node_count", 0) if package_meta else 0
+        should_retry = (partial_count == 0
+                        or (expected > 10 and partial_count < expected * 0.1))
+
+        if should_retry:
+            # Delete any partial items before retrying to avoid duplicates
+            if partial_count > 0:
+                print(f"[Sopdrop] Only {partial_count}/{expected} items created. Cleaning up partial result...")
+                for item in (items_after_fail - items_before):
+                    try:
+                        item.destroy()
+                    except Exception:
+                        pass
+
             print("[Sopdrop] Retrying with resilient connections...")
             resilient = _make_connections_resilient(code)
+            if use_placeholders:
+                retry_ns = _PlaceholderNamespace(
+                    {"hou": hou, "hou_parent": exec_parent},
+                    missing_type_names,
+                )
+            else:
+                retry_ns = {"hou": hou, "hou_parent": exec_parent}
             try:
-                exec(resilient, {"hou": hou, "hou_parent": exec_parent})
+                exec(resilient, retry_ns)
                 exec_error = None  # Retry succeeded
                 print("[Sopdrop] Resilient retry succeeded")
             except Exception as e2:
@@ -721,8 +791,7 @@ def _import_v1_inner(
                     f"Failed to execute package code: {exc_type}: {e}"
                 )
         else:
-            # Some items were already created — continue with partial result
-            partial_count = len(items_after_fail - items_before)
+            # Enough items were created — continue with partial result
             print(f"[Sopdrop] Partial execution: {partial_count} items created before error.")
             print(f"[Sopdrop] Continuing with partial result. Some connections may be missing.")
 

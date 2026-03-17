@@ -1777,6 +1777,25 @@ def reset_syncing_status(asset_id: str):
     db.commit()
 
 
+def clear_cloud_status(asset_id: str):
+    """Clear all cloud state for an asset, resetting it to local-only.
+
+    Use when an asset was deleted on the server and the user wants to
+    republish, or to manually unlink a local asset from the cloud.
+    """
+    db = get_db()
+    db.execute("""
+        UPDATE library_assets
+        SET sync_status = 'local_only',
+            remote_slug = NULL,
+            remote_version = NULL,
+            synced_at = NULL,
+            metadata = json_remove(COALESCE(metadata, '{}'), '$.draft_id')
+        WHERE id = ?
+    """, (asset_id,))
+    db.commit()
+
+
 def verify_cloud_status(asset_id: str) -> str:
     """
     Verify an asset's cloud status by checking the server.

@@ -6,6 +6,7 @@ Styled to match Houdini's dark theme.
 """
 
 import hou
+import os
 
 # Try PySide6 first (Houdini 20+), fall back to PySide2
 try:
@@ -349,7 +350,7 @@ class PublishDialog(QtWidgets.QDialog):
         screenshot_layout.addLayout(screenshot_header)
 
         screenshot_hint = QtWidgets.QLabel(
-            "Click 'Take Screenshot' to select a region of your screen, or use an image from clipboard."
+            "Take a screenshot with your OS tool, then click 'Use from Clipboard'."
         )
         screenshot_hint.setProperty("class", "subtitle")
         screenshot_hint.setWordWrap(True)
@@ -357,11 +358,6 @@ class PublishDialog(QtWidgets.QDialog):
 
         # Screenshot buttons
         screenshot_btn_layout = QtWidgets.QHBoxLayout()
-
-        self.snip_btn = QtWidgets.QPushButton("Take Screenshot")
-        self.snip_btn.setProperty("class", "primary")
-        self.snip_btn.clicked.connect(self._take_screenshot)
-        screenshot_btn_layout.addWidget(self.snip_btn)
 
         self.check_clipboard_btn = QtWidgets.QPushButton("Use from Clipboard")
         self.check_clipboard_btn.clicked.connect(self._check_clipboard_screenshot)
@@ -588,41 +584,6 @@ class PublishDialog(QtWidgets.QDialog):
             return context_map.get(category, category)
         except Exception:
             return 'unknown'
-
-    def _take_screenshot(self):
-        """Launch snipping tool to capture a region."""
-        # Use setWindowOpacity instead of hide() — hiding a modal dialog on
-        # Windows exits the exec_() event loop which closes the dialog entirely.
-        self.setWindowOpacity(0)
-
-        # Process events to ensure dialog is visually gone
-        QtWidgets.QApplication.processEvents()
-
-        # Small delay to let the screen settle
-        QtCore.QTimer.singleShot(300, self._show_snipping_tool)
-
-    def _show_snipping_tool(self):
-        """Show the snipping tool overlay."""
-        # Process any pending events to ensure screen is stable
-        QtWidgets.QApplication.processEvents()
-
-        self.snipping_tool = SnippingTool()
-        self.snipping_tool.captured.connect(self._on_screenshot_captured)
-        self.snipping_tool.show()
-        self.snipping_tool.raise_()
-        self.snipping_tool.activateWindow()
-
-    def _on_screenshot_captured(self, image):
-        """Handle captured screenshot from snipping tool."""
-        # Restore dialog visibility
-        self.setWindowOpacity(1)
-        self.raise_()
-        self.activateWindow()
-
-        if image and not image.isNull():
-            self._set_screenshot(image)
-        else:
-            print("[Sopdrop] Screenshot cancelled or failed")
 
     def _set_screenshot(self, image):
         """Set the captured screenshot and update preview."""
@@ -854,227 +815,6 @@ class SuccessDialog(QtWidgets.QDialog):
         btn.setProperty("class", "primary")
         btn.clicked.connect(self.accept)
         layout.addWidget(btn)
-
-
-class SnippingTool(QtWidgets.QWidget):
-    """Fullscreen overlay for selecting a screen region to capture."""
-
-    captured = QtCore.Signal(object)  # Emits QImage or None
-
-    def __init__(self):
-        super().__init__()
-
-        # Selection state
-        self.start_pos = None
-        self.end_pos = None
-        self.is_selecting = False
-        self.screen_pixmap = None
-        self.screen_offset = QtCore.QPoint(0, 0)
-        self.device_pixel_ratio = 1.0
-        self.screen_geom = None
-
-        # Take a screenshot FIRST, before setting up the window
-        self._capture_screen()
-
-        # Make fullscreen overlay
-        import platform
-        if platform.system() == 'Darwin':
-            # On macOS, WA_TranslucentBackground + Qt.Tool can prevent
-            # mouse events from being received. Since we paint the entire
-            # surface (captured screen + overlay), transparency isn't needed.
-            self.setWindowFlags(
-                QtCore.Qt.FramelessWindowHint |
-                QtCore.Qt.WindowStaysOnTopHint
-            )
-        else:
-            self.setWindowFlags(
-                QtCore.Qt.FramelessWindowHint |
-                QtCore.Qt.WindowStaysOnTopHint |
-                QtCore.Qt.Tool
-            )
-            self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
-        self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
-
-        # Position window to cover the screen
-        screen = QtWidgets.QApplication.primaryScreen()
-        if screen:
-            geom = screen.geometry()
-            self.setGeometry(geom)
-            print(f"[Sopdrop] Snipping tool geometry: {geom.x()}, {geom.y()}, {geom.width()}x{geom.height()}")
-        elif self.screen_pixmap:
-            self.setGeometry(
-                self.screen_offset.x(),
-                self.screen_offset.y(),
-                self.screen_pixmap.width(),
-                self.screen_pixmap.height()
-            )
-        else:
-            # Fallback
-            self.setGeometry(0, 0, 1920, 1080)
-
-        self.setCursor(QtCore.Qt.CrossCursor)
-
-        # On macOS, ensure the window receives focus and mouse events
-        if platform.system() == 'Darwin':
-            self.setFocusPolicy(QtCore.Qt.StrongFocus)
-            QtCore.QTimer.singleShot(50, self._activate_on_mac)
-
-    def _activate_on_mac(self):
-        """Activate window on macOS to ensure mouse events are received."""
-        self.raise_()
-        self.activateWindow()
-        self.setFocus()
-
-    def _capture_screen(self):
-        """Capture the entire screen before showing overlay."""
-        try:
-            screen = QtWidgets.QApplication.primaryScreen()
-            if screen:
-                # Get the screen geometry (logical pixels)
-                geom = screen.geometry()
-                self.screen_offset = geom.topLeft()
-                self.screen_geom = geom
-
-                # Get device pixel ratio for HiDPI/Retina displays
-                self.device_pixel_ratio = screen.devicePixelRatio()
-
-                # Capture the screen (returns pixmap in device pixels on HiDPI)
-                self.screen_pixmap = screen.grabWindow(0)
-
-                print(f"[Sopdrop] Captured screen: pixmap {self.screen_pixmap.width()}x{self.screen_pixmap.height()}, "
-                      f"window will be {geom.width()}x{geom.height()}, DPR: {self.device_pixel_ratio}")
-            else:
-                print("[Sopdrop] No primary screen found")
-                self.screen_pixmap = None
-                self.device_pixel_ratio = 1.0
-                self.screen_geom = None
-        except Exception as e:
-            print(f"[Sopdrop] Screen capture error: {e}")
-            import traceback
-            traceback.print_exc()
-            self.screen_pixmap = None
-            self.device_pixel_ratio = 1.0
-            self.screen_geom = None
-
-    def paintEvent(self, event):
-        """Draw the overlay and selection rectangle."""
-        painter = QtGui.QPainter(self)
-        dpr = self.device_pixel_ratio
-
-        # Draw the captured screen as background
-        if self.screen_pixmap:
-            # Draw pixmap scaled to fill window (handles HiDPI)
-            target_rect = self.rect()
-            source_rect = self.screen_pixmap.rect()
-            painter.drawPixmap(target_rect, self.screen_pixmap, source_rect)
-        else:
-            # Fallback: fill with dark color
-            painter.fillRect(self.rect(), QtGui.QColor(30, 30, 30))
-
-        # Draw semi-transparent dark overlay on top
-        overlay = QtGui.QColor(0, 0, 0, 120)
-        painter.fillRect(self.rect(), overlay)
-
-        # If selecting, cut out the selection area to show original screen
-        if self.start_pos and self.end_pos:
-            selection = QtCore.QRect(self.start_pos, self.end_pos).normalized()
-
-            # Draw the original screen content in the selection area
-            if self.screen_pixmap and selection.width() > 0 and selection.height() > 0:
-                # Scale selection to pixmap coordinates (for HiDPI)
-                source_rect = QtCore.QRect(
-                    int(selection.x() * dpr),
-                    int(selection.y() * dpr),
-                    int(selection.width() * dpr),
-                    int(selection.height() * dpr)
-                )
-                painter.drawPixmap(selection, self.screen_pixmap, source_rect)
-
-            # Draw selection border
-            pen = QtGui.QPen(QtGui.QColor(COLORS['accent']), 2)
-            painter.setPen(pen)
-            painter.setBrush(QtCore.Qt.NoBrush)
-            painter.drawRect(selection)
-
-            # Draw size indicator with background for readability
-            size_text = f"{selection.width()} x {selection.height()}"
-
-            # Position text below selection or above if near bottom
-            text_x = selection.center().x() - 35
-            text_y = selection.bottom() + 25
-            if text_y > self.height() - 30:
-                text_y = selection.top() - 10
-
-            # Draw text background
-            painter.setPen(QtCore.Qt.NoPen)
-            painter.setBrush(QtGui.QColor(0, 0, 0, 180))
-            painter.drawRoundedRect(text_x - 5, text_y - 15, 80, 22, 4, 4)
-
-            # Draw text
-            painter.setPen(QtGui.QColor(255, 255, 255))
-            painter.setFont(QtGui.QFont("Arial", 11))
-            painter.drawText(text_x, text_y, size_text)
-
-        # Draw instructions at top
-        painter.setPen(QtCore.Qt.NoPen)
-        painter.setBrush(QtGui.QColor(0, 0, 0, 180))
-        painter.drawRoundedRect(10, 10, 350, 30, 6, 6)
-
-        painter.setPen(QtGui.QColor(255, 255, 255))
-        painter.setFont(QtGui.QFont("Arial", 12))
-        painter.drawText(20, 30, "Drag to select region  •  Press Escape to cancel")
-
-    def mousePressEvent(self, event):
-        """Start selection."""
-        if event.button() == QtCore.Qt.LeftButton:
-            self.start_pos = event.pos()
-            self.end_pos = event.pos()
-            self.is_selecting = True
-            self.update()
-
-    def mouseMoveEvent(self, event):
-        """Update selection."""
-        if self.is_selecting:
-            self.end_pos = event.pos()
-            self.update()
-
-    def mouseReleaseEvent(self, event):
-        """Complete selection and capture."""
-        if event.button() == QtCore.Qt.LeftButton and self.is_selecting:
-            self.is_selecting = False
-            self.end_pos = event.pos()
-
-            # Get the selection rectangle (in window/logical coordinates)
-            selection = QtCore.QRect(self.start_pos, self.end_pos).normalized()
-
-            # Minimum size check
-            if selection.width() > 10 and selection.height() > 10:
-                # Capture the selected region from our screen pixmap
-                if self.screen_pixmap:
-                    dpr = self.device_pixel_ratio
-
-                    # Scale selection to pixmap coordinates (for HiDPI)
-                    source_rect = QtCore.QRect(
-                        int(selection.x() * dpr),
-                        int(selection.y() * dpr),
-                        int(selection.width() * dpr),
-                        int(selection.height() * dpr)
-                    )
-
-                    cropped = self.screen_pixmap.copy(source_rect)
-                    self.captured.emit(cropped.toImage())
-                else:
-                    self.captured.emit(None)
-            else:
-                self.captured.emit(None)
-
-            self.close()
-
-    def keyPressEvent(self, event):
-        """Handle escape key."""
-        if event.key() == QtCore.Qt.Key_Escape:
-            self.captured.emit(None)
-            self.close()
 
 
 def show_publish_dialog(items, nodes, netboxes, stickies):

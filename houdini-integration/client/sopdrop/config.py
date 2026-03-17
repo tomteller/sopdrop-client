@@ -22,6 +22,8 @@ DEFAULTS = {
     "team_slug": None,  # Slug of the team to sync from (e.g., "my-team")
     # UI settings
     "ui_scale": 1.0,  # UI scale factor (0.8 - 1.5)
+    # Mode
+    "local_only": False,  # Hide all cloud/API features (for studio-internal use)
 }
 
 def get_config_dir():
@@ -87,6 +89,20 @@ def get_api_url():
     """Get the full API base URL."""
     config = get_config()
     return f"{config['server_url']}/api/{config['api_version']}"
+
+def get_local_only():
+    """Check if local-only mode is enabled (no cloud features).
+
+    Can be overridden by the SOPDROP_LOCAL_ONLY environment variable.
+    """
+    env = os.environ.get("SOPDROP_LOCAL_ONLY", "").lower()
+    if env in ("1", "true", "yes"):
+        return True
+    if env in ("0", "false", "no"):
+        return False
+    config = get_config()
+    return config.get("local_only", False)
+
 
 def get_token():
     """Get stored API token."""

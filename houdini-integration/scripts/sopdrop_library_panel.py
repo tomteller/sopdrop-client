@@ -52,6 +52,7 @@ try:
         get_library_ui_state,
         save_library_ui_state,
         get_ui_scale,
+        get_local_only,
     )
     from sopdrop.importer import import_items
     SOPDROP_AVAILABLE = True
@@ -60,12 +61,13 @@ except ImportError as e:
 except Exception as e:
     SOPDROP_ERROR = f"Error loading sopdrop: {e}"
 
-# Import SnippingTool from sopdrop_ui
+# sopdrop_ui is reloaded so code changes take effect without restarting Houdini
 try:
-    from sopdrop_ui import SnippingTool
-    SNIPPING_AVAILABLE = True
-except ImportError:
-    SNIPPING_AVAILABLE = False
+    import importlib as _il2
+    import sopdrop_ui as _sopdrop_ui
+    _il2.reload(_sopdrop_ui)
+except Exception:
+    pass
 
 
 # ==============================================================================
@@ -2026,9 +2028,10 @@ class AssetCardWidget(QtWidgets.QFrame):
 
         top_layout.addStretch()
 
-        # Cloud sync indicator — globe icon
+        # Cloud sync indicator — globe icon (hidden in local-only mode)
+        _local_only = get_local_only() if SOPDROP_AVAILABLE else False
         sync_status = self.asset.get('sync_status', 'local_only')
-        if sync_status in ('synced', 'syncing', 'modified'):
+        if not _local_only and sync_status in ('synced', 'syncing', 'modified'):
             if sync_status == 'synced':
                 color = COLORS['success']
                 tip = "Published on sopdrop.com"
@@ -2591,15 +2594,18 @@ class AssetCardWidget(QtWidgets.QFrame):
             menu.addAction("\u25C9  View Details").triggered.connect(self._view_details)
             menu.addAction("\u270E  Edit Details").triggered.connect(lambda: self.edit_requested.emit(self.asset['id']))
 
-            # Cloud actions
-            remote_slug = self.asset.get('remote_slug')
-            sync_status = self.asset.get('sync_status', 'local_only')
-            if remote_slug:
-                menu.addAction("\u2197  View on Website").triggered.connect(self._open_on_website)
-                if sync_status == 'modified':
-                    menu.addAction("\u2191  Push Update to Cloud...").triggered.connect(self._push_version_to_cloud)
-            elif sync_status == 'local_only':
-                menu.addAction("\u2601  Publish to Cloud...").triggered.connect(lambda: self.publish_requested.emit(self.asset['id']))
+            # Cloud actions (hidden in local-only mode)
+            _local_only_ctx = get_local_only() if SOPDROP_AVAILABLE else False
+            if not _local_only_ctx:
+                remote_slug = self.asset.get('remote_slug')
+                sync_status = self.asset.get('sync_status', 'local_only')
+                if remote_slug:
+                    menu.addAction("\u2197  View on Website").triggered.connect(self._open_on_website)
+                    if sync_status == 'modified':
+                        menu.addAction("\u2191  Push Update to Cloud...").triggered.connect(self._push_version_to_cloud)
+                    menu.addAction("\u2715  Unlink from Cloud").triggered.connect(self._unlink_from_cloud)
+                if sync_status == 'local_only' or not remote_slug:
+                    menu.addAction("\u2601  Publish to Cloud...").triggered.connect(lambda: self.publish_requested.emit(self.asset['id']))
 
         # Cross-library copy/move — works on all selected
         if SOPDROP_AVAILABLE:
@@ -2814,6 +2820,56 @@ class AssetCardWidget(QtWidgets.QFrame):
                 print(f"[Sopdrop] Push version failed: {e}")
             import traceback
             traceback.print_exc()
+
+    def _unlink_from_cloud(self):
+        """Clear cloud state so the asset can be republished."""
+        if not SOPDROP_AVAILABLE:
+            return
+
+        parent = self.parent()
+        while parent and not isinstance(parent, LibraryPanel):
+            parent = parent.parent()
+
+        asset_name = self.asset.get('name', 'this asset')
+        remote_slug = self.asset.get('remote_slug', '')
+
+        # Verify with server first — if asset was already deleted on server,
+        # verify_cloud_status() auto-clears the state for us.
+        already_cleared = False
+        try:
+            status = library.verify_cloud_status(self.asset['id'])
+            if status == 'local_only':
+                # Asset was deleted on server — verify already cleared the state
+                already_cleared = True
+            elif status == 'synced':
+                # Asset still exists on server — confirm unlink
+                reply = QtWidgets.QMessageBox.question(
+                    self, "Unlink from Cloud",
+                    f"'{asset_name}' still exists on sopdrop.com as {remote_slug}.\n\n"
+                    "Unlinking will let you publish it again as a new asset.\n"
+                    "The existing version on the website will remain unchanged.\n\n"
+                    "Continue?",
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                    QtWidgets.QMessageBox.No,
+                )
+                if reply != QtWidgets.QMessageBox.Yes:
+                    return
+        except Exception:
+            pass  # Network error — proceed with unlink anyway
+
+        if not already_cleared:
+            library.clear_cloud_status(self.asset['id'])
+
+        # Refresh the asset data in this card
+        updated = library.get_asset(self.asset['id'])
+        if updated:
+            self.asset = updated
+
+        msg = f"'{asset_name}' unlinked — you can now republish" if not already_cleared else f"'{asset_name}' was already removed from server — ready to republish"
+        if parent and hasattr(parent, 'show_toast'):
+            parent.show_toast(msg, 'info', 3000)
+        if parent:
+            parent._refresh_assets()
 
     def _copy_to_library(self, target_library):
         """Copy this asset to another library."""
@@ -3529,25 +3585,27 @@ class LibraryPanel(QtWidgets.QWidget):
         save_vex_btn.clicked.connect(self._save_vex_snippet)
         top_bar.addWidget(save_vex_btn)
 
-        # Sync button
-        sync_btn = QtWidgets.QPushButton("Pull")
-        sync_btn.setToolTip("Pull from sopdrop.com")
-        sync_btn.setFixedHeight(scale(22))
-        sync_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        sync_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS['bg_light']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 2px;
-                padding: {spx(2)} {spx(8)};
-                color: {COLORS['text']};
-            }}
-            QPushButton:hover {{
-                border-color: {COLORS['accent']};
-            }}
-        """)
-        sync_btn.clicked.connect(self._sync_from_cloud)
-        top_bar.addWidget(sync_btn)
+        # Sync button (hidden in local-only mode)
+        _local_only_bar = get_local_only() if SOPDROP_AVAILABLE else False
+        if not _local_only_bar:
+            sync_btn = QtWidgets.QPushButton("Pull")
+            sync_btn.setToolTip("Pull from sopdrop.com")
+            sync_btn.setFixedHeight(scale(22))
+            sync_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            sync_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {COLORS['bg_light']};
+                    border: 1px solid {COLORS['border']};
+                    border-radius: 2px;
+                    padding: {spx(2)} {spx(8)};
+                    color: {COLORS['text']};
+                }}
+                QPushButton:hover {{
+                    border-color: {COLORS['accent']};
+                }}
+            """)
+            sync_btn.clicked.connect(self._sync_from_cloud)
+            top_bar.addWidget(sync_btn)
 
         # Settings button - draw gear icon as pixmap for reliable rendering
         gear_pixmap = QtGui.QPixmap(16, 16)
@@ -6216,26 +6274,6 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         ss_btns = QtWidgets.QHBoxLayout()
         ss_btns.setSpacing(scale(6))
 
-        snip_btn = QtWidgets.QPushButton("+ Screenshot")
-        snip_btn.setFixedHeight(scale(22))
-        snip_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        snip_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS['bg_light']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 3px;
-                padding: {spx(2)} {spx(10)};
-                color: {COLORS['text']};
-                {sfs(10)}
-            }}
-            QPushButton:hover {{
-                border-color: {COLORS['accent']};
-                color: {COLORS['accent']};
-            }}
-        """)
-        snip_btn.clicked.connect(self._take_screenshot)
-        ss_btns.addWidget(snip_btn)
-
         clip_btn = QtWidgets.QPushButton("+ Clipboard")
         clip_btn.setFixedHeight(scale(22))
         clip_btn.setCursor(QtCore.Qt.PointingHandCursor)
@@ -6308,25 +6346,28 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         save_local.clicked.connect(self._save_local)
         btns.addWidget(save_local)
 
-        save_publish = QtWidgets.QPushButton("Publish to Sopdrop")
-        save_publish.setFixedHeight(scale(30))
-        save_publish.setCursor(QtCore.Qt.PointingHandCursor)
-        save_publish.setToolTip("Save locally and publish to sopdrop.com")
-        save_publish.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COLORS['accent']};
-                border: none;
-                border-radius: 3px;
-                padding: {spx(4)} {spx(18)};
-                color: white;
-                font-weight: 600;
-            }}
-            QPushButton:hover {{
-                background-color: {COLORS['accent_hover']};
-            }}
-        """)
-        save_publish.clicked.connect(self._save_and_publish)
-        btns.addWidget(save_publish)
+        # Publish button (hidden in local-only mode)
+        _local_only_save = get_local_only() if SOPDROP_AVAILABLE else False
+        if not _local_only_save:
+            save_publish = QtWidgets.QPushButton("Publish to Sopdrop")
+            save_publish.setFixedHeight(scale(30))
+            save_publish.setCursor(QtCore.Qt.PointingHandCursor)
+            save_publish.setToolTip("Save locally and publish to sopdrop.com")
+            save_publish.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {COLORS['accent']};
+                    border: none;
+                    border-radius: 3px;
+                    padding: {spx(4)} {spx(18)};
+                    color: white;
+                    font-weight: 600;
+                }}
+                QPushButton:hover {{
+                    background-color: {COLORS['accent_hover']};
+                }}
+            """)
+            save_publish.clicked.connect(self._save_and_publish)
+            btns.addWidget(save_publish)
 
         layout.addLayout(btns)
 
@@ -6425,41 +6466,6 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
                 print(f"[Sopdrop] Failed to load collections for {lib_type}: {e}")
                 self.coll_combo.clear()
                 self.coll_combo.addItem("None", None)
-
-    def _take_screenshot(self):
-        print(f"[Sopdrop] Take screenshot clicked, SNIPPING_AVAILABLE={SNIPPING_AVAILABLE}")
-        if not SNIPPING_AVAILABLE:
-            hou.ui.displayMessage("Screenshot tool not available. Use 'From Clipboard' instead.")
-            return
-        # Use setWindowOpacity instead of hide() — hiding a modal dialog on
-        # Windows exits the exec_() event loop which closes the dialog entirely.
-        print("[Sopdrop] Making dialog transparent for screenshot")
-        self.setWindowOpacity(0)
-        QtWidgets.QApplication.processEvents()
-        QtCore.QTimer.singleShot(200, self._show_snipping)
-
-    def _show_snipping(self):
-        print("[Sopdrop] Showing snipping tool")
-        try:
-            self.snip = SnippingTool()
-            self.snip.captured.connect(self._on_captured)
-            self.snip.show()
-            self.snip.raise_()
-            self.snip.activateWindow()
-            print("[Sopdrop] Snipping tool shown successfully")
-        except Exception as e:
-            print(f"[Sopdrop] Snipping error: {e}")
-            import traceback
-            traceback.print_exc()
-            self.setWindowOpacity(1)
-
-    def _on_captured(self, image):
-        print(f"[Sopdrop] Screenshot captured: {image}")
-        self.setWindowOpacity(1)
-        self.raise_()
-        self.activateWindow()
-        if image and not image.isNull():
-            self._add_screenshot(image)
 
     def _paste_clipboard(self):
         try:
@@ -7171,10 +7177,31 @@ class SettingsDialog(QtWidgets.QDialog):
             }}
         """
 
+        # Local Mode section
+        local_group = QtWidgets.QGroupBox("MODE")
+        local_group.setStyleSheet(groupbox_style)
+        local_layout = QtWidgets.QVBoxLayout(local_group)
+        local_layout.setSpacing(scale(8))
+
+        self.local_only_checkbox = QtWidgets.QCheckBox("Local only mode")
+        self.local_only_checkbox.setToolTip(
+            "Hide all cloud/API features.\n"
+            "Use this for studio-internal deployments that don't need sopdrop.com."
+        )
+        local_layout.addWidget(self.local_only_checkbox)
+
+        local_note = QtWidgets.QLabel("Hides account, server, publish, and sync controls.")
+        local_note.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
+        local_note.setWordWrap(True)
+        local_layout.addWidget(local_note)
+
+        self.local_only_checkbox.toggled.connect(self._on_local_only_toggled)
+        layout.addWidget(local_group)
+
         # Account section
-        account_group = QtWidgets.QGroupBox("ACCOUNT")
-        account_group.setStyleSheet(groupbox_style)
-        account_layout = QtWidgets.QVBoxLayout(account_group)
+        self.account_group = QtWidgets.QGroupBox("ACCOUNT")
+        self.account_group.setStyleSheet(groupbox_style)
+        account_layout = QtWidgets.QVBoxLayout(self.account_group)
         account_layout.setSpacing(scale(8))
 
         # Login status
@@ -7202,7 +7229,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.login_btn.clicked.connect(self._toggle_login)
         account_layout.addWidget(self.login_btn)
 
-        layout.addWidget(account_group)
+        layout.addWidget(self.account_group)
 
         # TAB Menu section
         tab_group = QtWidgets.QGroupBox("TAB MENU")
@@ -7522,9 +7549,9 @@ class SettingsDialog(QtWidgets.QDialog):
         layout.addWidget(scale_group)
 
         # Server section
-        server_group = QtWidgets.QGroupBox("SERVER")
-        server_group.setStyleSheet(groupbox_style)
-        server_layout = QtWidgets.QVBoxLayout(server_group)
+        self.server_group = QtWidgets.QGroupBox("SERVER")
+        self.server_group.setStyleSheet(groupbox_style)
+        server_layout = QtWidgets.QVBoxLayout(self.server_group)
         server_layout.setSpacing(scale(8))
 
         url_label = QtWidgets.QLabel("Server URL")
@@ -7547,7 +7574,7 @@ class SettingsDialog(QtWidgets.QDialog):
         """)
         server_layout.addWidget(self.server_input)
 
-        layout.addWidget(server_group)
+        layout.addWidget(self.server_group)
 
         # Finish scroll area
         scroll.setWidget(scroll_content)
@@ -7605,10 +7632,15 @@ class SettingsDialog(QtWidgets.QDialog):
     def _load_settings(self):
         """Load current settings."""
         if SOPDROP_AVAILABLE:
-            from sopdrop.config import get_config, get_token, get_active_library, get_team_library_path, get_team_slug, get_team_name, get_personal_library_path, get_ui_scale as _get_ui_scale
+            from sopdrop.config import get_config, get_token, get_active_library, get_team_library_path, get_team_slug, get_team_name, get_personal_library_path, get_ui_scale as _get_ui_scale, get_local_only as _get_local_only
 
             config = get_config()
             self.server_input.setText(config.get('server_url', 'https://sopdrop.com'))
+
+            # Local-only mode
+            local_only = _get_local_only()
+            self.local_only_checkbox.setChecked(local_only)
+            self._on_local_only_toggled(local_only)
 
             # Check login status
             token = get_token()
@@ -7672,12 +7704,19 @@ class SettingsDialog(QtWidgets.QDialog):
             self.login_status.setText("Sopdrop not installed")
             self.login_btn.setEnabled(False)
             self.tab_menu_checkbox.setChecked(True)
+            self.local_only_checkbox.setEnabled(False)
             self.personal_path_input.setEnabled(False)
             self.library_combo.setEnabled(False)
             self.team_path_input.setEnabled(False)
             self.team_combo.setEnabled(False)
             self.fetch_teams_btn.setEnabled(False)
             self._current_scale = 1.0
+
+    def _on_local_only_toggled(self, checked):
+        """Show/hide cloud-related settings groups."""
+        self.account_group.setVisible(not checked)
+        self.server_group.setVisible(not checked)
+        self.fetch_teams_btn.setVisible(not checked)
 
     def _toggle_login(self):
         """Login or logout."""
@@ -7804,6 +7843,7 @@ class SettingsDialog(QtWidgets.QDialog):
             config = get_config()
             config['server_url'] = self.server_input.text().strip() or 'https://sopdrop.com'
             config['tab_menu_enabled'] = self.tab_menu_checkbox.isChecked()
+            config['local_only'] = self.local_only_checkbox.isChecked()
             save_config(config)
 
             # Save UI scale
@@ -8577,13 +8617,6 @@ class EditAssetDialog(QtWidgets.QDialog):
             }}
         """
 
-        screenshot_btn = QtWidgets.QPushButton("Screenshot")
-        screenshot_btn.setFixedHeight(scale(22))
-        screenshot_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        screenshot_btn.setStyleSheet(btn_style)
-        screenshot_btn.clicked.connect(self._take_screenshot)
-        thumb_actions.addWidget(screenshot_btn)
-
         paste_btn = QtWidgets.QPushButton("From Clipboard")
         paste_btn.setFixedHeight(scale(22))
         paste_btn.setCursor(QtCore.Qt.PointingHandCursor)
@@ -8712,34 +8745,6 @@ class EditAssetDialog(QtWidgets.QDialog):
             QtCore.Qt.SmoothTransformation
         )
         self.thumb_preview.setPixmap(scaled)
-
-    def _take_screenshot(self):
-        if not SNIPPING_AVAILABLE:
-            try:
-                hou.ui.displayMessage("Screenshot tool not available. Use 'From Clipboard' instead.")
-            except Exception:
-                pass
-            return
-        self.hide()
-        QtWidgets.QApplication.processEvents()
-        QtCore.QTimer.singleShot(200, self._show_snipping)
-
-    def _show_snipping(self):
-        try:
-            self.snip = SnippingTool()
-            self.snip.captured.connect(self._on_captured)
-            self.snip.show()
-            self.snip.raise_()
-            self.snip.activateWindow()
-        except Exception:
-            self.show()
-
-    def _on_captured(self, image):
-        self.show()
-        self.raise_()
-        self.activateWindow()
-        if image and not image.isNull():
-            self._set_preview_from_image(image)
 
     def _paste_clipboard(self):
         try:
