@@ -136,6 +136,11 @@ def _check_system_clipboard():
         if match:
             return f"t/{match.group(1)}"
 
+        # Look for library link pattern: lib/slug-name (bare, not in a paste command)
+        match = re.search(r'\blib/([a-z0-9][a-z0-9-]*[a-z0-9])\b', text)
+        if match:
+            return f"lib/{match.group(1)}"
+
     except Exception as e:
         print(f"Could not check system clipboard: {e}")
 
@@ -197,7 +202,7 @@ def _get_paste_position(pane):
 class PasteConfirmDialog(QtWidgets.QDialog):
     """Modern paste confirmation dialog."""
 
-    def __init__(self, slug, pane, asset_info=None, parent=None):
+    def __init__(self, slug, pane, asset_info=None, local_asset=None, parent=None):
         if parent is None:
             parent = hou.qt.mainWindow()
         super().__init__(parent)
@@ -205,89 +210,98 @@ class PasteConfirmDialog(QtWidgets.QDialog):
         self.slug = slug
         self.pane = pane
         self.asset_info = asset_info or {}
+        self.local_asset = local_asset
         self.result_success = False
+        self.result_view_library = False
+        self.result_save_library = False
 
         self._setup_ui()
 
     def _setup_ui(self):
-        self.setWindowTitle("Paste from Sopdrop")
-        self.setFixedWidth(380)
+        self.setWindowTitle("Sopdrop")
+        self.setFixedWidth(360)
         self.setStyleSheet(self._get_stylesheet())
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
+        layout.setContentsMargins(20, 0, 20, 20)
+        layout.setSpacing(14)
 
-        # Header with icon
+        # Top accent bar
+        accent_bar = QtWidgets.QFrame()
+        accent_bar.setFixedHeight(3)
+        accent_bar.setStyleSheet(f"background: {COLORS['accent']}; border: none; border-radius: 1px; margin: 0px;")
+        layout.addWidget(accent_bar)
+
+        # Header: [S mark] [Asset name + slug] [context pill]
         header = QtWidgets.QHBoxLayout()
+        header.setSpacing(10)
 
-        icon_label = QtWidgets.QLabel("\u2193")  # Down arrow
-        icon_label.setStyleSheet(
-            f"font-size: 32px; color: {COLORS['accent']}; "
-            f"background: {COLORS['accent']}22; border-radius: 8px; padding: 8px;"
+        mark = QtWidgets.QLabel("S")
+        mark.setStyleSheet(
+            f"font-size: 14px; font-weight: 700; color: {COLORS['bg_dark']}; "
+            f"background: {COLORS['accent']}; border-radius: 5px;"
         )
-        icon_label.setFixedSize(56, 56)
-        icon_label.setAlignment(QtCore.Qt.AlignCenter)
-        header.addWidget(icon_label)
+        mark.setFixedSize(28, 28)
+        mark.setAlignment(QtCore.Qt.AlignCenter)
+        header.addWidget(mark)
 
-        title_layout = QtWidgets.QVBoxLayout()
-        title_layout.setSpacing(2)
+        title_col = QtWidgets.QVBoxLayout()
+        title_col.setSpacing(1)
 
-        title = QtWidgets.QLabel("Paste Asset")
-        title.setStyleSheet(f"font-size: 18px; font-weight: 600; color: {COLORS['text_bright']};")
-        title_layout.addWidget(title)
+        name = self.asset_info.get("name", self.slug.split("/")[-1])
+        title = QtWidgets.QLabel(name)
+        title.setStyleSheet(f"font-size: 15px; font-weight: 600; color: {COLORS['text_bright']};")
+        title_col.addWidget(title)
 
-        subtitle = QtWidgets.QLabel(self.slug)
-        subtitle.setStyleSheet(f"font-size: 12px; color: {COLORS['text_dim']};")
-        title_layout.addWidget(subtitle)
+        slug_label = QtWidgets.QLabel(self.slug)
+        slug_label.setStyleSheet(f"font-size: 11px; color: {COLORS['text_dim']};")
+        title_col.addWidget(slug_label)
 
-        header.addLayout(title_layout)
+        header.addLayout(title_col)
         header.addStretch()
 
-        # Context badge
         context = self.asset_info.get("context", self.asset_info.get("houdini_context", "?"))
         context_color = COLORS.get(context.lower(), COLORS['text_dim'])
         context_badge = QtWidgets.QLabel(context.upper())
         context_badge.setStyleSheet(
-            f"background: {context_color}; color: white; font-size: 10px; "
-            f"font-weight: 600; padding: 4px 10px; border-radius: 4px;"
+            f"background: {context_color}22; color: {context_color}; font-size: 10px; "
+            f"font-weight: 600; padding: 3px 8px; border-radius: 4px; "
+            f"border: 1px solid {context_color}44;"
         )
         header.addWidget(context_badge)
 
         layout.addLayout(header)
 
-        # Asset info card
+        # Separator
+        sep = QtWidgets.QFrame()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background: {COLORS['border']}; border: none;")
+        layout.addWidget(sep)
+
+        # Info card
         card = QtWidgets.QFrame()
         card.setStyleSheet(
-            f"background: {COLORS['bg_medium']}; border: 1px solid {COLORS['border']}; border-radius: 8px;"
+            f"background: {COLORS['bg_medium']}; border: 1px solid {COLORS['border']}; border-radius: 6px;"
         )
         card_layout = QtWidgets.QVBoxLayout(card)
-        card_layout.setContentsMargins(16, 12, 16, 12)
-        card_layout.setSpacing(8)
+        card_layout.setContentsMargins(14, 10, 14, 10)
+        card_layout.setSpacing(6)
 
-        # Asset details
-        name = self.asset_info.get("name", self.slug.split("/")[-1])
         owner = self.asset_info.get("owner", {})
         owner_name = owner.get("username", self.slug.split("/")[0]) if isinstance(owner, dict) else str(owner)
         node_count = self.asset_info.get("nodeCount", self.asset_info.get("node_count", "?"))
 
-        details = [
-            ("Name", name),
-            ("Author", owner_name),
-            ("Nodes", str(node_count)),
-        ]
-
-        for label, value in details:
+        for label, value in [("Author", owner_name), ("Nodes", str(node_count))]:
             row = QtWidgets.QHBoxLayout()
-            label_widget = QtWidgets.QLabel(label)
-            label_widget.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 12px;")
-            label_widget.setFixedWidth(60)
-            row.addWidget(label_widget)
+            label_w = QtWidgets.QLabel(label)
+            label_w.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
+            label_w.setFixedWidth(50)
+            row.addWidget(label_w)
 
-            value_widget = QtWidgets.QLabel(value)
-            value_widget.setStyleSheet(f"color: {COLORS['text_bright']}; font-size: 12px;")
-            row.addWidget(value_widget)
+            value_w = QtWidgets.QLabel(value)
+            value_w.setStyleSheet(f"color: {COLORS['text']}; font-size: 11px;")
+            row.addWidget(value_w)
             row.addStretch()
 
             card_layout.addLayout(row)
@@ -301,17 +315,14 @@ class PasteConfirmDialog(QtWidgets.QDialog):
         if target_context != "unknown" and package_context != "unknown" and target_context != package_context:
             warning = QtWidgets.QFrame()
             warning.setStyleSheet(
-                f"background: {COLORS['warning']}22; border: 1px solid {COLORS['warning']}44; border-radius: 6px;"
+                f"background: {COLORS['warning']}15; border: 1px solid {COLORS['warning']}33; border-radius: 6px;"
             )
             warning_layout = QtWidgets.QHBoxLayout(warning)
-            warning_layout.setContentsMargins(12, 8, 12, 8)
-
-            warning_icon = QtWidgets.QLabel("\u26A0")
-            warning_icon.setStyleSheet(f"color: {COLORS['warning']}; font-size: 14px;")
-            warning_layout.addWidget(warning_icon)
+            warning_layout.setContentsMargins(10, 6, 10, 6)
 
             warning_text = QtWidgets.QLabel(
-                f"Context mismatch: Asset is {package_context.upper()}, current network is {target_context.upper()}"
+                f"Context mismatch: asset is {package_context.upper()}, "
+                f"current network is {target_context.upper()}"
             )
             warning_text.setStyleSheet(f"color: {COLORS['warning']}; font-size: 11px;")
             warning_text.setWordWrap(True)
@@ -323,18 +334,32 @@ class PasteConfirmDialog(QtWidgets.QDialog):
 
         # Buttons
         btn_layout = QtWidgets.QHBoxLayout()
-        btn_layout.setSpacing(12)
+        btn_layout.setSpacing(8)
+
+        # Library button — show for lib/ and remote slugs, not team shares
+        if not self.slug.startswith("t/"):
+            if self.local_asset:
+                lib_btn = QtWidgets.QPushButton("View in Library")
+                lib_btn.setStyleSheet(self._button_style())
+                lib_btn.clicked.connect(self._on_view_library)
+                btn_layout.addWidget(lib_btn)
+            elif not self.slug.startswith("lib/"):
+                # Save to Library only for cloud/remote assets
+                lib_btn = QtWidgets.QPushButton("Save to Library")
+                lib_btn.setStyleSheet(self._button_style())
+                lib_btn.clicked.connect(self._on_save_library)
+                btn_layout.addWidget(lib_btn)
+
+        btn_layout.addStretch()
 
         cancel_btn = QtWidgets.QPushButton("Cancel")
         cancel_btn.setStyleSheet(self._button_style())
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
 
-        btn_layout.addStretch()
-
         paste_btn = QtWidgets.QPushButton("Paste")
         paste_btn.setStyleSheet(self._button_style(primary=True))
-        paste_btn.setFixedWidth(100)
+        paste_btn.setFixedWidth(90)
         paste_btn.clicked.connect(self._on_paste)
         paste_btn.setDefault(True)
         btn_layout.addWidget(paste_btn)
@@ -358,7 +383,7 @@ class PasteConfirmDialog(QtWidgets.QDialog):
                     color: white;
                     border: none;
                     border-radius: 6px;
-                    padding: 10px 20px;
+                    padding: 8px 16px;
                     font-size: 13px;
                     font-weight: 500;
                 }}
@@ -371,18 +396,27 @@ class PasteConfirmDialog(QtWidgets.QDialog):
             """
         return f"""
             QPushButton {{
-                background-color: {COLORS['bg_light']};
+                background-color: transparent;
                 color: {COLORS['text']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 6px;
-                padding: 10px 20px;
+                padding: 8px 16px;
                 font-size: 13px;
                 font-weight: 500;
             }}
             QPushButton:hover {{
                 background-color: {COLORS['bg_hover']};
+                border-color: {COLORS['border_light']};
             }}
         """
+
+    def _on_view_library(self):
+        self.result_view_library = True
+        self.accept()
+
+    def _on_save_library(self):
+        self.result_save_library = True
+        self.accept()
 
     def _on_paste(self):
         self.result_success = True
@@ -531,7 +565,17 @@ def _show_paste_dialog(slug, pane):
     # Try to get asset info
     asset_info = {}
     try:
-        if slug.startswith("t/"):
+        if slug.startswith("lib/"):
+            # Library asset — look up by slug
+            lib_info = _get_library_asset_info(slug[4:])
+            if lib_info:
+                asset_info = {
+                    "name": lib_info.get("name") or slug[4:],
+                    "context": lib_info.get("context", "?"),
+                    "nodeCount": lib_info.get("node_count", "?"),
+                    "owner": {"username": "library"},
+                }
+        elif slug.startswith("t/"):
             # Team (local) share — read manifest from team shares dir
             share_info = _get_team_share_info(slug[2:])
             if share_info:
@@ -557,10 +601,34 @@ def _show_paste_dialog(slug, pane):
     except Exception as e:
         print(f"Could not fetch asset info: {e}")
 
-    dialog = PasteConfirmDialog(slug, pane, asset_info)
+    # Check if this asset exists in the local library
+    local_asset = None
+    try:
+        if slug.startswith("lib/"):
+            from sopdrop.library import get_asset_by_slug
+            local_asset = get_asset_by_slug(slug[4:])
+        elif not slug.startswith("t/"):
+            from sopdrop.library import get_asset_by_remote_slug
+            check_slug = slug[2:] if slug.startswith("s/") else slug
+            local_asset = get_asset_by_remote_slug(check_slug)
+    except Exception:
+        pass
+
+    dialog = PasteConfirmDialog(slug, pane, asset_info, local_asset=local_asset)
     result = dialog.exec_()
 
-    if result == QtWidgets.QDialog.Accepted and dialog.result_success:
+    if result != QtWidgets.QDialog.Accepted:
+        return
+
+    if dialog.result_view_library and local_asset:
+        try:
+            from sopdrop_library_panel import reveal_asset_in_panels
+            reveal_asset_in_panels(local_asset['id'])
+        except Exception as e:
+            print(f"Sopdrop: Could not reveal in library: {e}")
+    elif dialog.result_save_library:
+        _save_share_to_library(slug, asset_info)
+    elif dialog.result_success:
         _paste_by_slug(slug, pane)
 
 
@@ -573,6 +641,43 @@ def _show_browse_dialog_modern(pane):
         _paste_by_slug(dialog.slug_to_paste, pane)
 
 
+def _save_share_to_library(slug, asset_info):
+    """Download a cloud share/asset and save it to the local library."""
+    try:
+        if slug.startswith("s/"):
+            from sopdrop.api import SopdropClient
+            client = SopdropClient()
+            package = client.fetch_share(slug[2:])
+        else:
+            import sopdrop
+            package = sopdrop.fetch(slug)
+
+        if not package:
+            print("Sopdrop: No package data to save.")
+            return
+
+        from sopdrop import library
+        name = asset_info.get("name", slug.split("/")[-1])
+        context = package.get("context") or asset_info.get("context", "sop")
+        saved = library.save_asset(
+            name=name,
+            context=context,
+            package_data=package,
+        )
+        if saved:
+            # Mark with remote_slug so we can find it next time
+            remote_slug = slug[2:] if slug.startswith("s/") else slug
+            library.mark_asset_synced(saved['id'], remote_slug, "1.0.0")
+            try:
+                from sopdrop_library_panel import reveal_asset_in_panels
+                reveal_asset_in_panels(saved['id'])
+            except Exception:
+                pass
+            print(f"Sopdrop: Saved '{name}' to library.")
+    except Exception as e:
+        print(f"Sopdrop: Could not save to library: {e}")
+
+
 # ============================================================
 # Fallback Dialogs (basic Houdini UI)
 # ============================================================
@@ -582,7 +687,20 @@ def _confirm_and_paste_fallback(slug, pane):
     import sopdrop
 
     try:
-        if slug.startswith("t/"):
+        if slug.startswith("lib/"):
+            # Library asset
+            info = _get_library_asset_info(slug[4:])
+            if info:
+                name = info.get("name") or slug[4:]
+                context = info.get("context", "?").upper()
+                node_count = info.get("node_count", "?")
+                owner_name = "library"
+            else:
+                name = slug[4:]
+                context = "?"
+                node_count = "?"
+                owner_name = "library"
+        elif slug.startswith("t/"):
             # Team (local) share
             info = _get_team_share_info(slug[2:])
             if info:
@@ -787,6 +905,37 @@ def _paste_by_slug(slug, pane=None):
         pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
 
     try:
+        if slug.startswith("lib/"):
+            # Library asset — load from local library by slug
+            lib_slug = slug[4:]
+            package = _fetch_library_asset(lib_slug)
+            if package is None:
+                hou.ui.displayMessage(
+                    f"Library asset not found: {lib_slug}\n\n"
+                    "The asset may have been deleted or renamed.",
+                    title="Sopdrop - Not Found",
+                    severity=hou.severityType.Error,
+                )
+                return
+
+            position = _get_paste_position(pane) if pane else (0, 0)
+            target_node = pane.pwd() if pane else None
+
+            if _offer_placeholders_and_paste(package, target_node, position):
+                meta = package.get("metadata", {})
+                node_count = meta.get("node_count", "?")
+                print(f"Sopdrop: Pasted {node_count} nodes from library/{lib_slug}")
+
+                # Record usage
+                try:
+                    from sopdrop.library import get_asset_by_slug, record_asset_use
+                    asset = get_asset_by_slug(lib_slug)
+                    if asset:
+                        record_asset_use(asset['id'])
+                except Exception:
+                    pass
+            return
+
         if slug.startswith("t/"):
             # Team (local) share — read from team shares directory
             share_code = slug[2:]
@@ -890,6 +1039,39 @@ def _fetch_team_share(code):
             return json.loads(package_file.read_text())
     except Exception as e:
         print(f"Could not read team share package: {e}")
+    return None
+
+
+# ============================================================
+# Library Asset Helpers
+# ============================================================
+
+def _get_library_asset_info(slug):
+    """Look up library asset info by slug. Returns dict or None."""
+    try:
+        from sopdrop.library import get_asset_by_slug
+        asset = get_asset_by_slug(slug)
+        if asset:
+            return {
+                "name": asset.get("name"),
+                "context": asset.get("context", "?"),
+                "node_count": asset.get("node_count", "?"),
+                "asset_type": asset.get("asset_type", "node"),
+            }
+    except Exception as e:
+        print(f"Could not look up library asset: {e}")
+    return None
+
+
+def _fetch_library_asset(slug):
+    """Load library asset package by slug. Returns package dict or None."""
+    try:
+        from sopdrop.library import get_asset_by_slug, load_asset_package
+        asset = get_asset_by_slug(slug)
+        if asset:
+            return load_asset_package(asset['id'])
+    except Exception as e:
+        print(f"Could not load library asset: {e}")
     return None
 
 

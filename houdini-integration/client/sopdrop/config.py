@@ -7,7 +7,13 @@ Cache location: ~/.sopdrop/cache/
 
 import os
 import json
+import tempfile
 from pathlib import Path
+
+
+class TeamLibraryError(Exception):
+    """Raised when the team library path is missing or inaccessible."""
+    pass
 
 # Default configuration
 DEFAULTS = {
@@ -21,7 +27,7 @@ DEFAULTS = {
     "team_library_path": None,  # Path to shared team library folder
     "team_slug": None,  # Slug of the team to sync from (e.g., "my-team")
     # UI settings
-    "ui_scale": 1.0,  # UI scale factor (0.8 - 1.5)
+    "ui_scale": 1.0,  # UI scale factor (0.8 - 2.5)
     # Mode
     "local_only": False,  # Hide all cloud/API features (for studio-internal use)
 }
@@ -71,12 +77,21 @@ def get_config():
     return config
 
 def save_config(config):
-    """Save configuration to file."""
+    """Save configuration to file (atomic write to prevent corruption)."""
     ensure_config_dir()
     config_file = get_config_file()
-
-    with open(config_file, "w") as f:
-        json.dump(config, f, indent=2)
+    content = json.dumps(config, indent=2)
+    fd, tmp_path = tempfile.mkstemp(dir=str(config_file.parent), suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(content)
+        os.replace(tmp_path, str(config_file))
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 def set_server_url(url):
     """Set the server URL."""
@@ -229,13 +244,20 @@ def set_personal_library_path(path):
 
 
 def get_library_path():
-    """Get the path to the currently active library."""
+    """Get the path to the currently active library.
+
+    Raises TeamLibraryError if the team library is active but unavailable,
+    rather than silently falling back to the personal library.
+    """
     active = get_active_library()
     if active == "team":
         team_path = get_team_library_path()
-        if team_path and team_path.exists():
-            return team_path / "library"
-    # Personal library (custom or default)
+        if not team_path:
+            raise TeamLibraryError("Team library path not configured")
+        lib_path = team_path / "library"
+        if not lib_path.exists():
+            raise TeamLibraryError(f"Team library not accessible: {lib_path}")
+        return lib_path
     return get_personal_library_path()
 
 
@@ -321,19 +343,19 @@ def get_team_info():
 # ==============================================================================
 
 def get_ui_scale():
-    """Get the UI scale factor (clamped 0.8-1.5)."""
+    """Get the UI scale factor (clamped 0.8-2.5)."""
     config = get_config()
     scale = config.get("ui_scale", 1.0)
     try:
         scale = float(scale)
     except (TypeError, ValueError):
         scale = 1.0
-    return max(0.8, min(1.5, scale))
+    return max(0.8, min(2.5, scale))
 
 
 def set_ui_scale(scale):
-    """Set the UI scale factor (clamped 0.8-1.5)."""
-    scale = max(0.8, min(1.5, float(scale)))
+    """Set the UI scale factor (clamped 0.8-2.5)."""
+    scale = max(0.8, min(2.5, float(scale)))
     config = get_config()
     config["ui_scale"] = round(scale, 2)
     save_config(config)

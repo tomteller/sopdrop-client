@@ -53,6 +53,7 @@ try:
         save_library_ui_state,
         get_ui_scale,
         get_local_only,
+        TeamLibraryError,
     )
     from sopdrop.importer import import_items
     SOPDROP_AVAILABLE = True
@@ -160,12 +161,86 @@ COLORS = {
     'rop': '#8b8be0',    # Indigo
     'out': '#8b8be0',    # Indigo (alias)
     'vex': '#e6b422',    # Gold/Amber
+    'path': '#8bc4c4',   # Teal
 }
 
 
 def get_context_color(context):
     """Get the color for a Houdini context."""
     return COLORS.get(context.lower(), COLORS['text_dim'])
+
+
+# Known node type -> file parameter mappings
+_FILE_PARM_MAP = {
+    # OBJ-level lights
+    'envlight': 'env_map',
+    'hlight': 'light_texture',
+    # Karma / USD lights (LOPs)
+    'karmalight': 'inputs:texture:file',
+    'karmadomelight': 'inputs:texture:file',
+    'domelight': 'inputs:texture:file',
+    'distantlight': 'inputs:texture:file',
+    'rectlight': 'inputs:texture:file',
+    'spherelight': 'inputs:texture:file',
+    'disklight': 'inputs:texture:file',
+    'cylinderlight': 'inputs:texture:file',
+    # Shaders
+    'principledshader': 'basecolor_texture',
+    'principledshader::2.0': 'basecolor_texture',
+    'mtlximage': 'file',
+    # SOPs
+    'file': 'file',
+    'attribfrommap': 'filename',
+    'trace': 'filename',
+    # COPs
+    'cop2net': 'filename1',
+    'image': 'filename1',
+    # Other
+    'texture::2.0': 'map',
+    'imagemagick': 'source',
+}
+
+
+def _find_file_parm(node, file_path=None):
+    """
+    Find the best file parameter on a node for assigning a file path.
+
+    Priority:
+    1. Known node type -> parameter mappings
+    2. All parms with FileReference string type (walks into folders)
+    3. Name-based fallback (file, filename, tex, texture, map, image)
+
+    Returns the hou.Parm or None.
+    """
+    try:
+        node_type = node.type().name().lower()
+
+        # 1. Known mappings
+        for type_key, parm_name in _FILE_PARM_MAP.items():
+            if type_key in node_type:
+                p = node.parm(parm_name)
+                if p is not None:
+                    return p
+
+        # 2. FileReference parms — use node.parms() to catch nested/folder parms
+        for p in node.parms():
+            try:
+                pt = p.parmTemplate()
+                if hasattr(pt, 'stringType') and pt.stringType() == hou.stringParmType.FileReference:
+                    return p
+            except Exception:
+                continue
+
+        # 3. Name-based fallback
+        for name in ('file', 'filename', 'tex', 'texture', 'map', 'image', 'env_map', 'basecolor_texture', 'inputs:texture:file'):
+            p = node.parm(name)
+            if p is not None:
+                return p
+
+    except Exception:
+        pass
+
+    return None
 
 
 # ==============================================================================
@@ -1535,9 +1610,17 @@ class CollectionListWidget(QtWidgets.QWidget):
         self.system_layout.addWidget(recent_item)
         self._all_items.append(recent_item)
 
-        favorites_item = self._create_item("Most Used", "__favorites__", icon="★")
+        favorites_item = self._create_item("Favorites", "__favorites__", icon="★")
         self.system_layout.addWidget(favorites_item)
         self._all_items.append(favorites_item)
+
+        # Trash (only show when there are trashed assets)
+        if SOPDROP_AVAILABLE:
+            trashed = library.list_trashed_assets()
+            if trashed:
+                trash_item = self._create_item(f"Trash ({len(trashed)})", "__trash__", icon="\u2715")
+                self.system_layout.addWidget(trash_item)
+                self._all_items.append(trash_item)
 
         # Build collection tree (only local collections, no cloud auto-collections)
         if SOPDROP_AVAILABLE:
@@ -2028,6 +2111,17 @@ class AssetCardWidget(QtWidgets.QFrame):
 
         top_layout.addStretch()
 
+        # Favorite star indicator
+        if self.asset.get('is_favorite'):
+            self.fav_star = QtWidgets.QLabel("\u2605")
+            self.fav_star.setStyleSheet(f"""
+                background: transparent;
+                color: #f5c842;
+                font-size: {s['badge'] + scale(2)}px;
+            """)
+            self.fav_star.setToolTip("Favorite")
+            top_layout.addWidget(self.fav_star, 0, QtCore.Qt.AlignRight | QtCore.Qt.AlignTop)
+
         # Cloud sync indicator — globe icon (hidden in local-only mode)
         _local_only = get_local_only() if SOPDROP_AVAILABLE else False
         sync_status = self.asset.get('sync_status', 'local_only')
@@ -2217,7 +2311,7 @@ class AssetCardWidget(QtWidgets.QFrame):
                     else:
                         print(f"[Sopdrop] loadFromData failed for: {thumb_path_resolved}")
                 else:
-                    print(f"[Sopdrop] Thumbnail file not found: {thumb_path_resolved}")
+                    pass  # Normal — asset has no thumbnail yet
             except Exception as e:
                 print(f"[Sopdrop] Thumbnail load error for {self.asset.get('name')}: {e}")
                 import traceback
@@ -2440,6 +2534,8 @@ class AssetCardWidget(QtWidgets.QFrame):
             # VEX snippets: copy code to clipboard on double-click
             if self.asset.get('asset_type') == 'vex' or self.asset.get('context') == 'vex':
                 self._copy_vex_to_clipboard()
+            elif self.asset.get('context') == 'path':
+                self._apply_path_to_selected()
             else:
                 self.paste_requested.emit(self.asset['id'])
 
@@ -2450,12 +2546,98 @@ class AssetCardWidget(QtWidgets.QFrame):
             if package and 'code' in package:
                 clipboard = QtWidgets.QApplication.clipboard()
                 clipboard.setText(package['code'])
+                name = self.asset.get('name', 'VEX snippet')
+                msg = f"VEX copied: {name}"
                 # Find parent panel to show toast
                 parent = self.parent()
                 while parent and not isinstance(parent, LibraryPanel):
                     parent = parent.parent()
                 if parent and hasattr(parent, 'show_toast'):
-                    parent.show_toast("Copied to clipboard", 'success', 2000)
+                    parent.show_toast(msg, 'success', 2000)
+                else:
+                    print(f"[Sopdrop] {msg}")
+
+    def _copy_shareable_link(self):
+        """Copy a shareable library link to the system clipboard."""
+        slug = self.asset.get('slug')
+        if not slug:
+            return
+        clipboard = QtWidgets.QApplication.clipboard()
+        clipboard.setText(f'sopdrop.paste("lib/{slug}")')
+        # Find parent panel to show toast
+        parent = self.parent()
+        while parent and not isinstance(parent, LibraryPanel):
+            parent = parent.parent()
+        if parent and hasattr(parent, 'show_toast'):
+            parent.show_toast("Link copied to clipboard", 'success', 2000)
+
+    def _apply_path_to_selected(self):
+        """Apply path asset to the selected node's file parameter."""
+        if not SOPDROP_AVAILABLE:
+            return
+        file_path = library.get_path_file_path(self.asset['id'])
+        if not file_path:
+            return
+
+        # Try to find selected node and apply
+        try:
+            pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
+            if pane:
+                selected = pane.pwd().selectedItems()
+                if selected and len(selected) == 1:
+                    node = selected[0]
+                    if hasattr(node, 'parm'):
+                        parm = _find_file_parm(node, file_path)
+                        if parm:
+                            parm.set(file_path)
+                            library.record_asset_use(self.asset['id'])
+                            name = self.asset.get('name', 'Path')
+                            msg = f"Applied to {node.name()}/{parm.name()}"
+                            parent = self.parent()
+                            while parent and not isinstance(parent, LibraryPanel):
+                                parent = parent.parent()
+                            if parent and hasattr(parent, 'show_toast'):
+                                parent.show_toast(msg, 'success', 2500)
+                            return
+        except Exception:
+            pass
+
+        # Fallback: copy to clipboard
+        self._copy_path_to_clipboard()
+
+    def _copy_path_to_clipboard(self):
+        """Copy the stored file path to system clipboard."""
+        if not SOPDROP_AVAILABLE:
+            return
+        file_path = library.get_path_file_path(self.asset['id'])
+        if file_path:
+            clipboard = QtWidgets.QApplication.clipboard()
+            clipboard.setText(file_path)
+            parent = self.parent()
+            while parent and not isinstance(parent, LibraryPanel):
+                parent = parent.parent()
+            if parent and hasattr(parent, 'show_toast'):
+                parent.show_toast("Path copied to clipboard", 'success', 2000)
+
+    def _reveal_path_in_finder(self):
+        """Reveal the stored file path in the system file browser."""
+        if not SOPDROP_AVAILABLE:
+            return
+        file_path = library.get_path_file_path(self.asset['id'])
+        if not file_path:
+            return
+        import subprocess
+        import sys
+        try:
+            if sys.platform == 'darwin':
+                subprocess.Popen(['open', '-R', file_path])
+            elif sys.platform == 'win32':
+                subprocess.Popen(['explorer', '/select,', file_path])
+            else:
+                import os
+                subprocess.Popen(['xdg-open', os.path.dirname(file_path)])
+        except Exception:
+            pass
 
     def _edit_vex_code(self):
         """Open a dialog to edit VEX snippet code."""
@@ -2557,14 +2739,41 @@ class AssetCardWidget(QtWidgets.QFrame):
             }}
         """)
 
+        # Detect trash view
+        in_trash = False
+        panel = self.parent()
+        while panel and not isinstance(panel, LibraryPanel):
+            panel = panel.parent()
+        if panel and getattr(panel, 'current_collection', None) == "__trash__":
+            in_trash = True
+
+        if in_trash:
+            # Trash-specific context menu
+            count_label = f" ({len(selected_ids)})" if multi else ""
+            menu.addAction(f"\u21A9  Restore{count_label}").triggered.connect(
+                lambda checked=False, ids=selected_ids: self._restore_bulk(ids))
+            menu.addSeparator()
+            menu.addAction(f"\u2715  Delete Permanently{count_label}").triggered.connect(
+                lambda checked=False, ids=selected_ids: self._purge_bulk(ids))
+            menu.addSeparator()
+            menu.addAction("\u2715  Empty Trash").triggered.connect(self._empty_trash)
+            menu.exec_(event.globalPos())
+            return
+
         # Different actions based on asset type (single-item actions)
         is_hda = self.asset.get('asset_type') == 'hda'
         is_vex = self.asset.get('asset_type') == 'vex' or self.asset.get('context') == 'vex'
+        is_path = self.asset.get('context') == 'path'
 
         if not multi:
             if is_vex:
                 menu.addAction("\u25B6  Copy Code").triggered.connect(self._copy_vex_to_clipboard)
                 menu.addAction("\u270E  Edit Code...").triggered.connect(lambda: self._edit_vex_code())
+                menu.addSeparator()
+            elif is_path:
+                menu.addAction("\u25B6  Apply to Selected Node").triggered.connect(self._apply_path_to_selected)
+                menu.addAction("\u29C9  Copy Path").triggered.connect(self._copy_path_to_clipboard)
+                menu.addAction("\u2197  Reveal in Finder").triggered.connect(self._reveal_path_in_finder)
                 menu.addSeparator()
             elif is_hda:
                 menu.addAction("\u25B6  Place HDA").triggered.connect(lambda: self.paste_requested.emit(self.asset['id']))
@@ -2573,8 +2782,12 @@ class AssetCardWidget(QtWidgets.QFrame):
                 menu.addAction("\u25B6  Paste into Network").triggered.connect(lambda: self.paste_requested.emit(self.asset['id']))
                 menu.addSeparator()
 
-            # Update with current selection (not for HDAs or VEX)
-            if not is_hda and not is_vex:
+            # Copy shareable link
+            if self.asset.get('slug'):
+                menu.addAction("\u29C9  Copy Link").triggered.connect(self._copy_shareable_link)
+
+            # Update with current selection (not for HDAs, VEX, or Paths)
+            if not is_hda and not is_vex and not is_path:
                 menu.addAction("\u2191  Version Up with Selection...").triggered.connect(lambda: self.update_requested.emit(self.asset['id']))
 
         # Collections submenu — works on all selected
@@ -2589,6 +2802,16 @@ class AssetCardWidget(QtWidgets.QFrame):
             coll_menu.addAction("+ New...").triggered.connect(
                 lambda checked=False, ids=selected_ids: self._create_and_add_collection_bulk(ids))
 
+        # Favorite toggle
+        if SOPDROP_AVAILABLE:
+            is_fav = self.asset.get('is_favorite')
+            if multi:
+                fav_label = f"\u2606  Favorite ({len(selected_ids)})" if not is_fav else f"\u2605  Unfavorite ({len(selected_ids)})"
+            else:
+                fav_label = "\u2605  Unfavorite" if is_fav else "\u2606  Favorite"
+            menu.addAction(fav_label).triggered.connect(
+                lambda checked=False, ids=selected_ids: self._toggle_favorite_bulk(ids))
+
         menu.addSeparator()
         if not multi:
             menu.addAction("\u25C9  View Details").triggered.connect(self._view_details)
@@ -2597,15 +2820,26 @@ class AssetCardWidget(QtWidgets.QFrame):
             # Cloud actions (hidden in local-only mode)
             _local_only_ctx = get_local_only() if SOPDROP_AVAILABLE else False
             if not _local_only_ctx:
+                _has_token = bool(get_token()) if SOPDROP_AVAILABLE else False
                 remote_slug = self.asset.get('remote_slug')
                 sync_status = self.asset.get('sync_status', 'local_only')
                 if remote_slug:
                     menu.addAction("\u2197  View on Website").triggered.connect(self._open_on_website)
                     if sync_status == 'modified':
-                        menu.addAction("\u2191  Push Update to Cloud...").triggered.connect(self._push_version_to_cloud)
+                        act = menu.addAction("\u2191  Push Update to Cloud...")
+                        if _has_token:
+                            act.triggered.connect(self._push_version_to_cloud)
+                        else:
+                            act.setEnabled(False)
+                            act.setText("\u2191  Push Update to Cloud... (login required)")
                     menu.addAction("\u2715  Unlink from Cloud").triggered.connect(self._unlink_from_cloud)
                 if sync_status == 'local_only' or not remote_slug:
-                    menu.addAction("\u2601  Publish to Cloud...").triggered.connect(lambda: self.publish_requested.emit(self.asset['id']))
+                    act = menu.addAction("\u2601  Publish to Cloud...")
+                    if _has_token:
+                        act.triggered.connect(lambda: self.publish_requested.emit(self.asset['id']))
+                    else:
+                        act.setEnabled(False)
+                        act.setText("\u2601  Publish to Cloud... (login required)")
 
         # Cross-library copy/move — works on all selected
         if SOPDROP_AVAILABLE:
@@ -2642,6 +2876,12 @@ class AssetCardWidget(QtWidgets.QFrame):
         if ok and name and SOPDROP_AVAILABLE:
             coll = library.create_collection(name)
             library.add_asset_to_collection(self.asset['id'], coll['id'])
+            self.collection_changed.emit()
+
+    def _toggle_favorite_bulk(self, asset_ids):
+        if SOPDROP_AVAILABLE:
+            for aid in asset_ids:
+                library.toggle_favorite(aid)
             self.collection_changed.emit()
 
     # -- Bulk action methods for multi-select context menu -----------------------
@@ -2702,6 +2942,47 @@ class AssetCardWidget(QtWidgets.QFrame):
             # Fallback: emit one by one
             for aid in asset_ids:
                 self.delete_requested.emit(aid)
+
+    def _restore_bulk(self, asset_ids):
+        """Restore selected assets from trash."""
+        if not SOPDROP_AVAILABLE:
+            return
+        for aid in asset_ids:
+            library.restore_asset(aid)
+        panel = self.parent()
+        while panel and not isinstance(panel, LibraryPanel):
+            panel = panel.parent()
+        if panel:
+            panel.collections.refresh()
+            panel._refresh_assets()
+            panel.show_toast(f"Restored {len(asset_ids)} asset(s)", 'success')
+
+    def _purge_bulk(self, asset_ids):
+        """Permanently delete selected trashed assets."""
+        if not SOPDROP_AVAILABLE:
+            return
+        for aid in asset_ids:
+            library.purge_asset(aid)
+        panel = self.parent()
+        while panel and not isinstance(panel, LibraryPanel):
+            panel = panel.parent()
+        if panel:
+            panel.collections.refresh()
+            panel._refresh_assets()
+            panel.show_toast(f"Permanently deleted {len(asset_ids)} asset(s)", 'warning')
+
+    def _empty_trash(self):
+        """Empty the entire trash."""
+        if not SOPDROP_AVAILABLE:
+            return
+        library.empty_trash()
+        panel = self.parent()
+        while panel and not isinstance(panel, LibraryPanel):
+            panel = panel.parent()
+        if panel:
+            panel.collections.refresh()
+            panel._refresh_assets()
+            panel.show_toast("Trash emptied", 'success')
 
     def _copy_to_library_bulk(self, target_library, asset_ids):
         """Copy all selected assets to another library."""
@@ -3279,6 +3560,23 @@ class AssetGridWidget(QtWidgets.QWidget):
                 card = item.widget()
                 card.set_selected(card.asset.get('id') in self._selected_assets)
 
+    def scroll_to_asset(self, asset_id):
+        """Find a card by asset ID, scroll to it, and select it."""
+        if not hasattr(self, '_selected_assets'):
+            self._selected_assets = set()
+        for i in range(self.grid_layout.count()):
+            item = self.grid_layout.itemAt(i)
+            if item and item.widget() and isinstance(item.widget(), AssetCardWidget):
+                card = item.widget()
+                if card.asset.get('id') == asset_id:
+                    self._selected_assets = {asset_id}
+                    self._update_card_selections()
+                    self._selected_asset = card.asset
+                    self.asset_selected.emit(card.asset)
+                    self.scroll.ensureWidgetVisible(card)
+                    return True
+        return False
+
     def _on_card_hovered(self, asset):
         """Forward hover events to asset_selected signal.
         On leave (None), revert to clicked selection if one exists."""
@@ -3309,6 +3607,21 @@ def refresh_all_panels():
             try:
                 panel.collections.refresh()
                 panel._refresh_assets()
+            except Exception:
+                pass
+            alive.append(ref)
+    _active_panels = alive
+
+
+def reveal_asset_in_panels(asset_id):
+    """Scroll to an asset in all open LibraryPanel instances."""
+    global _active_panels
+    alive = []
+    for ref in _active_panels:
+        panel = ref()
+        if panel is not None:
+            try:
+                panel.reveal_asset(asset_id)
             except Exception:
                 pass
             alive.append(ref)
@@ -3347,10 +3660,14 @@ class LibraryPanel(QtWidgets.QWidget):
             'tags': False,
         }
         self._selected_assets = set()  # Multi-select asset IDs
+        self._saved_sort = None  # Sort to restore when leaving system views
         self._setup_ui()
         self._setup_shortcuts()
         self._restore_ui_state()
         self._refresh_assets()
+        # Ensure TAB menu is populated when the panel opens (covers the case
+        # where the startup pythonrc hook failed or the library was empty then)
+        self._regenerate_tab_menu()
 
     def _setup_shortcuts(self):
         """Set up keyboard shortcuts for the panel."""
@@ -3365,9 +3682,9 @@ class LibraryPanel(QtWidgets.QWidget):
         escape_shortcut = QShortcut(QtGui.QKeySequence("Escape"), self)
         escape_shortcut.activated.connect(self._clear_all_filters)
 
-        # Ctrl+R / Cmd+R: Refresh
+        # Ctrl+R / Cmd+R: Refresh library + TAB menu
         refresh_shortcut = QShortcut(QtGui.QKeySequence("Ctrl+R"), self)
-        refresh_shortcut.activated.connect(self._refresh_assets)
+        refresh_shortcut.activated.connect(self._refresh_all)
 
         # Enter: Paste selected asset
         enter_shortcut = QShortcut(QtGui.QKeySequence("Return"), self)
@@ -3578,12 +3895,33 @@ class LibraryPanel(QtWidgets.QWidget):
                 color: {COLORS['text']};
             }}
             QPushButton:hover {{
-                border-color: {COLORS['accent']};
-                color: {COLORS['accent']};
+                border-color: {COLORS['vex']};
+                color: {COLORS['vex']};
             }}
         """)
         save_vex_btn.clicked.connect(self._save_vex_snippet)
         top_bar.addWidget(save_vex_btn)
+
+        # Save Path button
+        save_path_btn = QtWidgets.QPushButton("+ Path")
+        save_path_btn.setToolTip("Save a file path to library (HDRI, texture, etc.)")
+        save_path_btn.setFixedHeight(scale(22))
+        save_path_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        save_path_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_light']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 2px;
+                padding: {spx(2)} {spx(8)};
+                color: {COLORS['text']};
+            }}
+            QPushButton:hover {{
+                border-color: {COLORS['path']};
+                color: {COLORS['path']};
+            }}
+        """)
+        save_path_btn.clicked.connect(self._save_path)
+        top_bar.addWidget(save_path_btn)
 
         # Sync button (hidden in local-only mode)
         _local_only_bar = get_local_only() if SOPDROP_AVAILABLE else False
@@ -3683,7 +4021,7 @@ class LibraryPanel(QtWidgets.QWidget):
         self.context_combo = QtWidgets.QComboBox()
         self.context_combo.addItem("All", None)
         self.context_combo.addItem("Current Context", "__current__")
-        for ctx in ['sop', 'lop', 'obj', 'vop', 'dop', 'cop', 'top', 'chop', 'vex']:
+        for ctx in ['sop', 'lop', 'obj', 'vop', 'dop', 'cop', 'top', 'chop', 'vex', 'path']:
             color = QtGui.QColor(get_context_color(ctx))
             pixmap = QtGui.QPixmap(8, 8)
             pixmap.fill(QtCore.Qt.transparent)
@@ -3707,7 +4045,11 @@ class LibraryPanel(QtWidgets.QWidget):
                 border: none;
                 width: 10px;
             }}
+            QComboBox QAbstractItemView {{
+                min-width: {spx(140)};
+            }}
         """)
+        self.context_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
         self.context_combo.currentIndexChanged.connect(self._on_context_changed)
         ctx_layout.addWidget(self.context_combo)
         filter_bar.addWidget(ctx_container)
@@ -3788,17 +4130,21 @@ class LibraryPanel(QtWidgets.QWidget):
         self.sort_combo.addItem("Z-A", "name_desc")
         self.sort_combo.addItem("Used", "use_count")
         self.sort_combo.addItem("Nodes", "node_count")
+        self.sort_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
         self.sort_combo.setCursor(QtCore.Qt.PointingHandCursor)
         self.sort_combo.setStyleSheet(f"""
             QComboBox {{
                 background-color: transparent;
                 border: none;
                 padding: 0 {spx(2)};
-                min-width: 50px;
+                min-width: {spx(50)};
             }}
             QComboBox::drop-down {{
                 border: none;
-                width: 10px;
+                width: {spx(10)};
+            }}
+            QComboBox QAbstractItemView {{
+                min-width: {spx(70)};
             }}
         """)
         self.sort_combo.currentIndexChanged.connect(self._on_sort_changed)
@@ -3913,23 +4259,50 @@ class LibraryPanel(QtWidgets.QWidget):
 
         filter_bar.addWidget(zoom_container)
 
-        # Refresh button
-        refresh_btn = QtWidgets.QPushButton("↻")
-        refresh_btn.setToolTip("Refresh (Ctrl+R)")
-        refresh_btn.setFixedSize(scale(20), scale(20))
+        # Refresh button - draw circular arrow icon for clear visibility
+        import math as _math
+        _rf_size = 16
+        refresh_pixmap = QtGui.QPixmap(_rf_size, _rf_size)
+        refresh_pixmap.fill(QtCore.Qt.transparent)
+        _rp = QtGui.QPainter(refresh_pixmap)
+        _rp.setRenderHint(QtGui.QPainter.Antialiasing)
+        _rp.setPen(QtGui.QPen(QtGui.QColor(COLORS['text']), 1.6))
+        _rp.setBrush(QtCore.Qt.NoBrush)
+        _cx, _cy, _r = _rf_size / 2, _rf_size / 2, 5.5
+        # Draw ~300 degree arc (leaving a gap for the arrowhead)
+        _arc_rect = QtCore.QRectF(_cx - _r, _cy - _r, _r * 2, _r * 2)
+        _rp.drawArc(_arc_rect, 60 * 16, 300 * 16)  # Qt uses 1/16th degree units
+        # Arrowhead at the arc endpoint (60 degrees = top-right)
+        _arrow_angle = _math.radians(60)
+        _ax = _cx + _r * _math.cos(_arrow_angle)
+        _ay = _cy - _r * _math.sin(_arrow_angle)
+        _arrow_path = QtGui.QPainterPath()
+        _arrow_path.moveTo(_ax, _ay)
+        _arrow_path.lineTo(_ax + 4, _ay + 1)
+        _arrow_path.lineTo(_ax + 1, _ay - 3.5)
+        _arrow_path.closeSubpath()
+        _rp.setBrush(QtGui.QColor(COLORS['text']))
+        _rp.setPen(QtCore.Qt.NoPen)
+        _rp.drawPath(_arrow_path)
+        _rp.end()
+
+        refresh_btn = QtWidgets.QPushButton()
+        refresh_btn.setIcon(QtGui.QIcon(refresh_pixmap))
+        refresh_btn.setIconSize(QtCore.QSize(scale(14), scale(14)))
+        refresh_btn.setToolTip("Refresh library & TAB menu (Ctrl+R)")
+        refresh_btn.setFixedSize(scale(22), scale(22))
         refresh_btn.setCursor(QtCore.Qt.PointingHandCursor)
         refresh_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['bg_medium']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 2px;
-                color: {COLORS['text']};
             }}
             QPushButton:hover {{
                 border-color: {COLORS['border_light']};
             }}
         """)
-        refresh_btn.clicked.connect(self._refresh_assets)
+        refresh_btn.clicked.connect(self._refresh_all)
         filter_bar.addWidget(refresh_btn)
 
         main_layout.addLayout(filter_bar)
@@ -4087,9 +4460,45 @@ class LibraryPanel(QtWidgets.QWidget):
             self.asset_grid._last_columns = 0
             self._refresh_assets()  # Respects grouping state
 
+    def _refresh_all(self):
+        """Refresh the asset grid AND regenerate the TAB menu."""
+        self._refresh_assets()
+        self._regenerate_tab_menu()
+
+    def _regenerate_tab_menu(self):
+        """Regenerate the TAB menu shelf in the background."""
+        try:
+            from sopdrop.menu import regenerate_menu
+            regenerate_menu(quiet=True)
+        except Exception:
+            pass
+
+    def reveal_asset(self, asset_id):
+        """Navigate to All Assets and scroll to a specific asset."""
+        self.current_collection = None
+        self.current_collections.clear()
+        self.collections.deselect_all()
+        self._refresh_assets()
+        self.asset_grid.scroll_to_asset(asset_id)
+
     def _refresh_assets(self):
         if not SOPDROP_AVAILABLE:
             self.asset_grid.set_assets([])
+            return
+
+        # If the team library vanished (network drive disconnected, etc.),
+        # show a toast and fall back to the personal library automatically.
+        try:
+            library.get_db()
+        except TeamLibraryError as e:
+            from sopdrop.config import set_active_library
+            from sopdrop.library import close_db
+            set_active_library("personal")
+            close_db()
+            self._update_library_toggle()
+            self.show_toast(str(e), toast_type='error', duration=5000)
+            # Re-enter _refresh_assets with personal library now active
+            self._refresh_assets()
             return
 
         # Clean up stale 'syncing' statuses (drafts expire after 24h)
@@ -4137,8 +4546,8 @@ class LibraryPanel(QtWidgets.QWidget):
                     for t in active_tags
                 )]
         elif self.current_collection == "__favorites__":
-            assets = library.get_frequent_assets(limit=50)
-            # Apply filters to frequent assets
+            assets = library.get_favorite_assets(limit=50)
+            # Apply filters to favorite assets
             if kwargs['query']:
                 q = kwargs['query'].lower()
                 assets = [a for a in assets if q in a['name'].lower()]
@@ -4149,6 +4558,13 @@ class LibraryPanel(QtWidgets.QWidget):
                     t.lower() in [x.lower() for x in (a.get('tags') or [])]
                     for t in active_tags
                 )]
+        elif self.current_collection == "__trash__":
+            assets = library.list_trashed_assets()
+            if kwargs['query']:
+                q = kwargs['query'].lower()
+                assets = [a for a in assets if q in a['name'].lower()]
+            if kwargs['context']:
+                assets = [a for a in assets if a.get('context') == kwargs['context']]
         elif self.current_collection or self.current_collections:
             # Get assets from selected collection(s) (and children if subcontent enabled)
             # Multi-select: use the set; single-select: use the single ID
@@ -4221,7 +4637,9 @@ class LibraryPanel(QtWidgets.QWidget):
             elif self.current_collection == "__recent__":
                 self.asset_grid.set_empty_message("No recently used assets")
             elif self.current_collection == "__favorites__":
-                self.asset_grid.set_empty_message("No frequently used assets yet")
+                self.asset_grid.set_empty_message("No favorites yet\nRight-click an asset to favorite it")
+            elif self.current_collection == "__trash__":
+                self.asset_grid.set_empty_message("Trash is empty")
             elif has_coll:
                 self.asset_grid.set_empty_message("This collection is empty\nDrag assets here to add them")
             else:
@@ -4241,6 +4659,7 @@ class LibraryPanel(QtWidgets.QWidget):
             self.asset_grid.set_assets(assets)
 
         self._update_stats()
+        self._update_filter_chips()
 
     def _get_descendant_collection_ids(self, collection_id):
         """Get all descendant collection IDs for subcontent inclusion."""
@@ -4491,13 +4910,25 @@ class LibraryPanel(QtWidgets.QWidget):
             self.current_collection = None  # Not a single collection
         else:
             # Single select (including system items like __recent__)
+            is_system_view = coll_id in ("__recent__", "__favorites__")
+            was_system_view = self.current_collection in ("__recent__", "__favorites__")
+
             self.current_collection = coll_id
             self.current_collections = {coll_id} if coll_id and not str(coll_id).startswith("__") else set()
-            # Auto-set sort to match system views
+
+            # Auto-set sort to match system views, saving previous sort first
+            if is_system_view and not was_system_view:
+                self._saved_sort = self.sort_combo.currentData()
             if coll_id == "__recent__":
                 self.sort_combo.setCurrentIndex(self.sort_combo.findData("recent"))
             elif coll_id == "__favorites__":
-                self.sort_combo.setCurrentIndex(self.sort_combo.findData("use_count"))
+                self.sort_combo.setCurrentIndex(self.sort_combo.findData("recent"))
+            elif was_system_view and self._saved_sort:
+                # Returning from a system view — restore previous sort
+                idx = self.sort_combo.findData(self._saved_sort)
+                if idx >= 0:
+                    self.sort_combo.setCurrentIndex(idx)
+                self._saved_sort = None
         self._update_filter_chips()
         self._save_ui_state()
         self._refresh_assets()
@@ -5003,6 +5434,56 @@ class LibraryPanel(QtWidgets.QWidget):
             import traceback
             traceback.print_exc()
 
+    def _save_path(self):
+        """Open the Save Path dialog."""
+        if not SOPDROP_AVAILABLE:
+            hou.ui.displayMessage("Sopdrop library not available")
+            return
+
+        try:
+            parent = hou.qt.mainWindow()
+            dialog = SavePathDialog(parent=parent)
+            dialog.raise_()
+            dialog.activateWindow()
+            result = dialog.exec_()
+            if result == QtWidgets.QDialog.Accepted:
+                self.collections.refresh()
+                self._refresh_assets()
+                self.show_toast("Path saved to library", 'success', 2500)
+        except Exception as e:
+            print(f"[Sopdrop] Error showing Path save dialog: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _apply_path_asset(self, asset_id):
+        """Apply a path asset to the selected node's file parameter."""
+        file_path = library.get_path_file_path(asset_id)
+        if not file_path:
+            self.show_toast("No file path found in asset", 'error', 3000)
+            return
+
+        try:
+            pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
+            if pane:
+                selected = pane.pwd().selectedItems()
+                if selected and len(selected) == 1:
+                    node = selected[0]
+                    if hasattr(node, 'parm'):
+                        parm = _find_file_parm(node, file_path)
+                        if parm:
+                            parm.set(file_path)
+                            library.record_asset_use(asset_id)
+                            self.show_toast(f"Applied to {node.name()}/{parm.name()}", 'success', 2500)
+                            return
+        except Exception:
+            pass
+
+        # Fallback: copy to clipboard
+        clipboard = QtWidgets.QApplication.clipboard()
+        clipboard.setText(file_path)
+        library.record_asset_use(asset_id)
+        self.show_toast("Path copied to clipboard (no matching node/parm)", 'info', 2500)
+
     def _paste_asset(self, asset_id):
         if not SOPDROP_AVAILABLE:
             return
@@ -5011,6 +5492,11 @@ class LibraryPanel(QtWidgets.QWidget):
             asset = library.get_asset(asset_id)
             if not asset:
                 self.show_toast("Asset not found", 'error', 3000)
+                return
+
+            # Check if this is a path asset
+            if asset.get('context') == 'path':
+                self._apply_path_asset(asset_id)
                 return
 
             # Check if this is an HDA
@@ -5467,6 +5953,18 @@ class LibraryPanel(QtWidgets.QWidget):
 
         # Close existing DB connections to force reconnect to new library
         close_db()
+
+        # Verify the new library is actually accessible
+        try:
+            library.get_db()
+        except TeamLibraryError as e:
+            # Switch back — the team library path exists in config but the
+            # directory itself isn't reachable (drive unmounted, etc.).
+            set_active_library("personal")
+            close_db()
+            self._update_library_toggle()
+            self.show_toast(str(e), toast_type='error', duration=5000)
+            return
 
         # Reset to "All Assets" since collections are different per library
         self.current_collection = None
@@ -6225,6 +6723,7 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         self.coll_combo = QtWidgets.QComboBox()
         self.coll_combo.setFixedHeight(scale(24))
         self._populate_collection_combo()
+        self.coll_combo.currentIndexChanged.connect(self._on_collection_combo_changed)
         coll_col.addWidget(self.coll_combo)
         options_row.addLayout(coll_col, 1)
 
@@ -6430,11 +6929,36 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
 
     def _populate_collection_combo(self):
         """Populate the collection combo with nested collections from the active library."""
+        self.coll_combo.blockSignals(True)
         self.coll_combo.clear()
         self.coll_combo.addItem("None", None)
         if SOPDROP_AVAILABLE:
             tree = library.get_collection_tree()
             self._add_tree_to_combo(tree, depth=0)
+            self.coll_combo.insertSeparator(self.coll_combo.count())
+            self.coll_combo.addItem("+ New Collection...", "__new__")
+        self.coll_combo.blockSignals(False)
+
+    def _on_collection_combo_changed(self, index):
+        """Handle collection combo selection — create new collection inline."""
+        if self.coll_combo.currentData() != "__new__":
+            return
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "New Collection", "Collection name:")
+        if ok and name.strip():
+            try:
+                coll = library.create_collection(name.strip())
+                self._populate_collection_combo()
+                # Select the newly created collection
+                for i in range(self.coll_combo.count()):
+                    if self.coll_combo.itemData(i) == coll['id']:
+                        self.coll_combo.setCurrentIndex(i)
+                        break
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, "Error", f"Failed to create collection: {e}")
+                self.coll_combo.setCurrentIndex(0)
+        else:
+            self.coll_combo.setCurrentIndex(0)
 
     def _add_tree_to_combo(self, items, depth=0):
         """Recursively add collection tree items to the combo with indentation."""
@@ -6729,15 +7253,15 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
 
             # Check if logged in
             if not get_token():
-                result = hou.ui.displayMessage(
-                    "You need to log in to publish.\n\n"
-                    "Would you like to save locally instead?",
-                    buttons=("Save Local", "Cancel"),
-                    default_choice=0,
-                    close_choice=1,
-                    title="Sopdrop - Login Required",
-                )
-                if result == 0:
+                msg = QtWidgets.QMessageBox(self)
+                msg.setWindowTitle("Sopdrop - Login Required")
+                msg.setText("You need to log in to publish.\n\nWould you like to save locally instead?")
+                msg.setIcon(QtWidgets.QMessageBox.Warning)
+                msg.setWindowFlags(msg.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
+                save_btn = msg.addButton("Save Local", QtWidgets.QMessageBox.AcceptRole)
+                msg.addButton("Cancel", QtWidgets.QMessageBox.RejectRole)
+                msg.exec_()
+                if msg.clickedButton() == save_btn:
                     self._save_local()
                 return
 
@@ -6878,34 +7402,132 @@ class SaveVexDialog(QtWidgets.QDialog):
 
     def _setup_ui(self):
         self.setWindowTitle("Save VEX Snippet")
-        self.setFixedWidth(scale(500))
+        self.setFixedWidth(scale(460))
         self.setMinimumHeight(scale(400))
         self.setStyleSheet(STYLESHEET)
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
+        self._selected_icon = None
+
+        label_style = f"color: {COLORS['text_dim']}; {sfs(10)}"
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(scale(16), scale(16), scale(16), scale(16))
-        layout.setSpacing(scale(12))
+        layout.setContentsMargins(scale(20), scale(20), scale(20), scale(16))
+        layout.setSpacing(scale(14))
 
-        # Header
-        header = QtWidgets.QHBoxLayout()
-        title = QtWidgets.QLabel("Save VEX Snippet")
-        title.setStyleSheet(f"{sfs(18)} font-weight: 700; color: {COLORS['text_bright']};")
-        header.addWidget(title)
-        header.addStretch()
+        # ── Row 1: Icon + Name + VEX badge (matches SaveToLibraryDialog) ──
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.setSpacing(scale(12))
+
+        self.icon_btn = QtWidgets.QPushButton()
+        self.icon_btn.setFixedSize(scale(48), scale(48))
+        self.icon_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.icon_btn.setToolTip("Click to choose icon")
+        self.icon_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_dark']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 6px;
+                {sfs(10)}
+                color: {COLORS['text_dim']};
+            }}
+            QPushButton:hover {{
+                border-color: {COLORS['accent']};
+            }}
+        """)
+        self.icon_btn.clicked.connect(self._show_icon_browser)
+        top_row.addWidget(self.icon_btn)
+        self._set_icon('SOP_attribwrangle')
+
+        name_col = QtWidgets.QVBoxLayout()
+        name_col.setSpacing(scale(2))
+
+        self.name_input = QtWidgets.QLineEdit()
+        self.name_input.setPlaceholderText("Snippet name...")
+        self.name_input.setFixedHeight(scale(30))
+        self.name_input.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: transparent;
+                border: none;
+                border-bottom: 2px solid {COLORS['border']};
+                border-radius: 0;
+                padding: {spx(2)} 0;
+                {sfs(15)}
+                font-weight: 600;
+                color: {COLORS['text_bright']};
+            }}
+            QLineEdit:focus {{
+                border-bottom: 2px solid {COLORS['accent']};
+            }}
+        """)
+        name_col.addWidget(self.name_input)
+
+        line_count = len(self._initial_code.strip().split('\n')) if self._initial_code.strip() else 0
+        stats_text = f"VEX · {line_count} lines" if line_count else "VEX snippet"
+        stats_label = QtWidgets.QLabel(stats_text)
+        stats_label.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
+        name_col.addWidget(stats_label)
+
+        top_row.addLayout(name_col, 1)
+
+        badge_col = QtWidgets.QVBoxLayout()
+        badge_col.setAlignment(QtCore.Qt.AlignTop)
         vex_badge = QtWidgets.QLabel("VEX")
-        vex_badge.setStyleSheet(f"background-color: {get_context_color('vex')}; color: white; {sfs(10)} font-weight: bold; padding: {spx(3)} {spx(8)}; border-radius: 3px;")
-        header.addWidget(vex_badge)
-        layout.addLayout(header)
+        vex_badge.setStyleSheet(f"background-color: {get_context_color('vex')}; color: white; {sfs(9)} font-weight: bold; padding: {spx(2)} {spx(6)}; border-radius: 3px;")
+        badge_col.addWidget(vex_badge)
+        top_row.addLayout(badge_col)
 
-        # Code editor
+        layout.addLayout(top_row)
+
+        # ── Description ──
+        self.desc_input = QtWidgets.QTextEdit()
+        self.desc_input.setFixedHeight(scale(48))
+        self.desc_input.setPlaceholderText("Description (optional)")
+        self.desc_input.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {COLORS['bg_dark']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 3px;
+                padding: {spx(4)} {spx(8)};
+                {sfs(11)}
+                color: {COLORS['text']};
+            }}
+            QTextEdit:focus {{
+                border-color: {COLORS['accent']};
+            }}
+        """)
+        layout.addWidget(self.desc_input)
+
+        # ── Tags ──
+        self.tags_widget = TagInputWidget()
+        layout.addWidget(self.tags_widget)
+
+        # ── Collection ──
+        options_row = QtWidgets.QHBoxLayout()
+        options_row.setSpacing(scale(16))
+
+        coll_col = QtWidgets.QVBoxLayout()
+        coll_col.setSpacing(scale(2))
+        coll_lbl = QtWidgets.QLabel("Collection")
+        coll_lbl.setStyleSheet(label_style)
+        coll_col.addWidget(coll_lbl)
+        self.coll_combo = QtWidgets.QComboBox()
+        self.coll_combo.setFixedHeight(scale(24))
+        self._populate_collection_combo()
+        self.coll_combo.currentIndexChanged.connect(self._on_collection_combo_changed)
+        coll_col.addWidget(self.coll_combo)
+        options_row.addLayout(coll_col, 1)
+        options_row.addStretch(1)
+
+        layout.addLayout(options_row)
+
+        # ── VEX Code editor ──
         code_label = QtWidgets.QLabel("VEX Code")
-        code_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)} font-weight: 600;")
+        code_label.setStyleSheet(label_style)
         layout.addWidget(code_label)
 
         self.code_input = QtWidgets.QPlainTextEdit()
         self.code_input.setPlainText(self._initial_code)
-        self.code_input.setMinimumHeight(scale(150))
+        self.code_input.setMinimumHeight(scale(120))
         self.code_input.setStyleSheet(f"""
             QPlainTextEdit {{
                 background-color: {COLORS['bg_dark']};
@@ -6923,132 +7545,50 @@ class SaveVexDialog(QtWidgets.QDialog):
         layout.addWidget(self.code_input, 1)
 
         if not self._initial_code:
-            hint = QtWidgets.QLabel("Tip: Select a wrangle node before opening this dialog to auto-fill the code")
+            hint = QtWidgets.QLabel("Tip: Select a wrangle node first to auto-fill")
             hint.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(9)}")
-            hint.setWordWrap(True)
             layout.addWidget(hint)
 
-        # Form fields
-        form = QtWidgets.QFrame()
-        form.setStyleSheet(f"""
-            QFrame {{
-                background-color: {COLORS['bg_medium']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 4px;
-            }}
-        """)
-        form_layout = QtWidgets.QVBoxLayout(form)
-        form_layout.setContentsMargins(scale(12), scale(12), scale(12), scale(12))
-        form_layout.setSpacing(scale(8))
+        # ── Separator ──
+        sep = QtWidgets.QFrame()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background-color: {COLORS['border']};")
+        layout.addWidget(sep)
 
-        # Name
-        name_label = QtWidgets.QLabel("Name")
-        name_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)} font-weight: 600;")
-        form_layout.addWidget(name_label)
-
-        self.name_input = QtWidgets.QLineEdit()
-        self.name_input.setPlaceholderText("e.g., Color by Curvature, Point Relax")
-        self.name_input.setFixedHeight(scale(28))
-        self.name_input.setStyleSheet(f"""
-            QLineEdit {{
-                background-color: {COLORS['bg_dark']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 3px;
-                padding: {spx(4)} {spx(8)};
-                {sfs(12)}
-                color: {COLORS['text']};
-            }}
-            QLineEdit:focus {{
-                border-color: {COLORS['accent']};
-            }}
-        """)
-        form_layout.addWidget(self.name_input)
-
-        # Description
-        desc_label = QtWidgets.QLabel("Description")
-        desc_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)} font-weight: 600;")
-        form_layout.addWidget(desc_label)
-
-        self.desc_input = QtWidgets.QLineEdit()
-        self.desc_input.setPlaceholderText("What does this snippet do?")
-        self.desc_input.setFixedHeight(scale(28))
-        self.desc_input.setStyleSheet(f"""
-            QLineEdit {{
-                background-color: {COLORS['bg_dark']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 3px;
-                padding: {spx(4)} {spx(8)};
-                {sfs(11)}
-                color: {COLORS['text']};
-            }}
-            QLineEdit:focus {{
-                border-color: {COLORS['accent']};
-            }}
-        """)
-        form_layout.addWidget(self.desc_input)
-
-        # Tags + Collection row
-        row = QtWidgets.QHBoxLayout()
-        row.setSpacing(scale(12))
-
-        # Tags
-        tag_col = QtWidgets.QVBoxLayout()
-        tags_label = QtWidgets.QLabel("Tags")
-        tags_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)} font-weight: 600;")
-        tag_col.addWidget(tags_label)
-        self.tags_widget = TagInputWidget()
-        tag_col.addWidget(self.tags_widget)
-        row.addLayout(tag_col, 1)
-
-        # Collection (with nested subfolders)
-        coll_col = QtWidgets.QVBoxLayout()
-        coll_label = QtWidgets.QLabel("Collection")
-        coll_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)} font-weight: 600;")
-        coll_col.addWidget(coll_label)
-        self.coll_combo = QtWidgets.QComboBox()
-        self.coll_combo.setFixedHeight(scale(24))
-        self.coll_combo.setMinimumWidth(scale(120))
-        self.coll_combo.addItem("None", None)
-        if SOPDROP_AVAILABLE:
-            self._add_tree_to_combo(library.get_collection_tree())
-        coll_col.addWidget(self.coll_combo)
-        row.addLayout(coll_col)
-
-        form_layout.addLayout(row)
-        layout.addWidget(form)
-
-        # Buttons
+        # ── Action buttons (matches SaveToLibraryDialog) ──
         btns = QtWidgets.QHBoxLayout()
-        btns.setSpacing(scale(10))
+        btns.setSpacing(scale(8))
 
         cancel = QtWidgets.QPushButton("Cancel")
-        cancel.setFixedHeight(scale(28))
+        cancel.setFixedHeight(scale(30))
         cancel.setCursor(QtCore.Qt.PointingHandCursor)
         cancel.setStyleSheet(f"""
             QPushButton {{
-                background-color: {COLORS['bg_light']};
+                background-color: transparent;
                 border: 1px solid {COLORS['border']};
                 border-radius: 3px;
-                padding: {spx(6)} {spx(16)};
-                color: {COLORS['text']};
+                padding: {spx(4)} {spx(16)};
+                color: {COLORS['text_secondary']};
             }}
             QPushButton:hover {{
-                background-color: {COLORS['bg_lighter']};
+                border-color: {COLORS['text_dim']};
+                color: {COLORS['text']};
             }}
         """)
         cancel.clicked.connect(self.reject)
         btns.addWidget(cancel)
+
         btns.addStretch()
 
         save_btn = QtWidgets.QPushButton("Save VEX Snippet")
-        save_btn.setFixedHeight(scale(28))
+        save_btn.setFixedHeight(scale(30))
         save_btn.setCursor(QtCore.Qt.PointingHandCursor)
         save_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['accent']};
                 border: none;
                 border-radius: 3px;
-                padding: {spx(6)} {spx(18)};
+                padding: {spx(4)} {spx(18)};
                 color: white;
                 font-weight: 600;
             }}
@@ -7061,6 +7601,39 @@ class SaveVexDialog(QtWidgets.QDialog):
 
         layout.addLayout(btns)
 
+    def _set_icon(self, icon_name):
+        """Set the icon button to display a Houdini icon."""
+        self._selected_icon = icon_name
+        try:
+            hou_icon = hou.qt.Icon(icon_name, 64, 64)
+            if hou_icon and not hou_icon.isNull():
+                icon = QtGui.QIcon(hou_icon.pixmap(64, 64))
+                self.icon_btn.setIcon(icon)
+                self.icon_btn.setIconSize(QtCore.QSize(scale(32), scale(32)))
+                self.icon_btn.setText("")
+                return
+        except Exception:
+            pass
+        self.icon_btn.setIcon(QtGui.QIcon())
+        self.icon_btn.setText("Icon")
+
+    def _show_icon_browser(self):
+        """Open the Houdini icon browser dialog."""
+        dialog = HoudiniIconBrowser(parent=self)
+        if dialog.exec_() == QtWidgets.QDialog.Accepted and dialog.selected_icon:
+            self._set_icon(dialog.selected_icon)
+
+    def _populate_collection_combo(self):
+        """Populate the collection combo with nested collections."""
+        self.coll_combo.blockSignals(True)
+        self.coll_combo.clear()
+        self.coll_combo.addItem("None", None)
+        if SOPDROP_AVAILABLE:
+            self._add_tree_to_combo(library.get_collection_tree())
+            self.coll_combo.insertSeparator(self.coll_combo.count())
+            self.coll_combo.addItem("+ New Collection...", "__new__")
+        self.coll_combo.blockSignals(False)
+
     def _add_tree_to_combo(self, items, depth=0):
         """Recursively add collection tree items to the combo with indentation."""
         for coll in items:
@@ -7071,6 +7644,26 @@ class SaveVexDialog(QtWidgets.QDialog):
             self.coll_combo.addItem(f"{indent}{prefix}{coll['name']}", coll['id'])
             if coll.get('children'):
                 self._add_tree_to_combo(coll['children'], depth + 1)
+
+    def _on_collection_combo_changed(self, index):
+        """Handle collection combo selection — create new collection inline."""
+        if self.coll_combo.currentData() != "__new__":
+            return
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "New Collection", "Collection name:")
+        if ok and name.strip():
+            try:
+                coll = library.create_collection(name.strip())
+                self._populate_collection_combo()
+                for i in range(self.coll_combo.count()):
+                    if self.coll_combo.itemData(i) == coll['id']:
+                        self.coll_combo.setCurrentIndex(i)
+                        break
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, "Error", f"Failed to create collection: {e}")
+                self.coll_combo.setCurrentIndex(0)
+        else:
+            self.coll_combo.setCurrentIndex(0)
 
     def _save(self):
         """Save the VEX snippet."""
@@ -7091,9 +7684,408 @@ class SaveVexDialog(QtWidgets.QDialog):
             library.save_vex_snippet(
                 name=name,
                 code=code,
-                description=self.desc_input.text().strip(),
+                description=self.desc_input.toPlainText().strip(),
                 tags=tags,
                 collection_id=coll_id,
+                icon=self._selected_icon,
+            )
+            self.accept()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to save: {e}")
+            import traceback
+            traceback.print_exc()
+
+
+# ==============================================================================
+# Save Path Dialog
+# ==============================================================================
+
+class SavePathDialog(QtWidgets.QDialog):
+    """Dialog for saving a file path asset to the library."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._thumbnail_data = None
+        self._setup_ui()
+
+    def _setup_ui(self):
+        self.setWindowTitle("Save Path Asset")
+        self.setFixedWidth(scale(460))
+        self.setMinimumHeight(scale(400))
+        self.setStyleSheet(STYLESHEET)
+        self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
+        self._selected_icon = None
+
+        label_style = f"color: {COLORS['text_dim']}; {sfs(10)}"
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(scale(20), scale(20), scale(20), scale(16))
+        layout.setSpacing(scale(14))
+
+        # ── Row 1: Icon + Name + PATH badge ──
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.setSpacing(scale(12))
+
+        self.icon_btn = QtWidgets.QPushButton()
+        self.icon_btn.setFixedSize(scale(48), scale(48))
+        self.icon_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.icon_btn.setToolTip("Click to choose icon")
+        self.icon_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_dark']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 6px;
+                {sfs(10)}
+                color: {COLORS['text_dim']};
+            }}
+            QPushButton:hover {{
+                border-color: {COLORS['accent']};
+            }}
+        """)
+        self.icon_btn.clicked.connect(self._show_icon_browser)
+        top_row.addWidget(self.icon_btn)
+        self._set_icon('MISC_file')
+
+        name_col = QtWidgets.QVBoxLayout()
+        name_col.setSpacing(scale(2))
+
+        self.name_input = QtWidgets.QLineEdit()
+        self.name_input.setPlaceholderText("Asset name...")
+        self.name_input.setFixedHeight(scale(30))
+        self.name_input.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: transparent;
+                border: none;
+                border-bottom: 2px solid {COLORS['border']};
+                border-radius: 0;
+                padding: {spx(2)} 0;
+                {sfs(15)}
+                font-weight: 600;
+                color: {COLORS['text_bright']};
+            }}
+            QLineEdit:focus {{
+                border-bottom: 2px solid {COLORS['accent']};
+            }}
+        """)
+        name_col.addWidget(self.name_input)
+
+        self.info_label = QtWidgets.QLabel("Select a file path")
+        self.info_label.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
+        name_col.addWidget(self.info_label)
+
+        top_row.addLayout(name_col, 1)
+
+        badge_col = QtWidgets.QVBoxLayout()
+        badge_col.setAlignment(QtCore.Qt.AlignTop)
+        path_badge = QtWidgets.QLabel("PATH")
+        path_badge.setStyleSheet(f"background-color: {get_context_color('path')}; color: white; {sfs(9)} font-weight: bold; padding: {spx(2)} {spx(6)}; border-radius: 3px;")
+        badge_col.addWidget(path_badge)
+        top_row.addLayout(badge_col)
+
+        layout.addLayout(top_row)
+
+        # ── File path input + Browse ──
+        path_row = QtWidgets.QHBoxLayout()
+        path_row.setSpacing(scale(6))
+
+        self.path_input = QtWidgets.QLineEdit()
+        self.path_input.setPlaceholderText("File path (HDRI, texture, etc.)")
+        self.path_input.setFixedHeight(scale(28))
+        self.path_input.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {COLORS['bg_dark']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 3px;
+                padding: {spx(2)} {spx(8)};
+                {sfs(11)}
+                color: {COLORS['text']};
+            }}
+            QLineEdit:focus {{
+                border-color: {COLORS['accent']};
+            }}
+        """)
+        self.path_input.textChanged.connect(self._on_path_changed)
+        path_row.addWidget(self.path_input, 1)
+
+        browse_btn = QtWidgets.QPushButton("Browse")
+        browse_btn.setFixedHeight(scale(28))
+        browse_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        browse_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_light']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 3px;
+                padding: {spx(2)} {spx(12)};
+                color: {COLORS['text']};
+            }}
+            QPushButton:hover {{
+                border-color: {COLORS['accent']};
+                color: {COLORS['accent']};
+            }}
+        """)
+        browse_btn.clicked.connect(self._browse_file)
+        path_row.addWidget(browse_btn)
+
+        layout.addLayout(path_row)
+
+        # ── Thumbnail preview ──
+        self.thumb_label = QtWidgets.QLabel()
+        self.thumb_label.setFixedHeight(scale(120))
+        self.thumb_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.thumb_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: {COLORS['bg_dark']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 3px;
+                color: {COLORS['text_dim']};
+                {sfs(10)}
+            }}
+        """)
+        self.thumb_label.setText("No preview")
+        layout.addWidget(self.thumb_label)
+
+        # ── Description ──
+        self.desc_input = QtWidgets.QTextEdit()
+        self.desc_input.setFixedHeight(scale(48))
+        self.desc_input.setPlaceholderText("Description (optional)")
+        self.desc_input.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {COLORS['bg_dark']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 3px;
+                padding: {spx(4)} {spx(8)};
+                {sfs(11)}
+                color: {COLORS['text']};
+            }}
+            QTextEdit:focus {{
+                border-color: {COLORS['accent']};
+            }}
+        """)
+        layout.addWidget(self.desc_input)
+
+        # ── Tags ──
+        self.tags_widget = TagInputWidget()
+        layout.addWidget(self.tags_widget)
+
+        # ── Collection ──
+        options_row = QtWidgets.QHBoxLayout()
+        options_row.setSpacing(scale(16))
+
+        coll_col = QtWidgets.QVBoxLayout()
+        coll_col.setSpacing(scale(2))
+        coll_lbl = QtWidgets.QLabel("Collection")
+        coll_lbl.setStyleSheet(label_style)
+        coll_col.addWidget(coll_lbl)
+        self.coll_combo = QtWidgets.QComboBox()
+        self.coll_combo.setFixedHeight(scale(24))
+        self._populate_collection_combo()
+        self.coll_combo.currentIndexChanged.connect(self._on_collection_combo_changed)
+        coll_col.addWidget(self.coll_combo)
+        options_row.addLayout(coll_col, 1)
+        options_row.addStretch(1)
+
+        layout.addLayout(options_row)
+
+        # ── Separator ──
+        sep = QtWidgets.QFrame()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background-color: {COLORS['border']};")
+        layout.addWidget(sep)
+
+        # ── Action buttons ──
+        btns = QtWidgets.QHBoxLayout()
+        btns.setSpacing(scale(8))
+
+        cancel = QtWidgets.QPushButton("Cancel")
+        cancel.setFixedHeight(scale(30))
+        cancel.setCursor(QtCore.Qt.PointingHandCursor)
+        cancel.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                border: 1px solid {COLORS['border']};
+                border-radius: 3px;
+                padding: {spx(4)} {spx(16)};
+                color: {COLORS['text_secondary']};
+            }}
+            QPushButton:hover {{
+                border-color: {COLORS['text_dim']};
+                color: {COLORS['text']};
+            }}
+        """)
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(cancel)
+
+        btns.addStretch()
+
+        save_btn = QtWidgets.QPushButton("Save Path")
+        save_btn.setFixedHeight(scale(30))
+        save_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        save_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['accent']};
+                border: none;
+                border-radius: 3px;
+                padding: {spx(4)} {spx(18)};
+                color: white;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['accent_hover']};
+            }}
+        """)
+        save_btn.clicked.connect(self._save)
+        btns.addWidget(save_btn)
+
+        layout.addLayout(btns)
+
+    def _set_icon(self, icon_name):
+        """Set the icon button to display a Houdini icon."""
+        self._selected_icon = icon_name
+        try:
+            hou_icon = hou.qt.Icon(icon_name, 64, 64)
+            if hou_icon and not hou_icon.isNull():
+                icon = QtGui.QIcon(hou_icon.pixmap(64, 64))
+                self.icon_btn.setIcon(icon)
+                self.icon_btn.setIconSize(QtCore.QSize(scale(32), scale(32)))
+                self.icon_btn.setText("")
+                return
+        except Exception:
+            pass
+        self.icon_btn.setIcon(QtGui.QIcon())
+        self.icon_btn.setText("Icon")
+
+    def _show_icon_browser(self):
+        """Open the Houdini icon browser dialog."""
+        dialog = HoudiniIconBrowser(parent=self)
+        if dialog.exec_() == QtWidgets.QDialog.Accepted and dialog.selected_icon:
+            self._set_icon(dialog.selected_icon)
+
+    def _populate_collection_combo(self):
+        """Populate the collection combo with nested collections."""
+        self.coll_combo.blockSignals(True)
+        self.coll_combo.clear()
+        self.coll_combo.addItem("None", None)
+        if SOPDROP_AVAILABLE:
+            self._add_tree_to_combo(library.get_collection_tree())
+            self.coll_combo.insertSeparator(self.coll_combo.count())
+            self.coll_combo.addItem("+ New Collection...", "__new__")
+        self.coll_combo.blockSignals(False)
+
+    def _add_tree_to_combo(self, items, depth=0):
+        """Recursively add collection tree items to the combo with indentation."""
+        for coll in items:
+            if coll.get('source') == 'cloud':
+                continue
+            indent = "\u2003" * depth
+            prefix = "\u25B8 " if depth > 0 else ""
+            self.coll_combo.addItem(f"{indent}{prefix}{coll['name']}", coll['id'])
+            if coll.get('children'):
+                self._add_tree_to_combo(coll['children'], depth + 1)
+
+    def _on_collection_combo_changed(self, index):
+        """Handle collection combo selection — create new collection inline."""
+        if self.coll_combo.currentData() != "__new__":
+            return
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "New Collection", "Collection name:")
+        if ok and name.strip():
+            try:
+                coll = library.create_collection(name.strip())
+                self._populate_collection_combo()
+                for i in range(self.coll_combo.count()):
+                    if self.coll_combo.itemData(i) == coll['id']:
+                        self.coll_combo.setCurrentIndex(i)
+                        break
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, "Error", f"Failed to create collection: {e}")
+                self.coll_combo.setCurrentIndex(0)
+        else:
+            self.coll_combo.setCurrentIndex(0)
+
+    def _browse_file(self):
+        """Open file browser for image/texture files."""
+        filters = "Images (*.exr *.hdr *.hdri *.png *.jpg *.jpeg *.tif *.tiff *.tx *.rat *.pic);;All Files (*)"
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select File", "", filters)
+        if path:
+            self.path_input.setText(path)
+
+    def _on_path_changed(self, text):
+        """Update preview and info when path changes."""
+        import os
+        text = text.strip()
+        if not text or not os.path.isfile(text):
+            self.thumb_label.setPixmap(QtGui.QPixmap())
+            self.thumb_label.setText("No preview")
+            self.info_label.setText("Select a file path")
+            self._thumbnail_data = None
+            # Auto-fill name from filename if name is empty
+            return
+
+        # Auto-fill name if empty
+        if not self.name_input.text().strip():
+            basename = os.path.splitext(os.path.basename(text))[0]
+            self.name_input.setText(basename)
+
+        # Detect metadata and update info
+        meta = library.detect_path_metadata(text)
+        parts = []
+        if meta.get('file_type'):
+            parts.append(meta['file_type'].upper())
+        if meta.get('resolution'):
+            parts.append(meta['resolution'])
+        if meta.get('channels'):
+            parts.append(f"{meta['channels']}ch")
+        self.info_label.setText(" | ".join(parts) if parts else "File")
+
+        # Generate thumbnail
+        thumb_data = library.generate_path_thumbnail(text, max_size=256)
+        self._thumbnail_data = thumb_data
+        if thumb_data:
+            pixmap = QtGui.QPixmap()
+            pixmap.loadFromData(thumb_data)
+            if not pixmap.isNull():
+                scaled = pixmap.scaled(
+                    self.thumb_label.width() - 4,
+                    self.thumb_label.height() - 4,
+                    QtCore.Qt.KeepAspectRatio,
+                    QtCore.Qt.SmoothTransformation,
+                )
+                self.thumb_label.setPixmap(scaled)
+                self.thumb_label.setText("")
+                return
+
+        self.thumb_label.setPixmap(QtGui.QPixmap())
+        self.thumb_label.setText("No preview available")
+
+    def _save(self):
+        """Save the path asset."""
+        name = self.name_input.text().strip()
+        file_path = self.path_input.text().strip()
+
+        if not name:
+            QtWidgets.QMessageBox.warning(self, "Error", "Please enter a name")
+            return
+        if not file_path:
+            QtWidgets.QMessageBox.warning(self, "Error", "Please select a file path")
+            return
+
+        import os
+        if not os.path.isfile(file_path):
+            QtWidgets.QMessageBox.warning(self, "Error", "File does not exist")
+            return
+
+        try:
+            tags = self.tags_widget.get_tags()
+            coll_id = self.coll_combo.currentData()
+
+            library.save_path_asset(
+                name=name,
+                file_path=file_path,
+                description=self.desc_input.toPlainText().strip(),
+                tags=tags,
+                thumbnail_data=self._thumbnail_data,
+                collection_id=coll_id,
+                icon=self._selected_icon,
             )
             self.accept()
         except Exception as e:
@@ -7349,16 +8341,6 @@ class SettingsDialog(QtWidgets.QDialog):
         team_group.setStyleSheet(groupbox_style)
         team_layout = QtWidgets.QVBoxLayout(team_group)
         team_layout.setSpacing(scale(8))
-
-        # Library type selector
-        lib_type_row = QtWidgets.QHBoxLayout()
-        lib_type_row.addWidget(QtWidgets.QLabel("Active Library:"))
-        self.library_combo = QtWidgets.QComboBox()
-        self.library_combo.addItem("Personal", "personal")
-        self.library_combo.addItem("Team", "team")
-        self.library_combo.currentIndexChanged.connect(self._on_library_changed)
-        lib_type_row.addWidget(self.library_combo, 1)
-        team_layout.addLayout(lib_type_row)
 
         # Team library path
         path_label = QtWidgets.QLabel("Team Library Path:")
@@ -7632,7 +8614,7 @@ class SettingsDialog(QtWidgets.QDialog):
     def _load_settings(self):
         """Load current settings."""
         if SOPDROP_AVAILABLE:
-            from sopdrop.config import get_config, get_token, get_active_library, get_team_library_path, get_team_slug, get_team_name, get_personal_library_path, get_ui_scale as _get_ui_scale, get_local_only as _get_local_only
+            from sopdrop.config import get_config, get_token, get_team_library_path, get_team_slug, get_team_name, get_personal_library_path, get_ui_scale as _get_ui_scale, get_local_only as _get_local_only
 
             config = get_config()
             self.server_input.setText(config.get('server_url', 'https://sopdrop.com'))
@@ -7672,9 +8654,6 @@ class SettingsDialog(QtWidgets.QDialog):
             self._update_personal_info()
 
             # Team library settings
-            active_lib = get_active_library()
-            self.library_combo.setCurrentIndex(0 if active_lib == "personal" else 1)
-
             team_path = get_team_library_path()
             if team_path:
                 self.team_path_input.setText(str(team_path))
@@ -7706,7 +8685,6 @@ class SettingsDialog(QtWidgets.QDialog):
             self.tab_menu_checkbox.setChecked(True)
             self.local_only_checkbox.setEnabled(False)
             self.personal_path_input.setEnabled(False)
-            self.library_combo.setEnabled(False)
             self.team_path_input.setEnabled(False)
             self.team_combo.setEnabled(False)
             self.fetch_teams_btn.setEnabled(False)
@@ -7788,7 +8766,7 @@ class SettingsDialog(QtWidgets.QDialog):
     def _scale_up(self):
         """Increase UI scale by 10%."""
         current = self._current_scale
-        new_val = min(1.5, round(current + 0.1, 2))
+        new_val = min(2.5, round(current + 0.1, 2))
         self._current_scale = new_val
         self.scale_label.setText(f"{int(new_val * 100)}%")
 
@@ -7800,7 +8778,7 @@ class SettingsDialog(QtWidgets.QDialog):
     def _save_settings(self):
         """Save settings and close."""
         if SOPDROP_AVAILABLE:
-            from sopdrop.config import get_config, save_config, set_team_library_path, set_active_library, set_team_slug, set_team_name, set_personal_library_path, set_ui_scale
+            from sopdrop.config import get_config, save_config, set_team_library_path, set_team_slug, set_team_name, set_personal_library_path, set_ui_scale
 
             # Save personal library path
             personal_path = self.personal_path_input.text().strip()
@@ -7831,13 +8809,6 @@ class SettingsDialog(QtWidgets.QDialog):
             # Save team slug (normalize to lowercase to match server)
             team_slug = self.team_slug_input.text().strip().lower()
             set_team_slug(team_slug if team_slug else None)
-
-            # Save active library
-            active_lib = self.library_combo.currentData()
-            if active_lib == "team" and not team_path:
-                hou.ui.displayMessage("Please set a team library path first.")
-                return
-            set_active_library(active_lib)
 
             # Now get fresh config and update other settings
             config = get_config()
@@ -7923,15 +8894,6 @@ class SettingsDialog(QtWidgets.QDialog):
 
             # Try to auto-detect team from existing library database
             self._try_detect_team(path)
-
-    def _on_library_changed(self, index):
-        """Handle library type change."""
-        lib_type = self.library_combo.currentData()
-        if lib_type == "team" and not self.team_path_input.text().strip():
-            self.team_info.setText("Set a team library path to enable team mode.")
-            self.team_info.setStyleSheet(f"color: {COLORS['warning']}; {sfs(10)}")
-        else:
-            self._update_team_info()
 
     def _update_team_info(self):
         """Update team library info label."""

@@ -2,13 +2,16 @@
 Export module for Sopdrop.
 
 Handles exporting Houdini nodes to the .sopdrop package format.
-Uses Houdini's asCode() for inspectable, auditable, diffable serialization.
+V2 (default): binary .cpio via saveItemsToFile() for reliable import.
+V1 (fallback): asCode() Python code generation.
+Both formats carry identical metadata for web visualization and search.
 """
 
 import base64
 import hashlib
 import os
 import re
+import tempfile
 from typing import List, Dict, Any, Optional
 
 
@@ -16,14 +19,126 @@ def export_items(items) -> Dict[str, Any]:
     """
     Export selected Houdini items as a .sopdrop package.
 
-    Always uses asCode() to produce inspectable Python code.
-    recurse=True ensures children inside subnets/containers are captured.
+    Uses V2 (binary/cpio) by default for reliable import via loadItemsFromFile().
+    Falls back to V1 (asCode) if saveItemsToFile() fails.
 
     Args:
         items: List of hou.NetworkMovableItem (nodes, network boxes, sticky notes)
 
     Returns:
         A .sopdrop package dictionary ready for JSON serialization
+    """
+    try:
+        return _export_v2(items)
+    except Exception as e:
+        print(f"[Sopdrop] V2 export failed ({e}), falling back to V1")
+        return _export_v1(items)
+
+
+def _export_v2(items) -> Dict[str, Any]:
+    """
+    Export items using Houdini's native saveItemsToFile() (binary .cpio).
+
+    Produces a V2 package with base64-encoded binary data and full metadata
+    for web visualization, search, and dependency tracking.
+    """
+    import hou
+
+    if not items:
+        raise ValueError("No items to export")
+
+    # Separate items by type
+    nodes = []
+    network_boxes = []
+    sticky_notes = []
+    network_dots = []
+
+    for item in items:
+        if isinstance(item, hou.Node):
+            nodes.append(item)
+        elif isinstance(item, hou.NetworkBox):
+            network_boxes.append(item)
+        elif isinstance(item, hou.StickyNote):
+            sticky_notes.append(item)
+        elif isinstance(item, hou.NetworkDot):
+            network_dots.append(item)
+
+    if not nodes:
+        raise ValueError("No nodes to export. Select at least one node.")
+
+    # All items must share the same parent
+    parent = nodes[0].parent()
+    for node in nodes[1:]:
+        if node.parent() != parent:
+            raise ValueError("All selected nodes must be in the same network")
+
+    # Get context
+    context = _get_context(parent)
+
+    # Collect metadata (identical to V1)
+    node_types = []
+    node_names = []
+    all_node_count = 0
+
+    for node in nodes:
+        node_types.append(node.type().name())
+        node_names.append(node.name())
+        all_node_count += 1
+        all_node_count += len(node.allSubChildren())
+
+    # Detect HDA dependencies
+    dependencies = _detect_hda_dependencies(nodes)
+
+    # Capture node graph data for web visualization
+    node_graph = _capture_node_graph(nodes)
+
+    # Save items to a temp .cpio file via Houdini's native method
+    temp_path = tempfile.mktemp(suffix='.cpio')
+    try:
+        parent.saveItemsToFile(items, temp_path)
+
+        with open(temp_path, 'rb') as f:
+            binary_data = f.read()
+
+        if not binary_data:
+            raise RuntimeError("saveItemsToFile produced an empty file")
+    finally:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+
+    # Encode and checksum
+    encoded_data = base64.b64encode(binary_data).decode('ascii')
+    checksum = hashlib.sha256(binary_data).hexdigest()
+
+    return {
+        "format": "sopdrop-v2",
+        "context": context,
+        "houdini_version": hou.applicationVersionString(),
+        "metadata": {
+            "node_count": all_node_count,
+            "top_level_count": len(nodes),
+            "node_types": list(set(node_types)),
+            "node_names": node_names,
+            "network_boxes": len(network_boxes),
+            "sticky_notes": len(sticky_notes),
+            "network_dots": len(network_dots),
+            "has_hda_dependencies": len(dependencies) > 0,
+            "node_graph": node_graph,
+        },
+        "dependencies": dependencies,
+        "data": encoded_data,
+        "checksum": checksum,
+    }
+
+
+def _export_v1(items) -> Dict[str, Any]:
+    """
+    Export items using asCode() Python code generation (V1 fallback).
+
+    Produces inspectable, auditable Python code but is fragile when pasting
+    into networks with existing nodes of the same name.
     """
     import hou
 

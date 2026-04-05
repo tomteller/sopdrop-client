@@ -267,14 +267,15 @@ def import_items(
 
     # Validate package format
     fmt = package.get("format", "")
-    if fmt == "sopdrop-v1" or fmt == "chopsop-v1":
-        # Legacy format - use old code-based import
-        return _import_v1(package, target_node, position, allow_placeholders)
-    elif fmt.startswith("sopdrop-v") or fmt.startswith("chopsop-v"):
-        # v2+ uses binary format (support old "chopsop" name for backwards compat)
-        return _import_v2(package, target_node, position)
-    else:
-        raise ImportError(f"Unknown package format: {fmt}")
+    with hou.undos.group("Sopdrop Paste"):
+        if fmt == "sopdrop-v1" or fmt == "chopsop-v1":
+            # Legacy format - use old code-based import
+            return _import_v1(package, target_node, position, allow_placeholders)
+        elif fmt.startswith("sopdrop-v") or fmt.startswith("chopsop-v"):
+            # v2+ uses binary format (support old "chopsop" name for backwards compat)
+            return _import_v2(package, target_node, position)
+        else:
+            raise ImportError(f"Unknown package format: {fmt}")
 
 
 def _import_v2(

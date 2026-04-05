@@ -10,8 +10,10 @@ Directory structure:
 │   ├── library.db          # SQLite database
 │   ├── assets/             # .sopdrop and .hda files
 │   │   └── {uuid}.sopdrop
-│   └── thumbnails/         # Preview images
-│       └── {uuid}.png
+│   ├── thumbnails/         # Preview images
+│   │   └── {uuid}.png
+│   └── trash/              # Soft-deleted files (restorable)
+│       └── {uuid}.sopdrop
 """
 
 import os
@@ -19,12 +21,97 @@ import json
 import uuid
 import shutil
 import sqlite3
+import tempfile
+import threading
 import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from .config import get_config_dir, get_library_path, get_active_library
+
+import re as _re
+
+
+# ==============================================================================
+# Atomic File Write Helpers
+# ==============================================================================
+
+def _atomic_write_text(target_path, content):
+    """Write text to a file atomically (temp + os.replace).
+
+    On failure the temp file is removed and the original is untouched.
+    """
+    target_path = Path(target_path)
+    fd, tmp = tempfile.mkstemp(dir=str(target_path.parent), suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(content)
+        os.replace(tmp, str(target_path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_write_bytes(target_path, data):
+    """Write bytes to a file atomically (temp + os.replace)."""
+    target_path = Path(target_path)
+    fd, tmp = tempfile.mkstemp(dir=str(target_path.parent), suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data)
+        os.replace(tmp, str(target_path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_copy(source_path, dest_path):
+    """Copy a file atomically (copy to temp in dest dir, then os.replace)."""
+    dest_path = Path(dest_path)
+    fd, tmp = tempfile.mkstemp(dir=str(dest_path.parent), suffix='.tmp')
+    os.close(fd)
+    try:
+        shutil.copy2(str(source_path), tmp)
+        os.replace(tmp, str(dest_path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+# ==============================================================================
+# Slug Utilities
+# ==============================================================================
+
+def _slugify(name):
+    """Convert a name to a URL-safe slug (lowercase, hyphens, max 100 chars)."""
+    slug = name.lower()
+    slug = _re.sub(r'[^a-z0-9]+', '-', slug)
+    slug = slug.strip('-')
+    return slug[:100] if slug else 'asset'
+
+
+def _generate_slug(name, db=None):
+    """Generate a unique slug for an asset name, appending -2, -3, etc. on collision."""
+    conn = db or get_db()
+    base = _slugify(name)
+    slug = base
+    suffix = 2
+    while conn.execute(
+        "SELECT 1 FROM library_assets WHERE slug = ?", (slug,)
+    ).fetchone():
+        slug = f"{base}-{suffix}"
+        suffix += 1
+    return slug
 
 
 # ==============================================================================
@@ -51,12 +138,18 @@ def get_library_thumbnails_dir():
     return get_library_dir() / "thumbnails"
 
 
+def get_library_trash_dir():
+    """Get the directory for trashed asset files."""
+    return get_library_dir() / "trash"
+
+
 def ensure_library_dirs():
     """Ensure all library directories exist."""
     dirs = [
         get_library_dir(),
         get_library_assets_dir(),
         get_library_thumbnails_dir(),
+        get_library_trash_dir(),
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
@@ -132,6 +225,7 @@ CREATE TABLE IF NOT EXISTS library_assets (
     file_size INTEGER,
     thumbnail_path TEXT,
     icon TEXT,                -- Houdini icon name (e.g., 'SOP_scatter')
+    slug TEXT,                -- Shareable identifier (e.g., 'my-scatter-tool')
 
     -- Metadata
     node_count INTEGER DEFAULT 0,
@@ -154,12 +248,19 @@ CREATE TABLE IF NOT EXISTS library_assets (
     updated_at TEXT NOT NULL,
     last_used_at TEXT,
     use_count INTEGER DEFAULT 0,
+    is_favorite INTEGER DEFAULT 0,
+
+    -- Creator info
+    created_by TEXT,          -- OS username or display name of creator
 
     -- Sync tracking (optional cloud connection)
     remote_slug TEXT,         -- user/asset-name if published
     remote_version TEXT,      -- Synced version number
     sync_status TEXT DEFAULT 'local_only',  -- local_only, synced, modified, conflict
-    synced_at TEXT
+    synced_at TEXT,
+
+    -- Soft-delete (trash)
+    deleted_at TEXT            -- ISO timestamp when trashed, NULL = active
 );
 
 -- Collection membership (many-to-many)
@@ -267,46 +368,64 @@ END;
 # Track connection per library path to support switching
 _connections = {}
 _current_db_path = None
+_db_lock = threading.Lock()
+_trash_purged = False
 
 
 def get_db():
     """Get or create database connection for the active library."""
-    global _connections, _current_db_path
+    global _connections, _current_db_path, _trash_purged
 
     ensure_library_dirs()
     db_path = str(get_library_db_path())
 
-    # If we switched libraries, we need a new connection
-    if db_path != _current_db_path:
-        _current_db_path = db_path
+    with _db_lock:
+        # If we switched libraries, we need a new connection
+        if db_path != _current_db_path:
+            _current_db_path = db_path
 
-    # Get or create connection for this path
-    if db_path not in _connections:
-        conn = sqlite3.connect(db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        # Disable memory-mapped I/O — prevents segfaults on network/shared
-        # drives (team library folders) where mmap behaves unpredictably.
-        conn.execute("PRAGMA mmap_size = 0")
-        # Wait up to 5 s on a locked DB instead of failing immediately
-        # (team libraries may have concurrent access from multiple users).
-        conn.execute("PRAGMA busy_timeout = 5000")
-        conn.executescript(SCHEMA)
+        # Get or create connection for this path
+        if db_path not in _connections:
+            conn = sqlite3.connect(db_path, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            # Disable memory-mapped I/O — prevents segfaults on network/shared
+            # drives (team library folders) where mmap behaves unpredictably.
+            conn.execute("PRAGMA mmap_size = 0")
+            # Wait up to 5 s on a locked DB instead of failing immediately
+            # (team libraries may have concurrent access from multiple users).
+            conn.execute("PRAGMA busy_timeout = 5000")
 
-        # FTS5 uses mmap internally and can crash on network filesystems.
-        # Create it separately so a failure doesn't block core functionality.
-        try:
-            conn.executescript(FTS_SCHEMA)
-        except Exception as e:
-            print(f"[Sopdrop] FTS5 unavailable for {db_path}: {e}")
+            # WAL mode for better concurrent read performance (local DBs only).
+            # Skip for team libraries — WAL needs mmap which we've disabled for
+            # network drives, and Phase 2 will make team DBs local anyway.
+            if get_active_library() != "team":
+                conn.execute("PRAGMA journal_mode = WAL")
 
-        # Run migrations for existing databases
-        _run_migrations(conn)
+            conn.executescript(SCHEMA)
 
-        conn.commit()
-        _connections[db_path] = conn
+            # FTS5 uses mmap internally and can crash on network filesystems.
+            # Create it separately so a failure doesn't block core functionality.
+            try:
+                conn.executescript(FTS_SCHEMA)
+            except Exception as e:
+                print(f"[Sopdrop] FTS5 unavailable for {db_path}: {e}")
 
-    return _connections[db_path]
+            # Run migrations for existing databases
+            _run_migrations(conn)
+
+            conn.commit()
+            _connections[db_path] = conn
+
+            # Auto-purge old trash once per session
+            if not _trash_purged:
+                _trash_purged = True
+                try:
+                    _auto_purge_trash(conn)
+                except Exception:
+                    pass
+
+        return _connections[db_path]
 
 
 def _run_migrations(conn):
@@ -351,6 +470,38 @@ def _run_migrations(conn):
         if 'license_type' not in columns:
             conn.execute("ALTER TABLE library_assets ADD COLUMN license_type TEXT")
 
+        if 'slug' not in columns:
+            conn.execute("ALTER TABLE library_assets ADD COLUMN slug TEXT")
+            # Backfill slugs for existing assets
+            rows = conn.execute("SELECT id, name FROM library_assets WHERE slug IS NULL").fetchall()
+            for row in rows:
+                aid = row[0] if isinstance(row, (tuple, list)) else row['id']
+                aname = row[1] if isinstance(row, (tuple, list)) else row['name']
+                slug = _generate_slug(aname, db=conn)
+                conn.execute("UPDATE library_assets SET slug = ? WHERE id = ?", (slug, aid))
+            if rows:
+                conn.commit()
+
+        if 'created_by' not in columns:
+            conn.execute("ALTER TABLE library_assets ADD COLUMN created_by TEXT")
+            # Backfill with OS username for existing assets
+            try:
+                import getpass
+                username = getpass.getuser()
+                conn.execute("UPDATE library_assets SET created_by = ? WHERE created_by IS NULL", (username,))
+                conn.commit()
+            except Exception:
+                pass
+
+        if 'deleted_at' not in columns:
+            conn.execute("ALTER TABLE library_assets ADD COLUMN deleted_at TEXT")
+
+        if 'is_favorite' not in columns:
+            conn.execute("ALTER TABLE library_assets ADD COLUMN is_favorite INTEGER DEFAULT 0")
+
+        # Always ensure slug index exists (safe for both new and migrated DBs)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_assets_slug ON library_assets(slug)")
+
     except Exception as e:
         print(f"[Sopdrop] Migration warning (library_assets): {e}")
 
@@ -369,13 +520,45 @@ def _run_migrations(conn):
 def close_db():
     """Close all database connections."""
     global _connections, _current_db_path
-    for conn in _connections.values():
-        try:
-            conn.close()
-        except Exception:
-            pass
-    _connections = {}
-    _current_db_path = None
+    with _db_lock:
+        for conn in _connections.values():
+            try:
+                conn.close()
+            except Exception:
+                pass
+        _connections = {}
+        _current_db_path = None
+
+
+def _auto_purge_trash(conn, max_age_days=30):
+    """Delete trash files and DB rows older than max_age_days."""
+    import time
+    cutoff_ts = time.time() - (max_age_days * 86400)
+    cutoff_iso = datetime.utcfromtimestamp(cutoff_ts).isoformat()
+
+    # Delete old files from trash directory
+    trash_dir = get_library_trash_dir()
+    if trash_dir.exists():
+        for f in trash_dir.iterdir():
+            if f.is_file():
+                try:
+                    if f.stat().st_mtime < cutoff_ts:
+                        f.unlink()
+                except OSError:
+                    pass
+
+    # Delete old version snapshots for purged assets
+    old_ids = conn.execute(
+        "SELECT id FROM library_assets WHERE deleted_at IS NOT NULL AND deleted_at < ?",
+        (cutoff_iso,)
+    ).fetchall()
+    for row in old_ids:
+        aid = row[0]
+        conn.execute("DELETE FROM asset_versions WHERE asset_id = ?", (aid,))
+        conn.execute("DELETE FROM library_assets WHERE id = ?", (aid,))
+
+    if old_ids:
+        conn.commit()
 
 
 def get_library_meta(key: str, db=None) -> Optional[str]:
@@ -642,7 +825,7 @@ def save_asset(
     file_name = f"{asset_id}.sopdrop"
     file_path = get_library_assets_dir() / file_name
     package_json = json.dumps(package_data, separators=(',', ':'))
-    file_path.write_text(package_json)
+    _atomic_write_text(file_path, package_json)
 
     # Calculate hash and size
     import hashlib
@@ -654,24 +837,34 @@ def save_asset(
     if thumbnail_data:
         thumb_name = f"{asset_id}.png"
         thumb_file = get_library_thumbnails_dir() / thumb_name
-        thumb_file.write_bytes(thumbnail_data)
+        _atomic_write_bytes(thumb_file, thumbnail_data)
         thumbnail_path = thumb_name
 
     # Extract metadata
     metadata = package_data.get('metadata', {})
     tags = tags or []
 
+    # Generate shareable slug
+    slug = _generate_slug(name, db=db)
+
+    # Get creator name
+    try:
+        import getpass
+        created_by = getpass.getuser()
+    except Exception:
+        created_by = None
+
     # Insert asset record
     db.execute("""
         INSERT INTO library_assets (
             id, name, description, context, file_path, file_hash, file_size,
-            thumbnail_path, icon, node_count, node_types, node_names, tags,
+            thumbnail_path, icon, slug, node_count, node_types, node_names, tags,
             houdini_version, has_hda_dependencies, dependencies, metadata,
-            created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_by, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         asset_id, name, description, context, file_name, file_hash, file_size,
-        thumbnail_path, icon,
+        thumbnail_path, icon, slug,
         metadata.get('node_count', 0),
         json.dumps(metadata.get('node_types', [])),
         json.dumps(metadata.get('node_names', [])),
@@ -680,7 +873,7 @@ def save_asset(
         1 if metadata.get('has_hda_dependencies') else 0,
         json.dumps(package_data.get('dependencies', [])),
         json.dumps(metadata),
-        now, now
+        created_by, now, now
     ))
 
     # Insert tags for indexing
@@ -739,7 +932,7 @@ def save_hda(
     file_name = f"{asset_id}.hda"
     dest_path = get_library_assets_dir() / file_name
 
-    shutil.copy2(source_path, dest_path)
+    _atomic_copy(source_path, dest_path)
 
     # Calculate hash and size
     import hashlib
@@ -753,7 +946,7 @@ def save_hda(
     if thumbnail_data:
         thumb_name = f"{asset_id}.png"
         thumb_file = get_library_thumbnails_dir() / thumb_name
-        thumb_file.write_bytes(thumbnail_data)
+        _atomic_write_bytes(thumb_file, thumbnail_data)
         thumbnail_path = thumb_name
 
     # Get context from category
@@ -767,21 +960,31 @@ def save_hda(
 
     tags = tags or []
 
+    # Generate shareable slug
+    slug = _generate_slug(name, db=db)
+
     # Detect license type for HDA compatibility tracking
     license_type = detect_houdini_license()
+
+    # Get creator name
+    try:
+        import getpass
+        created_by = getpass.getuser()
+    except Exception:
+        created_by = None
 
     # Insert asset record with HDA-specific fields
     db.execute("""
         INSERT INTO library_assets (
             id, name, description, context, asset_type, file_path, file_hash, file_size,
-            thumbnail_path, icon, node_count, node_types, node_names, tags,
+            thumbnail_path, icon, slug, node_count, node_types, node_names, tags,
             houdini_version, has_hda_dependencies, dependencies, metadata,
             hda_type_name, hda_type_label, hda_version, hda_category,
-            license_type, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            license_type, created_by, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         asset_id, name, description, context, 'hda', file_name, file_hash, file_size,
-        thumbnail_path, icon,
+        thumbnail_path, icon, slug,
         1,  # node_count = 1 for HDA
         json.dumps([hda_info.get('type_name', '')]),
         json.dumps([name]),
@@ -799,7 +1002,7 @@ def save_hda(
         hda_info.get('type_label'),
         hda_info.get('version'),
         hda_info.get('category'),
-        license_type, now, now
+        license_type, created_by, now, now
     ))
 
     # Insert tags for indexing
@@ -883,6 +1086,67 @@ def get_asset(asset_id: str) -> Optional[Dict[str, Any]]:
     return asset
 
 
+def get_asset_by_slug(slug: str) -> Optional[Dict[str, Any]]:
+    """Get an asset by its shareable slug."""
+    db = get_db()
+    row = db.execute("SELECT * FROM library_assets WHERE slug = ?", (slug,)).fetchone()
+    if row is None:
+        return None
+
+    asset = dict_from_row(row)
+
+    # Parse JSON fields
+    for field in ('node_types', 'node_names', 'tags', 'dependencies', 'metadata'):
+        if asset.get(field):
+            try:
+                asset[field] = json.loads(asset[field])
+            except json.JSONDecodeError:
+                asset[field] = []
+
+    # Get collections this asset belongs to
+    colls = db.execute("""
+        SELECT c.* FROM collections c
+        JOIN collection_assets ca ON c.id = ca.collection_id
+        WHERE ca.asset_id = ?
+        ORDER BY c.name
+    """, (asset['id'],)).fetchall()
+    asset['collections'] = [dict_from_row(c) for c in colls]
+
+    return asset
+
+
+def get_asset_by_remote_slug(remote_slug: str) -> Optional[Dict[str, Any]]:
+    """Get a local asset that was synced from the given remote slug."""
+    db = get_db()
+    row = db.execute(
+        "SELECT * FROM library_assets WHERE remote_slug = ? AND deleted_at IS NULL",
+        (remote_slug,)
+    ).fetchone()
+    if row is None:
+        return None
+
+    asset = dict_from_row(row)
+
+    # Parse JSON fields
+    for field in ('node_types', 'node_names', 'tags', 'dependencies', 'metadata'):
+        if asset.get(field):
+            try:
+                asset[field] = json.loads(asset[field])
+            except json.JSONDecodeError:
+                asset[field] = []
+
+    # Get collections this asset belongs to
+    colls = db.execute("""
+        SELECT c.* FROM collections c
+        JOIN collection_assets ca ON c.id = ca.collection_id
+        WHERE ca.asset_id = ?
+        ORDER BY c.name
+    """, (asset['id'],)).fetchall()
+    asset['collections'] = [dict_from_row(c) for c in colls]
+
+    return asset
+
+
 def load_asset_package(asset_id: str) -> Optional[Dict[str, Any]]:
     """Load the full package data for an asset."""
     asset = get_asset(asset_id)
@@ -906,7 +1170,7 @@ def update_asset_package(asset_id: str, package_data: Dict[str, Any]) -> bool:
     if not file_path.exists():
         return False
 
-    file_path.write_text(json.dumps(package_data, indent=2))
+    _atomic_write_text(file_path, json.dumps(package_data, indent=2))
 
     # Update file hash and size
     import hashlib
@@ -926,11 +1190,15 @@ def update_asset(asset_id: str, **kwargs) -> Optional[Dict[str, Any]]:
     """Update asset metadata."""
     db = get_db()
 
-    allowed = {'name', 'description', 'tags', 'thumbnail_path'}
+    allowed = {'name', 'description', 'tags', 'thumbnail_path', 'slug'}
     updates = {k: v for k, v in kwargs.items() if k in allowed}
 
     if not updates:
         return get_asset(asset_id)
+
+    # Regenerate slug when name changes
+    if 'name' in updates and 'slug' not in updates:
+        updates['slug'] = _generate_slug(updates['name'], db=db)
 
     # Handle tags specially
     if 'tags' in updates:
@@ -968,7 +1236,7 @@ def update_asset_thumbnail(asset_id: str, thumbnail_data: bytes) -> bool:
 
     thumb_name = f"{asset_id}.png"
     thumb_file = get_library_thumbnails_dir() / thumb_name
-    thumb_file.write_bytes(thumbnail_data)
+    _atomic_write_bytes(thumb_file, thumbnail_data)
 
     return update_asset(asset_id, thumbnail_path=thumb_name) is not None
 
@@ -1019,8 +1287,7 @@ def save_asset_version(
         snapshot_name = f"{asset_id}_v1.0.0.sopdrop"
         snapshot_path = get_library_assets_dir() / snapshot_name
         if not snapshot_path.exists():
-            import shutil
-            shutil.copy2(str(file_path), str(snapshot_path))
+            _atomic_copy(file_path, snapshot_path)
             # Create initial version record for the original
             init_version_id = str(uuid.uuid4())
             db.execute("""
@@ -1037,7 +1304,7 @@ def save_asset_version(
 
     # Write new package data
     package_json = json.dumps(package_data, separators=(',', ':'))
-    file_path.write_text(package_json)
+    _atomic_write_text(file_path, package_json)
 
     # Calculate new hash and size
     file_hash = hashlib.sha256(package_json.encode()).hexdigest()
@@ -1048,7 +1315,7 @@ def save_asset_version(
     if thumbnail_data:
         thumb_name = f"{asset_id}.png"
         thumb_file = get_library_thumbnails_dir() / thumb_name
-        thumb_file.write_bytes(thumbnail_data)
+        _atomic_write_bytes(thumb_file, thumbnail_data)
         thumbnail_path = thumb_name
 
     # Extract metadata from new package
@@ -1106,7 +1373,7 @@ def save_asset_version(
         # Save a snapshot file for this version
         snapshot_name = f"{asset_id}_v{next_version}.sopdrop"
         snapshot_path = get_library_assets_dir() / snapshot_name
-        snapshot_path.write_text(package_json)
+        _atomic_write_text(snapshot_path, package_json)
 
         version_id = str(uuid.uuid4())
         db.execute("""
@@ -1207,7 +1474,7 @@ def revert_to_version(asset_id: str, version_id: str) -> Optional[Dict[str, Any]
         cur_ver = "1.0.0"
 
     # Copy the version snapshot to the current file
-    shutil.copy2(str(version_file), str(current_file))
+    _atomic_copy(version_file, current_file)
 
     # Read the restored package for metadata
     package_data = json.loads(current_file.read_text())
@@ -1235,7 +1502,7 @@ def revert_to_version(asset_id: str, version_id: str) -> Optional[Dict[str, Any]
         next_version = _increment_version(cur_ver)
         snapshot_name = f"{asset_id}_v{next_version}.sopdrop"
         snapshot_path = get_library_assets_dir() / snapshot_name
-        shutil.copy2(str(current_file), str(snapshot_path))
+        _atomic_copy(current_file, snapshot_path)
 
         revert_id = str(uuid.uuid4())
         db.execute("""
@@ -1263,6 +1530,7 @@ def save_vex_snippet(
     tags: List[str] = None,
     collection_id: str = None,
     snippet_type: str = "wrangle",
+    icon: str = None,
 ) -> Dict[str, Any]:
     """
     Save a VEX snippet to the library.
@@ -1274,6 +1542,7 @@ def save_vex_snippet(
         tags: List of tags for organization
         collection_id: Optional collection to add to
         snippet_type: Type of snippet (wrangle, expression, etc.)
+        icon: Houdini icon name (e.g., 'SOP_attribwrangle')
 
     Returns:
         The saved asset record
@@ -1300,7 +1569,222 @@ def save_vex_snippet(
         description=description,
         tags=tags,
         collection_ids=collection_ids,
+        icon=icon,
     )
+
+
+def detect_path_metadata(file_path: str) -> Dict[str, Any]:
+    """
+    Detect metadata about a file path (type, resolution, channels).
+
+    Uses fallback chain: OpenImageIO -> Pillow -> Qt QImage.
+    """
+    import os
+    result = {
+        "file_type": os.path.splitext(file_path)[1].lstrip('.').lower(),
+        "resolution": None,
+        "channels": None,
+    }
+
+    # Try OpenImageIO first (best for EXR/HDR)
+    try:
+        import OpenImageIO as oiio
+        inp = oiio.ImageInput.open(file_path)
+        if inp:
+            spec = inp.spec()
+            result["resolution"] = f"{spec.width}x{spec.height}"
+            result["channels"] = spec.nchannels
+            inp.close()
+            return result
+    except (ImportError, Exception):
+        pass
+
+    # Try Pillow
+    try:
+        from PIL import Image
+        with Image.open(file_path) as img:
+            w, h = img.size
+            result["resolution"] = f"{w}x{h}"
+            mode_channels = {'L': 1, 'LA': 2, 'RGB': 3, 'RGBA': 4}
+            result["channels"] = mode_channels.get(img.mode)
+            return result
+    except (ImportError, Exception):
+        pass
+
+    # Try Qt QImage
+    try:
+        from PySide2 import QtGui
+    except ImportError:
+        try:
+            from PySide6 import QtGui
+        except ImportError:
+            return result
+    try:
+        img = QtGui.QImage(file_path)
+        if not img.isNull():
+            result["resolution"] = f"{img.width()}x{img.height()}"
+    except Exception:
+        pass
+
+    return result
+
+
+def generate_path_thumbnail(file_path: str, max_size: int = 512) -> Optional[bytes]:
+    """
+    Generate a PNG thumbnail for a file path.
+
+    Fallback chain: OpenImageIO (EXR/HDR tonemapping) -> Pillow -> Qt QImage.
+    Returns PNG bytes or None.
+    """
+    import os
+    import tempfile
+
+    # Try OpenImageIO first (handles EXR/HDR with tonemapping)
+    try:
+        import OpenImageIO as oiio
+        import numpy as np
+        inp = oiio.ImageInput.open(file_path)
+        if inp:
+            spec = inp.spec()
+            pixels = inp.read_image(format=oiio.FLOAT)
+            inp.close()
+            if pixels is not None:
+                pixels = np.array(pixels).reshape(spec.height, spec.width, spec.nchannels)
+                # Apply gamma 2.2 tonemapping for HDR
+                rgb = pixels[:, :, :min(3, spec.nchannels)]
+                rgb = np.clip(rgb, 0, None)
+                rgb = np.power(rgb / (1 + rgb), 1.0 / 2.2)  # Reinhard + gamma
+                rgb = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
+                # Resize
+                h, w = rgb.shape[:2]
+                if max(w, h) > max_size:
+                    scale_f = max_size / max(w, h)
+                    new_w, new_h = int(w * scale_f), int(h * scale_f)
+                    # Use OIIO resize
+                    buf = oiio.ImageBuf(oiio.ImageSpec(w, h, 3, oiio.UINT8))
+                    buf.set_pixels(oiio.ROI(0, w, 0, h, 0, 1, 0, 3), rgb)
+                    resized = oiio.ImageBuf()
+                    oiio.ImageBufAlgo.resize(resized, buf, roi=oiio.ROI(0, new_w, 0, new_h, 0, 1, 0, 3))
+                    rgb = resized.get_pixels(format=oiio.UINT8)
+                # Write to PNG bytes via temp file
+                tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+                tmp_path = tmp.name
+                tmp.close()
+                try:
+                    out_buf = oiio.ImageBuf(oiio.ImageSpec(rgb.shape[1], rgb.shape[0], 3, oiio.UINT8))
+                    out_buf.set_pixels(oiio.ROI(0, rgb.shape[1], 0, rgb.shape[0], 0, 1, 0, 3), rgb)
+                    out_buf.write(tmp_path)
+                    with open(tmp_path, 'rb') as f:
+                        return f.read()
+                finally:
+                    os.unlink(tmp_path)
+    except (ImportError, Exception):
+        pass
+
+    # Try Pillow
+    try:
+        from PIL import Image
+        import io
+        with Image.open(file_path) as img:
+            img.thumbnail((max_size, max_size), Image.LANCZOS)
+            if img.mode not in ('RGB', 'RGBA'):
+                img = img.convert('RGB')
+            buf = io.BytesIO()
+            img.save(buf, format='PNG')
+            return buf.getvalue()
+    except (ImportError, Exception):
+        pass
+
+    # Try Qt QImage
+    try:
+        from PySide2 import QtGui, QtCore as _qc
+    except ImportError:
+        try:
+            from PySide6 import QtGui, QtCore as _qc
+        except ImportError:
+            return None
+    try:
+        img = QtGui.QImage(file_path)
+        if not img.isNull():
+            scaled = img.scaled(max_size, max_size, _qc.Qt.KeepAspectRatio, _qc.Qt.SmoothTransformation)
+            import io
+            buf = _qc.QBuffer()
+            buf.open(_qc.QIODevice.WriteOnly)
+            scaled.save(buf, "PNG")
+            return bytes(buf.data())
+    except Exception:
+        pass
+
+    return None
+
+
+def save_path_asset(
+    name: str,
+    file_path: str,
+    description: str = "",
+    tags: List[str] = None,
+    thumbnail_data: bytes = None,
+    collection_id: str = None,
+    icon: str = None,
+    path_metadata: Dict[str, Any] = None,
+) -> Dict[str, Any]:
+    """
+    Save a file path asset to the library.
+
+    Args:
+        name: Display name for the path asset
+        file_path: Absolute path to the file (HDRI, texture, etc.)
+        description: Optional description
+        tags: List of tags for organization
+        thumbnail_data: PNG image bytes for thumbnail
+        collection_id: Optional collection to add to
+        icon: Houdini icon name (default: MISC_file)
+        path_metadata: Dict with file_type, resolution, channels
+
+    Returns:
+        The saved asset record
+    """
+    import os
+
+    if path_metadata is None:
+        path_metadata = detect_path_metadata(file_path)
+
+    package_data = {
+        "format": "sopdrop-path-v1",
+        "context": "path",
+        "metadata": {
+            "file_path": file_path,
+            "file_name": os.path.basename(file_path),
+            "file_type": path_metadata.get("file_type", ""),
+            "resolution": path_metadata.get("resolution"),
+            "channels": path_metadata.get("channels"),
+        },
+    }
+
+    # Auto-generate thumbnail if not provided
+    if thumbnail_data is None:
+        thumbnail_data = generate_path_thumbnail(file_path)
+
+    collection_ids = [collection_id] if collection_id else None
+
+    return save_asset(
+        name=name,
+        context="path",
+        package_data=package_data,
+        description=description,
+        tags=tags,
+        thumbnail_data=thumbnail_data,
+        collection_ids=collection_ids,
+        icon=icon or "MISC_file",
+    )
+
+
+def get_path_file_path(asset_id: str) -> Optional[str]:
+    """Get the stored file path from a path asset."""
+    package = load_asset_package(asset_id)
+    if package and package.get('metadata'):
+        return package['metadata'].get('file_path')
+    return None
 
 
 def record_asset_use(asset_id: str):
@@ -1316,30 +1800,150 @@ def record_asset_use(asset_id: str):
 
 
 def delete_asset(asset_id: str):
-    """Delete an asset from the library."""
+    """Soft-delete an asset: move files to trash/ and set deleted_at."""
     asset = get_asset(asset_id)
     if not asset:
         return
 
     db = get_db()
+    trash_dir = get_library_trash_dir()
+    trash_dir.mkdir(parents=True, exist_ok=True)
 
-    # Delete files
+    # Move main asset file to trash
     file_path = get_library_assets_dir() / asset['file_path']
     if file_path.exists():
-        file_path.unlink()
+        shutil.move(str(file_path), str(trash_dir / file_path.name))
 
+    # Move thumbnail to trash
     if asset.get('thumbnail_path'):
         thumb_path = get_library_thumbnails_dir() / asset['thumbnail_path']
         if thumb_path.exists():
-            thumb_path.unlink()
+            shutil.move(str(thumb_path), str(trash_dir / thumb_path.name))
 
-    # Delete from database (cascades to collection_assets and asset_tags)
+    # Move version snapshot files ({id}_v*.sopdrop) to trash
+    assets_dir = get_library_assets_dir()
+    for f in assets_dir.glob(f"{asset_id}_v*.sopdrop"):
+        shutil.move(str(f), str(trash_dir / f.name))
+
+    # Remove from collections and tags (cheap to rebuild on restore)
+    db.execute("DELETE FROM collection_assets WHERE asset_id = ?", (asset_id,))
+    db.execute("DELETE FROM asset_tags WHERE asset_id = ?", (asset_id,))
+
+    # Mark as deleted instead of removing
+    now = datetime.utcnow().isoformat()
+    db.execute("UPDATE library_assets SET deleted_at = ? WHERE id = ?", (now, asset_id))
+    db.commit()
+
+    # Trigger menu regeneration
+    _trigger_menu_regenerate(skip_reload=False)
+
+
+def restore_asset(asset_id: str):
+    """Restore a soft-deleted asset from trash."""
+    asset = get_asset(asset_id)
+    if not asset or not asset.get('deleted_at'):
+        return
+
+    db = get_db()
+    trash_dir = get_library_trash_dir()
+    assets_dir = get_library_assets_dir()
+    thumbs_dir = get_library_thumbnails_dir()
+
+    # Move main asset file back from trash
+    file_name = asset['file_path']
+    trashed_file = trash_dir / file_name
+    if trashed_file.exists():
+        shutil.move(str(trashed_file), str(assets_dir / file_name))
+
+    # Move thumbnail back
+    if asset.get('thumbnail_path'):
+        thumb_name = asset['thumbnail_path']
+        trashed_thumb = trash_dir / thumb_name
+        if trashed_thumb.exists():
+            shutil.move(str(trashed_thumb), str(thumbs_dir / thumb_name))
+
+    # Move version snapshot files back
+    for f in trash_dir.glob(f"{asset_id}_v*.sopdrop"):
+        shutil.move(str(f), str(assets_dir / f.name))
+
+    # Clear deleted_at
+    db.execute("UPDATE library_assets SET deleted_at = NULL WHERE id = ?", (asset_id,))
+
+    # Regenerate slug (may collide if a new asset took the same name)
+    slug = _generate_slug(asset['name'], db=db)
+    db.execute("UPDATE library_assets SET slug = ? WHERE id = ?", (slug, asset_id))
+
+    # Rebuild asset_tags from the stored JSON tags field
+    tags = asset.get('tags') or []
+    if isinstance(tags, str):
+        try:
+            tags = json.loads(tags)
+        except (json.JSONDecodeError, TypeError):
+            tags = []
+    for tag in tags:
+        db.execute(
+            "INSERT OR IGNORE INTO asset_tags (asset_id, tag) VALUES (?, ?)",
+            (asset_id, tag.lower()),
+        )
+
+    db.commit()
+    _trigger_menu_regenerate(skip_reload=False)
+
+
+def purge_asset(asset_id: str):
+    """Permanently delete a trashed asset (files + DB row)."""
+    asset = get_asset(asset_id)
+    if not asset:
+        return
+
+    db = get_db()
+    trash_dir = get_library_trash_dir()
+
+    # Delete files from trash
+    file_name = asset['file_path']
+    trashed_file = trash_dir / file_name
+    if trashed_file.exists():
+        trashed_file.unlink()
+
+    if asset.get('thumbnail_path'):
+        trashed_thumb = trash_dir / asset['thumbnail_path']
+        if trashed_thumb.exists():
+            trashed_thumb.unlink()
+
+    # Delete version snapshots from trash
+    for f in trash_dir.glob(f"{asset_id}_v*.sopdrop"):
+        f.unlink()
+
+    # Delete version records and then the asset row
+    db.execute("DELETE FROM asset_versions WHERE asset_id = ?", (asset_id,))
     db.execute("DELETE FROM library_assets WHERE id = ?", (asset_id,))
     db.commit()
 
-    # Trigger menu regeneration — skip_reload=False so Houdini picks up
-    # the removal immediately (deletes happen outside modal dialogs).
-    _trigger_menu_regenerate(skip_reload=False)
+
+def list_trashed_assets() -> List[Dict[str, Any]]:
+    """List all soft-deleted assets, newest deletion first."""
+    db = get_db()
+    rows = db.execute(
+        "SELECT * FROM library_assets WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC"
+    ).fetchall()
+
+    assets = []
+    for row in rows:
+        asset = dict_from_row(row)
+        for field in ('node_types', 'node_names', 'tags', 'dependencies', 'metadata'):
+            if asset.get(field):
+                try:
+                    asset[field] = json.loads(asset[field])
+                except json.JSONDecodeError:
+                    asset[field] = []
+        assets.append(asset)
+    return assets
+
+
+def empty_trash():
+    """Permanently delete all trashed assets."""
+    for asset in list_trashed_assets():
+        purge_asset(asset['id'])
 
 
 # ==============================================================================
@@ -1381,7 +1985,7 @@ def get_collection_assets(collection_id: str) -> List[Dict[str, Any]]:
     rows = db.execute("""
         SELECT a.* FROM library_assets a
         JOIN collection_assets ca ON a.id = ca.asset_id
-        WHERE ca.collection_id = ?
+        WHERE ca.collection_id = ? AND a.deleted_at IS NULL
         ORDER BY ca.sort_order, a.name
     """, (collection_id,)).fetchall()
 
@@ -1434,6 +2038,7 @@ def search_assets(
     sort_order: str = "desc",
     limit: int = 100,
     offset: int = 0,
+    favorites_only: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Search assets with filtering.
@@ -1457,6 +2062,13 @@ def search_assets(
     conditions = []
     params = []
     joins = []
+
+    # Exclude trashed assets
+    conditions.append("library_assets.deleted_at IS NULL")
+
+    # Favorites filter
+    if favorites_only:
+        conditions.append("library_assets.is_favorite = 1")
 
     # Text search - use simple LIKE for reliability
     if query:
@@ -1530,10 +2142,12 @@ def get_all_tags() -> List[Dict[str, Any]]:
     """Get all unique tags with usage counts."""
     db = get_db()
     rows = db.execute("""
-        SELECT tag, COUNT(*) as count
-        FROM asset_tags
-        GROUP BY tag
-        ORDER BY count DESC, tag ASC
+        SELECT t.tag, COUNT(*) as count
+        FROM asset_tags t
+        JOIN library_assets a ON t.asset_id = a.id
+        WHERE a.deleted_at IS NULL
+        GROUP BY t.tag
+        ORDER BY count DESC, t.tag ASC
     """).fetchall()
     return [{'tag': r[0], 'count': r[1]} for r in rows]
 
@@ -1546,6 +2160,7 @@ def get_all_artists() -> List[Dict[str, Any]]:
                COUNT(*) as count
         FROM library_assets
         WHERE remote_slug IS NOT NULL AND remote_slug LIKE '%/%'
+              AND deleted_at IS NULL
         GROUP BY artist
         ORDER BY count DESC, artist ASC
     """).fetchall()
@@ -1560,6 +2175,24 @@ def get_recent_assets(limit: int = 10) -> List[Dict[str, Any]]:
 def get_frequent_assets(limit: int = 10) -> List[Dict[str, Any]]:
     """Get most frequently used assets."""
     return search_assets(sort_by='use_count', sort_order='desc', limit=limit)
+
+
+def toggle_favorite(asset_id: str) -> bool:
+    """Toggle favorite status for an asset. Returns new is_favorite state."""
+    db = get_db()
+    row = db.execute("SELECT is_favorite FROM library_assets WHERE id = ?", (asset_id,)).fetchone()
+    if row is None:
+        return False
+    current = row[0] if isinstance(row, (tuple, list)) else row['is_favorite']
+    new_val = 0 if current else 1
+    db.execute("UPDATE library_assets SET is_favorite = ? WHERE id = ?", (new_val, asset_id))
+    db.commit()
+    return bool(new_val)
+
+
+def get_favorite_assets(limit: int = 50) -> List[Dict[str, Any]]:
+    """Get favorited assets."""
+    return search_assets(favorites_only=True, sort_by='updated_at', sort_order='desc', limit=limit)
 
 
 # ==============================================================================
@@ -1673,26 +2306,24 @@ def get_library_stats() -> Dict[str, Any]:
     """Get library statistics."""
     db = get_db()
 
-    asset_count = db.execute("SELECT COUNT(*) FROM library_assets").fetchone()[0]
+    asset_count = db.execute("SELECT COUNT(*) FROM library_assets WHERE deleted_at IS NULL").fetchone()[0]
     collection_count = db.execute("SELECT COUNT(*) FROM collections").fetchone()[0]
-    tag_count = db.execute("SELECT COUNT(DISTINCT tag) FROM asset_tags").fetchone()[0]
+    tag_count = db.execute("""
+        SELECT COUNT(DISTINCT t.tag) FROM asset_tags t
+        JOIN library_assets a ON t.asset_id = a.id
+        WHERE a.deleted_at IS NULL
+    """).fetchone()[0]
 
-    # Size calculation
-    assets_dir = get_library_assets_dir()
-    thumbs_dir = get_library_thumbnails_dir()
-
-    total_size = 0
-    for f in assets_dir.iterdir():
-        if f.is_file():
-            total_size += f.stat().st_size
-    for f in thumbs_dir.iterdir():
-        if f.is_file():
-            total_size += f.stat().st_size
+    # Size from DB (avoids expensive disk iteration on network drives)
+    total_size = db.execute(
+        "SELECT COALESCE(SUM(file_size), 0) FROM library_assets WHERE deleted_at IS NULL"
+    ).fetchone()[0]
 
     # Context breakdown
     context_counts = db.execute("""
         SELECT context, COUNT(*) as count
         FROM library_assets
+        WHERE deleted_at IS NULL
         GROUP BY context
         ORDER BY count DESC
     """).fetchall()
