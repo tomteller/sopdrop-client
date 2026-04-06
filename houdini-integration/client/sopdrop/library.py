@@ -2153,14 +2153,28 @@ def get_all_tags() -> List[Dict[str, Any]]:
 
 
 def get_all_artists() -> List[Dict[str, Any]]:
-    """Get all unique artists (from remote_slug user/name) with asset counts."""
+    """Get all unique artists with asset counts.
+
+    Uses remote_slug user prefix for cloud assets, falls back to created_by for local assets.
+    """
     db = get_db()
     rows = db.execute("""
-        SELECT SUBSTR(remote_slug, 1, INSTR(remote_slug, '/') - 1) as artist,
-               COUNT(*) as count
-        FROM library_assets
-        WHERE remote_slug IS NOT NULL AND remote_slug LIKE '%/%'
-              AND deleted_at IS NULL
+        SELECT artist, SUM(count) as count FROM (
+            SELECT SUBSTR(remote_slug, 1, INSTR(remote_slug, '/') - 1) as artist,
+                   COUNT(*) as count
+            FROM library_assets
+            WHERE remote_slug IS NOT NULL AND remote_slug LIKE '%/%'
+                  AND deleted_at IS NULL
+            GROUP BY artist
+            UNION ALL
+            SELECT created_by as artist,
+                   COUNT(*) as count
+            FROM library_assets
+            WHERE (remote_slug IS NULL OR remote_slug NOT LIKE '%/%')
+                  AND created_by IS NOT NULL
+                  AND deleted_at IS NULL
+            GROUP BY created_by
+        )
         GROUP BY artist
         ORDER BY count DESC, artist ASC
     """).fetchall()

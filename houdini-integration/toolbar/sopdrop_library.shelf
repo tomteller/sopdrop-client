@@ -1,0 +1,1255 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Sopdrop Library TAB Menu Tools
+  Auto-generated on 2026-04-05 21:42:33
+
+  This file is regenerated when your library changes.
+  Do not edit manually.
+-->
+<shelfDocument>
+
+  <tool name="sopdrop_lib_e0918dc3_7023_4150_9c22_effb364c588b" label="(SD) Series of cubes" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[4 cubes]]></helpText>
+    <toolSubmenu>Sopdrop/Personal/Cloud Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("e0918dc3-7023-4150-9c22-effb364c588b")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>series of cubes,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_47fb5638_d8b9_41e2_bd81_37c76b4b8bba" label="(SD) test1234" icon="LOP_material">
+    <helpText><![CDATA[Paste test1234 from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Personal/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("47fb5638-d8b9-41e2-bd81-37c76b4b8bba")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>test1234,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_c46a266f_4ccd_4b4e_bed7_e39fba2fbf0c" label="(SD) Sop_create_test" icon="SOP_attribwrangle">
+    <helpText><![CDATA[Paste Sop_create_test from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Personal/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("c46a266f-4ccd-4b4e-bed7-e39fba2fbf0c")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>sop_create_test,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_5d740b5d_683e_47fc_a76f_ac0f34c8e643" label="(SD) Dots and Stickies!" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Paste Dots and Stickies! from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Personal/Cloud Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("5d740b5d-683e-47fc-a76f-ac0f34c8e643")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>dots and stickies!,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_f9e6eb2f_e412_411d_8fac_cc5666aa2600" label="(SD) Patch of Grass" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Simple patch of grass made in SOPS with lines and copy to points.]]></helpText>
+    <toolSubmenu>Sopdrop/Personal/Cloud Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("f9e6eb2f-e412-411d-8fac-cc5666aa2600")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>patch of grass,sopdrop,sop,sops,grass</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_4b16785b_bf46_4af5_815c_e58736fd0aad" label="(SD) Tom Mini R&amp;D Template" icon="LOP_merge">
+    <helpText><![CDATA[Paste Tom Mini R&amp;D Template from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Personal/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("4b16785b-bf46-4af5-815c-e58736fd0aad")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>tom mini r&amp;d template,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_bed1562e_2aa4_43c8_b389_2aa27a035dab" label="(SD) Tom R&amp;D Template" icon="ROP_mantra">
+    <helpText><![CDATA[Paste Tom R&amp;D Template from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Personal/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("bed1562e-2aa4-43c8-b389-2aa27a035dab")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>tom r&amp;d template,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_e45510e2_e2fd_47b3_b8a0_2597da1eeca5" label="(SD) Sticky test 4" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Paste Sticky test 4 from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Personal/Cloud Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("e45510e2-e2fd-47b3-b8a0-2597da1eeca5")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>sticky test 4,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_4cc4f5d0_8152_4058_87fe_549c22e9e73a" label="(SD) sticky test" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Paste sticky test from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Personal/Cloud Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("4cc4f5d0-8152-4058-87fe-549c22e9e73a")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>sticky test,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_708cbcf6_fa08_4b7c_875a_c503a679a8b9" label="(SD) Sticky test 3" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Paste Sticky test 3 from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Personal/Cloud Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("708cbcf6-fa08-4b7c-875a-c503a679a8b9")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>sticky test 3,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_c4f62bcc_3b4a_404b_86f4_1f8866d070d8" label="(SD) sticky test 2" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Paste sticky test 2 from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Personal/Cloud Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("c4f62bcc-3b4a-404b-86f4-1f8866d070d8")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>sticky test 2,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_b6194c6e_db7f_464c_bd57_5242572e4e75" label="(SD) sticky test" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Paste sticky test from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Personal/Toms Stuff</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("b6194c6e-db7f-464c-bd57-5242572e4e75")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>sticky test,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_2d10d7f9_5cda_4780_998d_864e11692cde" label="(SD) asdfaksdfkasd" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Paste asdfaksdfkasd from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Personal/Cloud Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("2d10d7f9-5cda-4780-998d-864e11692cde")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>asdfaksdfkasd,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_cc12cbf8_0dfb_4599_bf5b_3afb6c0b3f94" label="(SD) SOP Flower Sim" icon="SOP_scatter">
+    <helpText><![CDATA[Paste SOP Flower Sim from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Personal/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("cc12cbf8-0dfb-4599-bf5b-3afb6c0b3f94")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>sop flower sim,sopdrop,sop,flower,sops</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_522aaaa5_b5f9_420a_bc56_fb9fc5605888" label="(SD) SOP Flower" icon="SOP_scatter">
+    <helpText><![CDATA[SOP Flower]]></helpText>
+    <toolSubmenu>Sopdrop/Personal/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("522aaaa5-b5f9-420a-bc56-fb9fc5605888")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>sop flower,sopdrop,sop,flower,sops</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_19276824_dcde_4be7_8609_566d7f1d3562" label="(SD) Testetestset" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Paste Testetestset from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Personal/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("19276824-dcde-4be7-8609-566d7f1d3562")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>testetestset,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_6866058a_8e64_42a1_a852_42a13d170373" label="(SD) Test asset" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Paste Test asset from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Personal/Cloud Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("6866058a-8e64-42a1-a852-42a13d170373")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>test asset,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_b235442d_c91f_4266_9731_37b923299470" label="(SD) Tommy 2!" icon="SOP_attribwrangle">
+    <helpText><![CDATA[Paste Tommy 2! from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Personal/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("b235442d-c91f-4266-9731-37b923299470")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>tommy 2!,sopdrop,lop,characters</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_ed65713a_db81_424c_9af8_9cec3548dc0a" label="(SD) Tommy Test" icon="LOP_material">
+    <helpText><![CDATA[Paste Tommy Test from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Personal/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("ed65713a-db81-424c-9af8-9cec3548dc0a")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>tommy test,sopdrop,lop,characters</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_280ca96c_67ef_4914_ab3a_e2357c4bac0c" label="(SD) Configure High/Low Res Agent" icon="CHOP_agent">
+    <helpText><![CDATA[Configure USD Skel character with High/Low Res Agent]]></helpText>
+    <toolSubmenu>Sopdrop/Team/LOP</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("280ca96c-67ef-4914-ab3a-e2357c4bac0c")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>configure high/low res agent,sopdrop,lop,lops</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_50dd5bfa_e762_4e8a_9370_35eea3ac3bf1" label="(SD) SOP Caustics / Photon Mapper" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[annotated example scene / setup for using the photonmap raytracer in sops to get physically accurate refraction !]]></helpText>
+    <toolSubmenu>Sopdrop/Team/SOP</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("50dd5bfa-e762-4e8a-9370-35eea3ac3bf1")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>sop caustics / photon mapper,sopdrop,sop,sops,caustics</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_bd2b1f69_c4ee_4e24_bcc6_e5bca07bfdf3" label="(SD) Smooth SDF Blend" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[SDF blending using smin function as seen here: https://iquilezles.org/articles/smin/]]></helpText>
+    <toolSubmenu>Sopdrop/Team/SOP</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("bd2b1f69-c4ee-4e24-bcc6-e5bca07bfdf3")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>smooth sdf blend,sopdrop,sop,sops</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_917ac0bb_c384_4d3b_a8cd_ed59a4196a8a" label="(SD) Volume/VDB Lerp" icon="DOP_volume">
+    <helpText><![CDATA[super WIP but placing this here so i dont forget to finish it]]></helpText>
+    <toolSubmenu>Sopdrop/Team/SOP</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("917ac0bb-c384-4d3b-a8cd-ed59a4196a8a")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>volume/vdb lerp,sopdrop,sop,volumes,sops</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_da0fcd1b_87f1_49cd_90f1_2f6aee424e90" label="(SD) Remove Packed Rotation" icon="COP_wrangle">
+    <helpText><![CDATA[Remove Packed Rotation - BIG BRAIN]]></helpText>
+    <toolSubmenu>Sopdrop/Team/VEX</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("da0fcd1b-87f1-49cd-90f1-2f6aee424e90")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>remove packed rotation,sopdrop,sop,vex,sops</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_edf02557_fcca_46b7_9697_0f8b645a761a" label="(SD) Procedural Seats Setup" icon="OBJ_autorig_leg">
+    <helpText><![CDATA[Procedural Seats Setup]]></helpText>
+    <toolSubmenu>Sopdrop/Team/SOP</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("edf02557-fcca-46b7-9697-0f8b645a761a")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>procedural seats setup,sopdrop,sop,sops</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_870fe416_f637_4744_a711_25f1a9c0e083" label="(SD) Window Generator" icon="COP2_window">
+    <helpText><![CDATA[needs to be a bit nicer but a quick way to make some windows from a plane]]></helpText>
+    <toolSubmenu>Sopdrop/Team/SOP</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("870fe416-f637-4744-a711-25f1a9c0e083")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>window generator,sopdrop,sop,sops</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_3b3ce3b5_ad54_4c60_9d7a_95af3ba99558" label="(SD) Dune Solver Setup" icon="SOP_mountain">
+    <helpText><![CDATA[simulates aeolian sand dunes based on https://arxiv.org/pdf/cond-mat/0203040 + fast HF conversion]]></helpText>
+    <toolSubmenu>Sopdrop/Team/SOP</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("3b3ce3b5-ad54-4c60-9d7a-95af3ba99558")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>dune solver setup,sopdrop,sop,sops,solver,fx</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_3dd259ec_e602_4ba5_9c6f_f0297333b00f" label="(SD) Quick Droplets" icon="DOP_flipconfigureobject">
+    <helpText><![CDATA[animate a point, ray it to the surface, and then some cheap droplets]]></helpText>
+    <toolSubmenu>Sopdrop/Team/SOP</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("3dd259ec-e602-4ba5-9c6f-f0297333b00f")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>quick droplets,sopdrop,sop,sops,fluid</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_2505fb0c_11bd_4288_8bd8_f64ec735fcfb" label="(SD) Attribute Fit 01" icon="TOP_rangegenerate">
+    <helpText><![CDATA[Fits an attribute from its min/max to a stable 01 value Honestly super simple but i set this up so often that why not]]></helpText>
+    <toolSubmenu>Sopdrop/Team/SOP</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("2505fb0c-11bd-4288-8bd8-f64ec735fcfb")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>attribute fit 01,sopdrop,sop,sops</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_78d1ccb8_de5f_4e64_8289_fec6174e43bf" label="(SD) Initialize Vector Volume" icon="VOP_volumegradientfile">
+    <helpText><![CDATA[created a vector volume from the input float volume]]></helpText>
+    <toolSubmenu>Sopdrop/Team/SOP</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("78d1ccb8-de5f-4e64-8289-fec6174e43bf")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>initialize vector volume,sopdrop,sop,volumes,sops</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_d4a11fff_aa78_438b_b9f4_abc68ac11008" label="(SD) Image to Quad Grid" icon="MODELER_QGrid">
+    <helpText><![CDATA[Takes an image and makes a UV correct plane to fit]]></helpText>
+    <toolSubmenu>Sopdrop/Team/SOP</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("d4a11fff-aa78-438b-b9f4-abc68ac11008")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>image to quad grid,sopdrop,sop,sops</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_ef9d7b54_7af7_47f1_9195_cc51a98e4c34" label="(SD) UPS Standard Light Setup" icon="COP_pyro_lightfrompoints">
+    <helpText><![CDATA[Standard lighting setup for UPS]]></helpText>
+    <toolSubmenu>Sopdrop/Team/Lighting</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("ef9d7b54-7af7-47f1-9195-cc51a98e4c34")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>ups standard light setup,sopdrop,lop,lights</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_a7009cf4_be04_43f1_bb11_c31aeae87b74" label="(SD) Body Squash Stretch (Ball Rig)" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Two joints body rig with squash and stretch]]></helpText>
+    <toolSubmenu>Sopdrop/Team/APEX</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("a7009cf4-be04-43f1-bb11-c31aeae87b74")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>body squash stretch (ball rig),sopdrop,sop,anim,apex</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_05b5bc5c_657f_411c_bd6c_ac01cfdd9c39" label="(SD) Controls Blendshape" icon="OBJ_autorig_hand">
+    <helpText><![CDATA[Controls Blendshape with configure control]]></helpText>
+    <toolSubmenu>Sopdrop/Team/APEX</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("05b5bc5c-657f-411c-bd6c-ac01cfdd9c39")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>controls blendshape,sopdrop,sop,apex,anim</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_a464b793_5baf_47a6_8f25_02e4f9d2299c" label="(SD) Select Controls" icon="OBJ_autorig_hand">
+    <helpText><![CDATA[Configure control to select multiple controls]]></helpText>
+    <toolSubmenu>Sopdrop/Team/APEX</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("a464b793-5baf-47a6-8f25-02e4f9d2299c")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>select controls,sopdrop,sop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_28018da1_371a_4c60_944c_71bbf7ad63c8" label="(SD) Wheel Rotation" icon="circle16">
+    <helpText><![CDATA[Calculate wheel rotation based on distance traveled]]></helpText>
+    <toolSubmenu>Sopdrop/Team/APEX</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("28018da1-371a-4c60-944c-71bbf7ad63c8")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>wheel rotation,sopdrop,sop,apex,anim</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_4d8cb8ab_299b_42d2_91ce_9e7a496ed6fd" label="(SD) Tom R&amp;D Template" icon="ROP_mantra">
+    <helpText><![CDATA[Paste Tom R&amp;D Template from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Team/Templates</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("4d8cb8ab-299b-42d2-91ce-9e7a496ed6fd")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>tom r&amp;d template,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_cba38dfd_9918_42f5_94f6_b2f948318194" label="(SD) hf init mask" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Paste hf init mask from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Team/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("cba38dfd-9918-42f5-94f6-b2f948318194")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>hf init mask,sopdrop,sop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_fe75e116_ee02_4acf_95fe_a9ec2297d647" label="(SD) volume init vector from float" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[init vector from float]]></helpText>
+    <toolSubmenu>Sopdrop/Team/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("fe75e116-ee02-4acf-95fe-a9ec2297d647")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>volume init vector from float,sopdrop,sop,sops</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_5160a5ad_4656_4fb9_ac88_1a0835135829" label="(SD) Crosshair Grid" icon="VOP_add">
+    <helpText><![CDATA[Grid of crosshairs!]]></helpText>
+    <toolSubmenu>Sopdrop/Team/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("5160a5ad-4656-4fb9-ac88-1a0835135829")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>crosshair grid,sopdrop,sop,sops</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_84757091_39b2_46d3_8067_7fddae378b02" label="(SD) Resample Lines by Primuv" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Paste Resample Lines by Primuv from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Team/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("84757091-39b2-46d3-8067-7fddae378b02")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>resample lines by primuv,sopdrop,sop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_53a0f60d_6b76_4ad0_ab36_a3f2a0798ba8" label="(SD) Class by Name" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Wrangle that sets class by unique name]]></helpText>
+    <toolSubmenu>Sopdrop/Team/Library</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("53a0f60d-6b76-4ad0-ab36-a3f2a0798ba8")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>class by name,sopdrop,sop,vex,sops</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_907ddb01_1e28_4e77_842c_c2f5023cb38e" label="(SD) Luis Lights" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[test]]></helpText>
+    <toolSubmenu>Sopdrop/Team/Lighting</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("907ddb01-1e28-4e77-842c-c2f5023cb38e")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>luis lights,sopdrop,lop</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_e0ccb066_96f6_4337_aba5_db25c869d885" label="(SD) Walls_Plaster_MAT" icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Paste Walls_Plaster_MAT from Sopdrop library]]></helpText>
+    <toolSubmenu>Sopdrop/Team/Materials</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>VOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("e0ccb066-96f6-4337-aba5-db25c869d885")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>walls_plaster_mat,sopdrop,vop,materials</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_lib_0da5397e_508b_4345_b314_7a5b72e5851b" label="(SD) MaterialX Gradient" icon="VOP_constant">
+    <helpText><![CDATA[A nice gradient using UV's and distance!]]></helpText>
+    <toolSubmenu>Sopdrop/Team/Materials</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>VOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+try:
+    import sopdrop.menu
+    sopdrop.menu.paste_asset("0da5397e-508b-4345-b314-7a5b72e5851b")
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop module not loaded yet.\nOpen the Library panel first, then try again.",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
+]]></script>
+    <keywordList>
+      <keyword>materialx gradient,sopdrop,vop,materials</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_sop" label="Browse Library..." icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>SOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_vop" label="Browse Library..." icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>VOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_dop" label="Browse Library..." icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>DOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_cop" label="Browse Library..." icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>COP2</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_cop2" label="Browse Library..." icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>COP2</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_top" label="Browse Library..." icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>TOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_lop" label="Browse Library..." icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>LOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_chop" label="Browse Library..." icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>CHOP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_obj" label="Browse Library..." icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>OBJ</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_rop" label="Browse Library..." icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>ROP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+
+  <tool name="sopdrop_browse_out" label="Browse Library..." icon="$SOPDROP_HOUDINI_PATH/toolbar/icons/sopdrop_logo.svg">
+    <helpText><![CDATA[Open the Sopdrop Library panel to browse all assets.]]></helpText>
+    <toolSubmenu>Sopdrop</toolSubmenu>
+    <toolMenuContext name="network">
+      <contextNetType>ROP</contextNetType>
+    </toolMenuContext>
+    <script scriptType="python"><![CDATA[
+import sopdrop.menu
+sopdrop.menu.open_library_panel()
+]]></script>
+    <keywordList>
+      <keyword>sopdrop,library,browse,assets</keyword>
+    </keywordList>
+  </tool>
+</shelfDocument>

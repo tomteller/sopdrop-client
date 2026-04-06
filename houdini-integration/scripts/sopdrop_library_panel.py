@@ -4611,7 +4611,8 @@ class LibraryPanel(QtWidgets.QWidget):
         artist = getattr(self, 'current_artist_filter', None)
         if artist:
             prefix = artist + '/'
-            assets = [a for a in assets if (a.get('remote_slug') or '').startswith(prefix)]
+            assets = [a for a in assets if (a.get('remote_slug') or '').startswith(prefix)
+                      or (not (a.get('remote_slug') or '').count('/') and a.get('created_by') == artist)]
 
         # Apply sorting
         sort_key = self.sort_combo.currentData()
