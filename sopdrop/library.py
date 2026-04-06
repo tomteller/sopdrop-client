@@ -326,6 +326,7 @@ CREATE INDEX IF NOT EXISTS idx_assets_use_count ON library_assets(use_count);
 CREATE INDEX IF NOT EXISTS idx_assets_remote_slug ON library_assets(remote_slug);
 CREATE INDEX IF NOT EXISTS idx_tags_tag ON asset_tags(tag);
 CREATE INDEX IF NOT EXISTS idx_collections_parent ON collections(parent_id);
+CREATE INDEX IF NOT EXISTS idx_collection_assets_asset ON collection_assets(asset_id);
 """
 
 # FTS5 schema separated so a failure doesn't block core functionality.
@@ -1190,7 +1191,7 @@ def update_asset(asset_id: str, **kwargs) -> Optional[Dict[str, Any]]:
     """Update asset metadata."""
     db = get_db()
 
-    allowed = {'name', 'description', 'tags', 'thumbnail_path', 'slug'}
+    allowed = {'name', 'description', 'tags', 'thumbnail_path', 'slug', 'created_by'}
     updates = {k: v for k, v in kwargs.items() if k in allowed}
 
     if not updates:
@@ -1990,6 +1991,7 @@ def get_collection_assets(collection_id: str) -> List[Dict[str, Any]]:
     """, (collection_id,)).fetchall()
 
     assets = []
+    asset_ids = []
     for row in rows:
         asset = dict_from_row(row)
         for field in ('node_types', 'node_names', 'tags', 'dependencies', 'metadata'):
@@ -1998,17 +2000,27 @@ def get_collection_assets(collection_id: str) -> List[Dict[str, Any]]:
                     asset[field] = json.loads(asset[field])
                 except json.JSONDecodeError:
                     asset[field] = []
-
-        # Get collections this asset belongs to
-        colls = db.execute("""
-            SELECT c.* FROM collections c
-            JOIN collection_assets ca2 ON c.id = ca2.collection_id
-            WHERE ca2.asset_id = ?
-            ORDER BY c.name
-        """, (asset['id'],)).fetchall()
-        asset['collections'] = [dict_from_row(c) for c in colls]
-
+        asset['collections'] = []
         assets.append(asset)
+        asset_ids.append(asset['id'])
+
+    # Batch-fetch collection memberships
+    if asset_ids:
+        placeholders = ",".join("?" * len(asset_ids))
+        coll_rows = db.execute(f"""
+            SELECT ca2.asset_id, c.* FROM collections c
+            JOIN collection_assets ca2 ON c.id = ca2.collection_id
+            WHERE ca2.asset_id IN ({placeholders})
+            ORDER BY c.name
+        """, asset_ids).fetchall()
+        coll_map = {}
+        for cr in coll_rows:
+            aid = cr[0]
+            coll_dict = dict_from_row(cr)
+            coll_dict.pop('asset_id', None)
+            coll_map.setdefault(aid, []).append(coll_dict)
+        for asset in assets:
+            asset['collections'] = coll_map.get(asset['id'], [])
 
     return assets
 
@@ -2115,6 +2127,7 @@ def search_assets(
     rows = db.execute(sql, params).fetchall()
 
     assets = []
+    asset_ids = []
     for row in rows:
         asset = dict_from_row(row)
         for field in ('node_types', 'node_names', 'tags', 'dependencies', 'metadata'):
@@ -2123,17 +2136,28 @@ def search_assets(
                     asset[field] = json.loads(asset[field])
                 except json.JSONDecodeError:
                     asset[field] = []
-
-        # Get collections this asset belongs to
-        colls = db.execute("""
-            SELECT c.* FROM collections c
-            JOIN collection_assets ca ON c.id = ca.collection_id
-            WHERE ca.asset_id = ?
-            ORDER BY c.name
-        """, (asset['id'],)).fetchall()
-        asset['collections'] = [dict_from_row(c) for c in colls]
-
+        asset['collections'] = []
         assets.append(asset)
+        asset_ids.append(asset['id'])
+
+    # Batch-fetch collection memberships for all assets in one query
+    if asset_ids:
+        placeholders = ",".join("?" * len(asset_ids))
+        coll_rows = db.execute(f"""
+            SELECT ca.asset_id, c.* FROM collections c
+            JOIN collection_assets ca ON c.id = ca.collection_id
+            WHERE ca.asset_id IN ({placeholders})
+            ORDER BY c.name
+        """, asset_ids).fetchall()
+        coll_map = {}
+        for cr in coll_rows:
+            aid = cr[0]
+            coll_dict = dict_from_row(cr)
+            # Remove the extra asset_id key from the collection dict
+            coll_dict.pop('asset_id', None)
+            coll_map.setdefault(aid, []).append(coll_dict)
+        for asset in assets:
+            asset['collections'] = coll_map.get(asset['id'], [])
 
     return assets
 

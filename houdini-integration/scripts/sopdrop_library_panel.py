@@ -1369,14 +1369,18 @@ class _DropAwareContainer(QtWidgets.QWidget):
         self._owner = owner
         self.setAcceptDrops(True)
 
+    def _has_supported_mime(self, event):
+        md = event.mimeData()
+        return md.hasFormat('application/x-sopdrop-assets') or md.hasFormat('application/x-sopdrop-collection')
+
     def dragEnterEvent(self, event):
-        if event.mimeData().hasFormat('application/x-sopdrop-assets'):
+        if self._has_supported_mime(event):
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event):
-        if event.mimeData().hasFormat('application/x-sopdrop-assets'):
+        if self._has_supported_mime(event):
             event.acceptProposedAction()
             self._owner._on_drag_move(event.pos())
         else:
@@ -1387,7 +1391,7 @@ class _DropAwareContainer(QtWidgets.QWidget):
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event):
-        if event.mimeData().hasFormat('application/x-sopdrop-assets'):
+        if self._has_supported_mime(event):
             self._owner._on_drop(event)
         else:
             event.ignore()
@@ -1421,9 +1425,22 @@ class CollectionListWidget(QtWidgets.QWidget):
         """Handle drop event from the container."""
         btn = self._find_collection_at_pos(event.pos())
         self._set_drop_highlight(None)
-        if btn:
+
+        md = event.mimeData()
+
+        # Collection drag — reparent
+        if md.hasFormat('application/x-sopdrop-collection'):
+            drag_coll_id = md.data('application/x-sopdrop-collection').data().decode()
+            target_id = btn.property("item_id") if btn else None
+            event.acceptProposedAction()
+            if SOPDROP_AVAILABLE and drag_coll_id:
+                self._drop_collection_to_collection(drag_coll_id, target_id)
+            return
+
+        # Asset drag
+        if btn and md.hasFormat('application/x-sopdrop-assets'):
             coll_id = btn.property("item_id")
-            data = event.mimeData().data('application/x-sopdrop-assets').data().decode()
+            data = md.data('application/x-sopdrop-assets').data().decode()
             asset_ids = [aid for aid in data.split(',') if aid]
             event.acceptProposedAction()
             if SOPDROP_AVAILABLE and asset_ids:
@@ -1482,6 +1499,33 @@ class CollectionListWidget(QtWidgets.QWidget):
         for aid in asset_ids:
             library.add_asset_to_collection(aid, target_coll_id)
         self.collection_selected.emit(target_coll_id)
+
+    def _drop_collection_to_collection(self, drag_coll_id, target_id):
+        """Reparent a collection under another (or to root if target_id is None/system)."""
+        if not SOPDROP_AVAILABLE:
+            return
+
+        # Dropping onto itself — no-op
+        if drag_coll_id == target_id:
+            return
+
+        # Resolve target: system items or empty space means move to root
+        if target_id and str(target_id).startswith("__"):
+            target_id = None
+
+        # Prevent circular nesting: target can't be a descendant of the dragged collection
+        if target_id:
+            parent = library.get_collection(target_id)
+            while parent:
+                if parent['id'] == drag_coll_id:
+                    return  # Would create a cycle
+                pid = parent.get('parent_id')
+                parent = library.get_collection(pid) if pid else None
+
+        library.update_collection(drag_coll_id, parent_id=target_id)
+        if target_id:
+            self._expanded.add(target_id)
+        self.refresh()
 
     def _find_collection_at_pos(self, pos):
         """Find the collection button at the given position (container coords)."""
@@ -1784,6 +1828,29 @@ class CollectionListWidget(QtWidgets.QWidget):
         inner.addWidget(name_label)
         inner.addStretch()
 
+        # Enable dragging for collection reparenting
+        btn._coll_drag_start = None
+        _orig_press = btn.mousePressEvent
+        _orig_move = btn.mouseMoveEvent
+
+        def _coll_mouse_press(event, _orig=_orig_press):
+            btn._coll_drag_start = event.pos()
+            _orig(event)
+
+        def _coll_mouse_move(event, _orig=_orig_move):
+            if btn._coll_drag_start and (event.pos() - btn._coll_drag_start).manhattanLength() >= QtWidgets.QApplication.startDragDistance():
+                drag = QtGui.QDrag(btn)
+                mime = QtCore.QMimeData()
+                mime.setData('application/x-sopdrop-collection', coll_id.encode())
+                drag.setMimeData(mime)
+                btn._coll_drag_start = None
+                drag.exec_(QtCore.Qt.MoveAction)
+                return
+            _orig(event)
+
+        btn.mousePressEvent = _coll_mouse_press
+        btn.mouseMoveEvent = _coll_mouse_move
+
         # Click always selects (expand/collapse is on the arrow only)
         btn.clicked.connect(lambda: self._on_item_clicked(btn))
         return btn
@@ -2018,6 +2085,7 @@ class AssetCardWidget(QtWidgets.QFrame):
         self._hovered = False
         self._selected = False
         self._original_pixmap = None  # Store original for resizing
+        self._thumb_loaded = False
         self._setup_ui()
 
     def _setup_ui(self):
@@ -2218,7 +2286,7 @@ class AssetCardWidget(QtWidgets.QFrame):
         if not show_name:
             self.setToolTip(name_text)
 
-        self._load_thumbnail(s['total'])
+        self._thumb_height = s['total']
 
         # Hover popover timer
         self._hover_timer = QtCore.QTimer(self)
@@ -2291,8 +2359,34 @@ class AssetCardWidget(QtWidgets.QFrame):
         bottom_h = max(scale(24), h // 3)
         self.bottom_overlay.setGeometry(0, h - bottom_h, w, bottom_h)
 
+    def lazy_load_thumbnail(self):
+        """Load thumbnail if not already loaded. Called when card becomes visible."""
+        if self._thumb_loaded:
+            return
+        self._thumb_loaded = True
+        self._load_thumbnail(self._thumb_height)
+        w = self.container.width()
+        h = self.container.height()
+        if w > 0 and h > 0:
+            self._update_thumbnail_display(w, h)
+
+    @staticmethod
+    def _thumbnails_enabled():
+        """Check if thumbnail loading is enabled (cached per call batch)."""
+        if not SOPDROP_AVAILABLE:
+            return True
+        try:
+            from sopdrop.config import get_config
+            return get_config().get('show_thumbnails', True)
+        except Exception:
+            return True
+
     def _load_thumbnail(self, height):
         """Load thumbnail and store original for dynamic resizing."""
+        if not self._thumbnails_enabled():
+            self._original_pixmap = None
+            return
+
         thumb_path_str = self.asset.get('thumbnail_path')
         if thumb_path_str and SOPDROP_AVAILABLE:
             try:
@@ -3235,6 +3329,8 @@ class AssetGridWidget(QtWidgets.QWidget):
         self._last_columns = 0
         self._resize_timer = None
         self._selected_asset = None
+        self._deferred_timer = None
+        self._deferred_assets = None
         self._setup_ui()
 
     def set_empty_message(self, message):
@@ -3272,6 +3368,9 @@ class AssetGridWidget(QtWidgets.QWidget):
         self.scroll.setWidget(self.container)
         layout.addWidget(self.scroll)
 
+        # Lazy-load thumbnails on scroll and initial show
+        self.scroll.verticalScrollBar().valueChanged.connect(self._lazy_load_visible)
+
         # Empty state
         self.empty_widget = QtWidgets.QWidget()
         empty_layout = QtWidgets.QVBoxLayout(self.empty_widget)
@@ -3294,6 +3393,34 @@ class AssetGridWidget(QtWidgets.QWidget):
         loading_layout.addWidget(loading_label)
         self.loading_widget.hide()
         layout.addWidget(self.loading_widget)
+
+    def _lazy_load_visible(self):
+        """Load thumbnails for cards currently visible in the scroll viewport."""
+        viewport = self.scroll.viewport()
+        vp_rect = viewport.rect()
+        # Add a buffer zone to pre-load cards just outside the viewport
+        buffer = vp_rect.height()
+        vp_rect.adjust(0, -buffer, 0, buffer)
+
+        for i in range(self.grid_layout.count()):
+            item = self.grid_layout.itemAt(i)
+            if not item:
+                continue
+            card = item.widget()
+            if not card or not isinstance(card, AssetCardWidget):
+                continue
+            if getattr(card, '_thumb_loaded', True):
+                continue
+            # Check if card is in or near the visible area
+            card_pos = card.mapTo(viewport, QtCore.QPoint(0, 0))
+            card_rect = QtCore.QRect(card_pos, card.size())
+            if vp_rect.intersects(card_rect):
+                card.lazy_load_thumbnail()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Trigger initial lazy load after layout is computed
+        QtCore.QTimer.singleShot(0, self._lazy_load_visible)
 
     def set_loading(self, loading):
         """Show or hide the loading indicator."""
@@ -3374,13 +3501,10 @@ class AssetGridWidget(QtWidgets.QWidget):
         self._assets = assets
         self._groups = None  # Clear groups — flat layout
         self.loading_widget.hide()
-
-        while self.grid_layout.count():
-            item = self.grid_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        self._cancel_deferred_cards()
 
         if not assets:
+            self._clear_grid()
             self.empty_widget.show()
             self.scroll.hide()
             self._last_columns = 0
@@ -3396,35 +3520,107 @@ class AssetGridWidget(QtWidgets.QWidget):
         columns = max(1, (width - scale(10)) // (card_width + scale(6)))
         self._last_columns = columns
 
+        # Build set of needed asset IDs
+        needed_ids = {a['id'] for a in assets}
+
+        # Suppress painting while repopulating to avoid flicker
+        self.grid_widget.setUpdatesEnabled(False)
+
+        # Collect reusable cards from current grid, remove stale ones
+        cached = {}
+        while self.grid_layout.count():
+            item = self.grid_layout.takeAt(0)
+            w = item.widget()
+            if w and isinstance(w, AssetCardWidget):
+                aid = w.asset.get('id')
+                if aid in needed_ids and aid not in cached:
+                    cached[aid] = w
+                else:
+                    w.deleteLater()
+            elif w:
+                w.deleteLater()
+
+        # Place all cards at once — recycled cards are just repositioned (cheap),
+        # only genuinely new cards need full widget construction
         for i, asset in enumerate(assets):
-            card = AssetCardWidget(asset, self._card_size, self._library_type, self._display_settings)
-            card.setFixedWidth(card_width)
-            card.paste_requested.connect(self.paste_requested.emit)
-            card.edit_requested.connect(self.edit_requested.emit)
-            card.delete_requested.connect(self.delete_requested.emit)
-            card.publish_requested.connect(self.publish_requested.emit)
-            card.update_requested.connect(self.update_requested.emit)
-            card.tag_clicked.connect(self.tag_clicked.emit)
-            card.collection_changed.connect(self.collection_changed.emit)
-            card.clicked.connect(self._on_card_clicked)
-            card.hovered.connect(self._on_card_hovered)
-            self.grid_layout.addWidget(card, i // columns, i % columns)
+            card = cached.pop(asset['id'], None)
+            if card:
+                card.setFixedWidth(card_width)
+                self.grid_layout.addWidget(card, i // columns, i % columns)
+            else:
+                self._add_card(asset, i, columns, card_width)
+
+        # Delete any leftover cached cards not placed
+        for w in cached.values():
+            w.deleteLater()
+
+        # Re-enable painting — single
+        self.grid_widget.setUpdatesEnabled(True)
+
+        # Trigger lazy loading for visible cards
+        QtCore.QTimer.singleShot(0, self._lazy_load_visible)
+
+    def _clear_grid(self):
+        """Remove all widgets from the grid layout."""
+        while self.grid_layout.count():
+            item = self.grid_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    def _add_card(self, asset, index, columns, card_width):
+        """Create a single card and add it to the grid."""
+        card = AssetCardWidget(asset, self._card_size, self._library_type, self._display_settings)
+        card.setFixedWidth(card_width)
+        card.paste_requested.connect(self.paste_requested.emit)
+        card.edit_requested.connect(self.edit_requested.emit)
+        card.delete_requested.connect(self.delete_requested.emit)
+        card.publish_requested.connect(self.publish_requested.emit)
+        card.update_requested.connect(self.update_requested.emit)
+        card.tag_clicked.connect(self.tag_clicked.emit)
+        card.collection_changed.connect(self.collection_changed.emit)
+        card.clicked.connect(self._on_card_clicked)
+        card.hovered.connect(self._on_card_hovered)
+        self.grid_layout.addWidget(card, index // columns, index % columns)
+        return card
+
+    def _cancel_deferred_cards(self):
+        """Cancel any pending deferred card creation."""
+        if hasattr(self, '_deferred_timer') and self._deferred_timer is not None:
+            self._deferred_timer.stop()
+            self._deferred_timer.deleteLater()
+            self._deferred_timer = None
 
     def set_grouped_assets(self, groups):
         """Display assets grouped by collection with section headers."""
         self.loading_widget.hide()
+        self._cancel_deferred_cards()
         self._groups = groups  # Store for resize reflow
         # Flatten for _assets tracking
         self._assets = []
         for g in groups:
             self._assets.extend(g['assets'])
 
+        # Collect reusable cards before clearing
+        needed_ids = {a['id'] for a in self._assets}
+
+        # Suppress painting while repopulating
+        self.grid_widget.setUpdatesEnabled(False)
+
+        cached = {}
         while self.grid_layout.count():
             item = self.grid_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            w = item.widget()
+            if w and isinstance(w, AssetCardWidget):
+                aid = w.asset.get('id')
+                if aid in needed_ids and aid not in cached:
+                    cached[aid] = w
+                else:
+                    w.deleteLater()
+            elif w:
+                w.deleteLater()
 
         if not self._assets:
+            self.grid_widget.setUpdatesEnabled(True)
             self.empty_widget.show()
             self.scroll.hide()
             self._last_columns = 0
@@ -3490,23 +3686,35 @@ class AssetGridWidget(QtWidgets.QWidget):
             self.grid_layout.addWidget(header_container, row, 0, 1, columns)
             row += 1
 
-            # Add asset cards
+            # Add asset cards — reuse cached where possible
             for i, asset in enumerate(group['assets']):
-                card = AssetCardWidget(asset, self._card_size, self._library_type, self._display_settings)
+                card = cached.pop(asset['id'], None)
+                if not card:
+                    card = AssetCardWidget(asset, self._card_size, self._library_type, self._display_settings)
+                    card.paste_requested.connect(self.paste_requested.emit)
+                    card.edit_requested.connect(self.edit_requested.emit)
+                    card.delete_requested.connect(self.delete_requested.emit)
+                    card.publish_requested.connect(self.publish_requested.emit)
+                    card.update_requested.connect(self.update_requested.emit)
+                    card.tag_clicked.connect(self.tag_clicked.emit)
+                    card.collection_changed.connect(self.collection_changed.emit)
+                    card.clicked.connect(self._on_card_clicked)
+                    card.hovered.connect(self._on_card_hovered)
                 card.setFixedWidth(card_width)
-                card.paste_requested.connect(self.paste_requested.emit)
-                card.edit_requested.connect(self.edit_requested.emit)
-                card.delete_requested.connect(self.delete_requested.emit)
-                card.publish_requested.connect(self.publish_requested.emit)
-                card.update_requested.connect(self.update_requested.emit)
-                card.tag_clicked.connect(self.tag_clicked.emit)
-                card.collection_changed.connect(self.collection_changed.emit)
-                card.clicked.connect(self._on_card_clicked)
-                card.hovered.connect(self._on_card_hovered)
                 self.grid_layout.addWidget(card, row + (i // columns), i % columns)
 
             # Move to next row after this group
             row += (len(group['assets']) + columns - 1) // columns
+
+        # Clean up unused cached cards
+        for w in cached.values():
+            w.deleteLater()
+
+        # Re-enable painting
+        self.grid_widget.setUpdatesEnabled(True)
+
+        # Trigger lazy loading for initially visible cards
+        QtCore.QTimer.singleShot(0, self._lazy_load_visible)
 
     def _on_card_clicked(self, asset):
         """Handle card click - emit asset_selected signal with multi-select support."""
@@ -4507,9 +4715,6 @@ class LibraryPanel(QtWidgets.QWidget):
         except Exception:
             pass
 
-        self.asset_grid.set_loading(True)
-        QtWidgets.QApplication.processEvents()
-
         from sopdrop.config import get_active_library
 
         # Update the grid's library type for badge display
@@ -4918,8 +5123,10 @@ class LibraryPanel(QtWidgets.QWidget):
             self.current_collections = {coll_id} if coll_id and not str(coll_id).startswith("__") else set()
 
             # Auto-set sort to match system views, saving previous sort first
+            # Block signals to prevent double-refresh from sort change
             if is_system_view and not was_system_view:
                 self._saved_sort = self.sort_combo.currentData()
+            self.sort_combo.blockSignals(True)
             if coll_id == "__recent__":
                 self.sort_combo.setCurrentIndex(self.sort_combo.findData("recent"))
             elif coll_id == "__favorites__":
@@ -4930,6 +5137,7 @@ class LibraryPanel(QtWidgets.QWidget):
                 if idx >= 0:
                     self.sort_combo.setCurrentIndex(idx)
                 self._saved_sort = None
+            self.sort_combo.blockSignals(False)
         self._update_filter_chips()
         self._save_ui_state()
         self._refresh_assets()
@@ -5354,6 +5562,22 @@ class LibraryPanel(QtWidgets.QWidget):
         self.collections.refresh()
         self._refresh_assets()
 
+    def _get_active_collection_id(self):
+        """Get the current collection ID for defaulting in save dialogs.
+
+        Returns the active collection if it's a real collection (not a system item).
+        """
+        # Prefer single selection
+        cid = getattr(self, 'current_collection', None)
+        if cid and not str(cid).startswith("__"):
+            return cid
+        # Fall back to first of multi-select
+        colls = getattr(self, 'current_collections', set())
+        for c in colls:
+            if c and not str(c).startswith("__"):
+                return c
+        return None
+
     def _save_selection(self):
         print("[Sopdrop] Save button clicked")
         if not SOPDROP_AVAILABLE:
@@ -5374,7 +5598,7 @@ class LibraryPanel(QtWidgets.QWidget):
         try:
             # Use Houdini's main window as parent for better compatibility
             parent = hou.qt.mainWindow()
-            dialog = SaveToLibraryDialog(items, parent=parent)
+            dialog = SaveToLibraryDialog(items, parent=parent, default_collection_id=self._get_active_collection_id())
             dialog.raise_()
             dialog.activateWindow()
             result = dialog.exec_()
@@ -5422,7 +5646,7 @@ class LibraryPanel(QtWidgets.QWidget):
 
         try:
             parent = hou.qt.mainWindow()
-            dialog = SaveVexDialog(initial_code=initial_code, parent=parent)
+            dialog = SaveVexDialog(initial_code=initial_code, parent=parent, default_collection_id=self._get_active_collection_id())
             dialog.raise_()
             dialog.activateWindow()
             result = dialog.exec_()
@@ -5443,7 +5667,7 @@ class LibraryPanel(QtWidgets.QWidget):
 
         try:
             parent = hou.qt.mainWindow()
-            dialog = SavePathDialog(parent=parent)
+            dialog = SavePathDialog(parent=parent, default_collection_id=self._get_active_collection_id())
             dialog.raise_()
             dialog.activateWindow()
             result = dialog.exec_()
@@ -6466,7 +6690,7 @@ class HoudiniIconBrowser(QtWidgets.QDialog):
 class SaveToLibraryDialog(QtWidgets.QDialog):
     """Dialog for saving nodes/HDAs to the local library with optional cloud publish."""
 
-    def __init__(self, items, existing_asset=None, parent=None):
+    def __init__(self, items, existing_asset=None, parent=None, default_collection_id=None):
         """
         Initialize save dialog.
 
@@ -6474,11 +6698,13 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
             items: Houdini items to save
             existing_asset: Optional existing asset dict to update (creates new version)
             parent: Parent widget
+            default_collection_id: Pre-select this collection in the combo
         """
         super().__init__(parent)
         self.items = items
         self.nodes = [i for i in items if isinstance(i, hou.Node)]
         self.existing_asset = existing_asset
+        self._default_collection_id = default_collection_id
         self._screenshots = []  # List of QImage objects
         self._selected_icon = None  # Houdini icon name
 
@@ -6724,6 +6950,7 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         self.coll_combo = QtWidgets.QComboBox()
         self.coll_combo.setFixedHeight(scale(24))
         self._populate_collection_combo()
+        self._select_default_collection()
         self.coll_combo.currentIndexChanged.connect(self._on_collection_combo_changed)
         coll_col.addWidget(self.coll_combo)
         options_row.addLayout(coll_col, 1)
@@ -6939,6 +7166,16 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
             self.coll_combo.insertSeparator(self.coll_combo.count())
             self.coll_combo.addItem("+ New Collection...", "__new__")
         self.coll_combo.blockSignals(False)
+
+    def _select_default_collection(self):
+        """Pre-select the default collection in the combo if set."""
+        cid = getattr(self, '_default_collection_id', None)
+        if not cid:
+            return
+        for i in range(self.coll_combo.count()):
+            if self.coll_combo.itemData(i) == cid:
+                self.coll_combo.setCurrentIndex(i)
+                break
 
     def _on_collection_combo_changed(self, index):
         """Handle collection combo selection — create new collection inline."""
@@ -7396,9 +7633,10 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
 class SaveVexDialog(QtWidgets.QDialog):
     """Dialog for saving a VEX snippet to the library."""
 
-    def __init__(self, initial_code="", parent=None):
+    def __init__(self, initial_code="", parent=None, default_collection_id=None):
         super().__init__(parent)
         self._initial_code = initial_code
+        self._default_collection_id = default_collection_id
         self._setup_ui()
 
     def _setup_ui(self):
@@ -7514,6 +7752,7 @@ class SaveVexDialog(QtWidgets.QDialog):
         self.coll_combo = QtWidgets.QComboBox()
         self.coll_combo.setFixedHeight(scale(24))
         self._populate_collection_combo()
+        self._select_default_collection()
         self.coll_combo.currentIndexChanged.connect(self._on_collection_combo_changed)
         coll_col.addWidget(self.coll_combo)
         options_row.addLayout(coll_col, 1)
@@ -7646,6 +7885,16 @@ class SaveVexDialog(QtWidgets.QDialog):
             if coll.get('children'):
                 self._add_tree_to_combo(coll['children'], depth + 1)
 
+    def _select_default_collection(self):
+        """Pre-select the default collection in the combo if set."""
+        cid = getattr(self, '_default_collection_id', None)
+        if not cid:
+            return
+        for i in range(self.coll_combo.count()):
+            if self.coll_combo.itemData(i) == cid:
+                self.coll_combo.setCurrentIndex(i)
+                break
+
     def _on_collection_combo_changed(self, index):
         """Handle collection combo selection — create new collection inline."""
         if self.coll_combo.currentData() != "__new__":
@@ -7704,9 +7953,10 @@ class SaveVexDialog(QtWidgets.QDialog):
 class SavePathDialog(QtWidgets.QDialog):
     """Dialog for saving a file path asset to the library."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, default_collection_id=None):
         super().__init__(parent)
         self._thumbnail_data = None
+        self._default_collection_id = default_collection_id
         self._setup_ui()
 
     def _setup_ui(self):
@@ -7880,6 +8130,7 @@ class SavePathDialog(QtWidgets.QDialog):
         self.coll_combo = QtWidgets.QComboBox()
         self.coll_combo.setFixedHeight(scale(24))
         self._populate_collection_combo()
+        self._select_default_collection()
         self.coll_combo.currentIndexChanged.connect(self._on_collection_combo_changed)
         coll_col.addWidget(self.coll_combo)
         options_row.addLayout(coll_col, 1)
@@ -8002,6 +8253,16 @@ class SavePathDialog(QtWidgets.QDialog):
                 self.coll_combo.setCurrentIndex(0)
         else:
             self.coll_combo.setCurrentIndex(0)
+
+    def _select_default_collection(self):
+        """Pre-select the default collection in the combo if set."""
+        cid = getattr(self, '_default_collection_id', None)
+        if not cid:
+            return
+        for i in range(self.coll_combo.count()):
+            if self.coll_combo.itemData(i) == cid:
+                self.coll_combo.setCurrentIndex(i)
+                break
 
     def _browse_file(self):
         """Open file browser for image/texture files."""
@@ -8448,11 +8709,16 @@ class SettingsDialog(QtWidgets.QDialog):
 
         layout.addWidget(team_group)
 
-        # UI Scale section
-        scale_group = QtWidgets.QGroupBox("UI SCALE")
-        scale_group.setStyleSheet(groupbox_style)
-        scale_layout = QtWidgets.QVBoxLayout(scale_group)
-        scale_layout.setSpacing(scale(8))
+        # Display section
+        display_group = QtWidgets.QGroupBox("DISPLAY")
+        display_group.setStyleSheet(groupbox_style)
+        display_layout = QtWidgets.QVBoxLayout(display_group)
+        display_layout.setSpacing(scale(8))
+
+        # UI Scale
+        scale_label = QtWidgets.QLabel("UI Scale")
+        scale_label.setStyleSheet(f"color: {COLORS['text_secondary']}; {sfs(10)}")
+        display_layout.addWidget(scale_label)
 
         scale_row = QtWidgets.QHBoxLayout()
         scale_row.setSpacing(scale(6))
@@ -8523,13 +8789,21 @@ class SettingsDialog(QtWidgets.QDialog):
         scale_row.addWidget(scale_reset_btn)
 
         scale_row.addStretch()
-        scale_layout.addLayout(scale_row)
+        display_layout.addLayout(scale_row)
 
         scale_note = QtWidgets.QLabel("Save settings, then close and reopen the library panel.")
         scale_note.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
-        scale_layout.addWidget(scale_note)
+        display_layout.addWidget(scale_note)
 
-        layout.addWidget(scale_group)
+        # Thumbnails
+        self.show_thumbnails_checkbox = QtWidgets.QCheckBox("Show thumbnails")
+        self.show_thumbnails_checkbox.setToolTip(
+            "Disable to skip loading thumbnail images.\n"
+            "Can improve performance with large libraries."
+        )
+        display_layout.addWidget(self.show_thumbnails_checkbox)
+
+        layout.addWidget(display_group)
 
         # Server section
         self.server_group = QtWidgets.QGroupBox("SERVER")
@@ -8648,6 +8922,9 @@ class SettingsDialog(QtWidgets.QDialog):
             tab_menu_enabled = config.get('tab_menu_enabled', True)
             self.tab_menu_checkbox.setChecked(tab_menu_enabled)
 
+            # Thumbnails setting
+            self.show_thumbnails_checkbox.setChecked(config.get('show_thumbnails', True))
+
             # Personal library path
             custom_path = config.get('personal_library_path')
             if custom_path:
@@ -8684,6 +8961,7 @@ class SettingsDialog(QtWidgets.QDialog):
             self.login_status.setText("Sopdrop not installed")
             self.login_btn.setEnabled(False)
             self.tab_menu_checkbox.setChecked(True)
+            self.show_thumbnails_checkbox.setChecked(True)
             self.local_only_checkbox.setEnabled(False)
             self.personal_path_input.setEnabled(False)
             self.team_path_input.setEnabled(False)
@@ -8816,6 +9094,7 @@ class SettingsDialog(QtWidgets.QDialog):
             config['server_url'] = self.server_input.text().strip() or 'https://sopdrop.com'
             config['tab_menu_enabled'] = self.tab_menu_checkbox.isChecked()
             config['local_only'] = self.local_only_checkbox.isChecked()
+            config['show_thumbnails'] = self.show_thumbnails_checkbox.isChecked()
             save_config(config)
 
             # Save UI scale
@@ -9624,6 +9903,16 @@ class EditAssetDialog(QtWidgets.QDialog):
         self.tags_widget.set_tags(self.asset.get('tags', []))
         layout.addWidget(self.tags_widget)
 
+        # -- Artist / Created By --
+        artist_label = QtWidgets.QLabel("Artist")
+        artist_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)}")
+        layout.addWidget(artist_label)
+        self.artist_input = QtWidgets.QLineEdit()
+        self.artist_input.setText(self.asset.get('created_by', ''))
+        self.artist_input.setFixedHeight(scale(24))
+        self.artist_input.setPlaceholderText("OS username or display name")
+        layout.addWidget(self.artist_input)
+
         layout.addStretch()
 
         # -- Buttons --
@@ -9744,7 +10033,8 @@ class EditAssetDialog(QtWidgets.QDialog):
                 self.asset['id'],
                 name=name,
                 description=self.desc_input.toPlainText().strip(),
-                tags=self.tags_widget.get_tags()
+                tags=self.tags_widget.get_tags(),
+                created_by=self.artist_input.text().strip() or None
             )
             if self._new_thumbnail:
                 library.update_asset_thumbnail(self.asset['id'], self._new_thumbnail)
