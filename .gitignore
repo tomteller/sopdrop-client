@@ -1,0 +1,7 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Auto-generated shelf (contains user-specific library entries)
+houdini-integration/toolbar/sopdrop_library.shelf
