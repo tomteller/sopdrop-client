@@ -53,7 +53,7 @@ def main():
     try:
         import sopdrop
         from sopdrop.export import export_items
-        from sopdrop.config import get_token, get_api_url, get_team_library_path
+        from sopdrop.config import get_token, get_api_url, get_team_library_path, get_local_only
     except ImportError:
         hou.ui.displayMessage(
             "Sopdrop client not installed.\n\n"
@@ -97,9 +97,28 @@ def main():
         )
         return
 
+    # Check if local-only mode is enabled (no cloud features)
+    local_only = get_local_only()
+
     # Check if team library is configured
     team_path = get_team_library_path()
     has_team = team_path is not None and team_path.exists()
+
+    if local_only:
+        # Local-only mode: only team share is available
+        if not has_team:
+            hou.ui.displayMessage(
+                "Local-only mode is enabled and no team library is configured.\n\n"
+                "To use Quick Share, either:\n"
+                "- Configure a team library in Settings\n"
+                "- Disable local-only mode in Settings",
+                title="Sopdrop - Share Unavailable",
+                severity=hou.severityType.Warning,
+            )
+            return
+        # Team available — go straight to team share (no choice dialog)
+        _do_team_share(items, nodes, team_path)
+        return
 
     if has_team and PYSIDE_VERSION > 0:
         # Show choice dialog: Cloud vs Team

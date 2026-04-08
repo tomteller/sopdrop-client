@@ -35,6 +35,19 @@ def export_items(items) -> Dict[str, Any]:
         return _export_v1(items)
 
 
+def _validate_items(items):
+    """Verify all items are still alive. Accessing a destroyed Houdini node
+    can segfault — catch it early with a cheap property access."""
+    valid = []
+    for item in items:
+        try:
+            item.name()  # Raises hou.ObjectWasDeleted or segfaults on dead items
+            valid.append(item)
+        except Exception:
+            pass
+    return valid
+
+
 def _export_v2(items) -> Dict[str, Any]:
     """
     Export items using Houdini's native saveItemsToFile() (binary .cpio).
@@ -46,6 +59,9 @@ def _export_v2(items) -> Dict[str, Any]:
 
     if not items:
         raise ValueError("No items to export")
+
+    # Validate all items are still alive before touching them
+    items = _validate_items(items)
 
     # Separate items by type
     nodes = []
@@ -93,7 +109,8 @@ def _export_v2(items) -> Dict[str, Any]:
     node_graph = _capture_node_graph(nodes)
 
     # Save items to a temp .cpio file via Houdini's native method
-    temp_path = tempfile.mktemp(suffix='.cpio')
+    fd, temp_path = tempfile.mkstemp(suffix='.cpio')
+    os.close(fd)  # saveItemsToFile writes to the path directly
     try:
         parent.saveItemsToFile(items, temp_path)
 
@@ -144,6 +161,9 @@ def _export_v1(items) -> Dict[str, Any]:
 
     if not items:
         raise ValueError("No items to export")
+
+    # Validate all items are still alive before touching them
+    items = _validate_items(items)
 
     # Separate items by type for metadata
     nodes = []

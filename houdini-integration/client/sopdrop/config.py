@@ -261,6 +261,41 @@ def get_library_path():
     return get_personal_library_path()
 
 
+# ==============================================================================
+# Team Mirror Paths
+# ==============================================================================
+
+def get_team_mirror_dir():
+    """Get the local mirror directory for the current team library.
+
+    Uses a sha256 prefix of the NAS path to support multiple teams.
+    Returns None if no team library is configured.
+    """
+    import hashlib
+    team_path = get_team_library_path()
+    if not team_path:
+        return None
+    nas_path = str(team_path.resolve())
+    path_hash = hashlib.sha256(nas_path.encode()).hexdigest()[:12]
+    return get_config_dir() / "team_mirror" / path_hash
+
+
+def get_team_mirror_db_path():
+    """Get the local mirror SQLite database path."""
+    mirror_dir = get_team_mirror_dir()
+    if not mirror_dir:
+        return None
+    return mirror_dir / "library.db"
+
+
+def get_team_mirror_thumbnails_dir():
+    """Get the local mirror thumbnails directory."""
+    mirror_dir = get_team_mirror_dir()
+    if not mirror_dir:
+        return None
+    return mirror_dir / "thumbnails"
+
+
 def list_available_libraries():
     """List available libraries with their status."""
     libraries = []

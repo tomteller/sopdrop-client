@@ -1091,9 +1091,30 @@ class AssetPopover(QtWidgets.QFrame):
         self._setup_ui()
 
         # Watch for application deactivation to hide popover
+        self._app_signal_connected = False
         app = QtWidgets.QApplication.instance()
         if app:
             app.applicationStateChanged.connect(self._on_app_state_changed)
+            self._app_signal_connected = True
+
+    def _disconnect_app_signal(self):
+        """Safely disconnect from applicationStateChanged."""
+        if self._app_signal_connected:
+            try:
+                app = QtWidgets.QApplication.instance()
+                if app:
+                    app.applicationStateChanged.disconnect(self._on_app_state_changed)
+            except (RuntimeError, TypeError):
+                pass
+            self._app_signal_connected = False
+
+    def closeEvent(self, event):
+        self._disconnect_app_signal()
+        super().closeEvent(event)
+
+    def deleteLater(self):
+        self._disconnect_app_signal()
+        super().deleteLater()
 
     def _on_app_state_changed(self, state):
         """Hide popover when application loses focus."""
@@ -1347,6 +1368,7 @@ class AssetPopover(QtWidgets.QFrame):
         """Hide the singleton popover if visible."""
         if cls._instance is not None:
             try:
+                cls._instance._disconnect_app_signal()
                 cls._instance.hide()
             except RuntimeError:
                 cls._instance = None
@@ -1411,8 +1433,14 @@ class CollectionListWidget(QtWidgets.QWidget):
         self._all_items = []  # Track all item widgets for selection
         self._highlighted_btn = None  # Currently drop-highlighted button
         CollectionListWidget._active_instance = self
+        self.destroyed.connect(CollectionListWidget._on_instance_destroyed)
         self._setup_ui()
         self.refresh()
+
+    @staticmethod
+    def _on_instance_destroyed():
+        """Clear class-level reference when widget is destroyed."""
+        CollectionListWidget._active_instance = None
 
     # -- Drag-drop handling ---------------------------------------------------
 
@@ -2394,6 +2422,10 @@ class AssetCardWidget(QtWidgets.QFrame):
                 thumb_path = thumb_dir / thumb_path_str
                 thumb_path_resolved = str(thumb_path.resolve())
 
+                # Lazy-cache from NAS for team library
+                if not thumb_path.exists():
+                    self._cache_thumbnail_from_nas(thumb_path_str, thumb_path)
+
                 if thumb_path.exists():
                     with open(thumb_path_resolved, 'rb') as f:
                         image_data = f.read()
@@ -2413,6 +2445,24 @@ class AssetCardWidget(QtWidgets.QFrame):
 
         # Create placeholder pixmap
         self._original_pixmap = None
+
+    @staticmethod
+    def _cache_thumbnail_from_nas(thumb_name, local_path):
+        """Copy a thumbnail from the NAS to the local mirror cache on first access."""
+        try:
+            from sopdrop.config import get_active_library
+            if get_active_library() != "team":
+                return
+            nas_thumbs = library._get_nas_thumbnails_dir()
+            if not nas_thumbs:
+                return
+            nas_thumb = nas_thumbs / thumb_name
+            if nas_thumb.exists():
+                import shutil
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(nas_thumb), str(local_path))
+        except Exception:
+            pass  # NAS may be unavailable — that's fine
 
     def _update_thumbnail_display(self, width, height):
         """Scale and display thumbnail to fill the given dimensions with rounded corners."""
@@ -2542,7 +2592,8 @@ class AssetCardWidget(QtWidgets.QFrame):
                 asset_ids = list(parent_grid._selected_assets)
         return asset_ids
 
-    def _poll_drag_position(self):
+    @staticmethod
+    def _poll_drag_position():
         """Timer-based cursor polling for macOS drag — more reliable than mouseMoveEvent in Houdini."""
         if not AssetCardWidget._custom_drag_active:
             if AssetCardWidget._drag_timer:
@@ -2551,6 +2602,11 @@ class AssetCardWidget(QtWidgets.QFrame):
         global_pos = QtGui.QCursor.pos()
         coll_widget = CollectionListWidget._active_instance
         if coll_widget:
+            try:
+                coll_widget.objectName()  # Guard: verify widget is alive
+            except RuntimeError:
+                CollectionListWidget._active_instance = None
+                return
             container_pos = coll_widget.container.mapFromGlobal(global_pos)
             btn = coll_widget._find_collection_at_pos(container_pos)
             coll_widget._set_drop_highlight(btn)
@@ -2580,7 +2636,7 @@ class AssetCardWidget(QtWidgets.QFrame):
             self.grabMouse()
             QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.ClosedHandCursor)
             AssetCardWidget._drag_timer = QtCore.QTimer()
-            AssetCardWidget._drag_timer.timeout.connect(self._poll_drag_position)
+            AssetCardWidget._drag_timer.timeout.connect(AssetCardWidget._poll_drag_position)
             AssetCardWidget._drag_timer.start(30)
         else:
             # Windows/Linux: standard QDrag — _DropAwareContainer handles highlighting
@@ -2603,6 +2659,12 @@ class AssetCardWidget(QtWidgets.QFrame):
 
             # Check if dropped on a collection
             coll_widget = CollectionListWidget._active_instance
+            if coll_widget:
+                try:
+                    coll_widget.objectName()  # Guard: verify widget is alive
+                except RuntimeError:
+                    CollectionListWidget._active_instance = None
+                    coll_widget = None
             if coll_widget:
                 container_pos = coll_widget.container.mapFromGlobal(event.globalPos())
                 btn = coll_widget._find_collection_at_pos(container_pos)
@@ -3086,7 +3148,6 @@ class AssetCardWidget(QtWidgets.QFrame):
         count = 0
         for aid in asset_ids:
             try:
-                QtWidgets.QApplication.processEvents()
                 result = library.copy_asset_to_library(aid, target_library)
                 if result:
                     count += 1
@@ -3253,8 +3314,6 @@ class AssetCardWidget(QtWidgets.QFrame):
 
         lib_name = "Team Library" if target_library == "team" else "Personal Library"
         try:
-            # Process events before heavy operation to avoid UI freeze
-            QtWidgets.QApplication.processEvents()
             new_asset = library.copy_asset_to_library(self.asset['id'], target_library)
             if new_asset:
                 # Find parent panel for toast
@@ -3845,6 +3904,68 @@ def _register_panel(panel):
 
 
 # ==============================================================================
+# Background Library Worker
+# ==============================================================================
+
+class _LibraryWorker(QtCore.QThread):
+    """Background thread for mirror refresh + asset query.
+
+    Runs team mirror refresh and/or asset queries off the main thread so the
+    panel stays responsive.  Emits ``finished`` with the result dict when done.
+
+    Crash-safety notes (see docs/crash-safety.md):
+    - No widget access from this thread — only pure data returned via signal.
+    - The panel checks ``_worker is self.sender()`` before consuming results to
+      ignore stale workers that were superseded by a newer request.
+    """
+
+    finished = QtCore.Signal(dict)  # {'assets': [...], 'stale': bool, 'error': str|None}
+
+    def __init__(self, query_fn, do_mirror_refresh=False, parent=None):
+        super().__init__(parent)
+        self._query_fn = query_fn          # callable returning list[dict]
+        self._do_mirror_refresh = do_mirror_refresh
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        stale = False
+        error = None
+        assets = []
+
+        try:
+            # Mirror refresh (team library only)
+            if self._do_mirror_refresh and not self._cancelled:
+                try:
+                    library.refresh_team_mirror()
+                except Exception:
+                    pass
+
+            if self._cancelled:
+                return
+
+            # Check mirror staleness
+            stale = library.is_mirror_stale()
+
+            # Run the asset query
+            assets = self._query_fn()
+
+        except TeamLibraryError as e:
+            error = str(e)
+        except Exception as e:
+            error = str(e)
+
+        if not self._cancelled:
+            self.finished.emit({
+                'assets': assets,
+                'stale': stale,
+                'error': error,
+            })
+
+
+# ==============================================================================
 # Main Library Panel
 # ==============================================================================
 
@@ -3869,6 +3990,7 @@ class LibraryPanel(QtWidgets.QWidget):
         }
         self._selected_assets = set()  # Multi-select asset IDs
         self._saved_sort = None  # Sort to restore when leaving system views
+        self._worker = None  # Background _LibraryWorker thread
         self._setup_ui()
         self._setup_shortcuts()
         self._restore_ui_state()
@@ -4669,7 +4791,11 @@ class LibraryPanel(QtWidgets.QWidget):
             self._refresh_assets()  # Respects grouping state
 
     def _refresh_all(self):
-        """Refresh the asset grid AND regenerate the TAB menu."""
+        """Refresh the asset grid AND regenerate the TAB menu.
+
+        For team libraries, the mirror refresh runs on the background worker
+        thread (inside _refresh_assets) so the UI stays responsive.
+        """
         self._refresh_assets()
         self._regenerate_tab_menu()
 
@@ -4686,43 +4812,25 @@ class LibraryPanel(QtWidgets.QWidget):
         self.current_collection = None
         self.current_collections.clear()
         self.collections.deselect_all()
+        # Stash scroll target — _apply_assets will pick it up after load
+        self._pending_scroll_to = asset_id
         self._refresh_assets()
-        self.asset_grid.scroll_to_asset(asset_id)
 
     def _refresh_assets(self):
         if not SOPDROP_AVAILABLE:
             self.asset_grid.set_assets([])
             return
 
-        # If the team library vanished (network drive disconnected, etc.),
-        # show a toast and fall back to the personal library automatically.
-        try:
-            library.get_db()
-        except TeamLibraryError as e:
-            from sopdrop.config import set_active_library
-            from sopdrop.library import close_db
-            set_active_library("personal")
-            close_db()
-            self._update_library_toggle()
-            self.show_toast(str(e), toast_type='error', duration=5000)
-            # Re-enter _refresh_assets with personal library now active
-            self._refresh_assets()
-            return
-
-        # Clean up stale 'syncing' statuses (drafts expire after 24h)
-        try:
-            library.cleanup_stale_syncing()
-        except Exception:
-            pass
-
         from sopdrop.config import get_active_library
+        current_library = get_active_library()
+        is_team = current_library == "team"
 
         # Update the grid's library type for badge display
-        current_library = get_active_library()
         self.asset_grid.set_library_type(current_library)
         self.asset_grid._display_settings = self._display_settings
 
-        # Convert tag filters set to list for API
+        # --- Capture all UI state on the main thread ---
+
         active_tags = list(self.current_tag_filters) if self.current_tag_filters else None
 
         # Resolve "Current Context" on each refresh
@@ -4737,73 +4845,168 @@ class LibraryPanel(QtWidgets.QWidget):
             'limit': 100,
         }
 
-        if self.current_collection == "__recent__":
-            assets = library.get_recent_assets(limit=50)
-            # Apply filters to recent assets
-            if kwargs['query']:
-                q = kwargs['query'].lower()
-                assets = [a for a in assets if q in a['name'].lower()]
-            if kwargs['context']:
-                assets = [a for a in assets if a.get('context') == kwargs['context']]
-            if active_tags:
-                assets = [a for a in assets if all(
-                    t.lower() in [x.lower() for x in (a.get('tags') or [])]
-                    for t in active_tags
-                )]
-        elif self.current_collection == "__favorites__":
-            assets = library.get_favorite_assets(limit=50)
-            # Apply filters to favorite assets
-            if kwargs['query']:
-                q = kwargs['query'].lower()
-                assets = [a for a in assets if q in a['name'].lower()]
-            if kwargs['context']:
-                assets = [a for a in assets if a.get('context') == kwargs['context']]
-            if active_tags:
-                assets = [a for a in assets if all(
-                    t.lower() in [x.lower() for x in (a.get('tags') or [])]
-                    for t in active_tags
-                )]
-        elif self.current_collection == "__trash__":
-            assets = library.list_trashed_assets()
-            if kwargs['query']:
-                q = kwargs['query'].lower()
-                assets = [a for a in assets if q in a['name'].lower()]
-            if kwargs['context']:
-                assets = [a for a in assets if a.get('context') == kwargs['context']]
-        elif self.current_collection or self.current_collections:
-            # Get assets from selected collection(s) (and children if subcontent enabled)
-            # Multi-select: use the set; single-select: use the single ID
-            if self.current_collections:
-                coll_ids = list(self.current_collections)
+        # Snapshot collection state for the worker closure
+        collection = self.current_collection
+        collections_set = set(self.current_collections)
+        subcontent = self.subcontent_btn.isChecked()
+
+        # Build query function (captures UI state, runs on worker thread)
+        def query_fn():
+            # Stale syncing cleanup (non-critical)
+            try:
+                library.cleanup_stale_syncing()
+            except Exception:
+                pass
+
+            if collection == "__recent__":
+                assets = library.get_recent_assets(limit=50)
+                if kwargs['query']:
+                    q = kwargs['query'].lower()
+                    assets = [a for a in assets if q in a['name'].lower()]
+                if kwargs['context']:
+                    assets = [a for a in assets if a.get('context') == kwargs['context']]
+                if active_tags:
+                    assets = [a for a in assets if all(
+                        t.lower() in [x.lower() for x in (a.get('tags') or [])]
+                        for t in active_tags
+                    )]
+            elif collection == "__favorites__":
+                assets = library.get_favorite_assets(limit=50)
+                if kwargs['query']:
+                    q = kwargs['query'].lower()
+                    assets = [a for a in assets if q in a['name'].lower()]
+                if kwargs['context']:
+                    assets = [a for a in assets if a.get('context') == kwargs['context']]
+                if active_tags:
+                    assets = [a for a in assets if all(
+                        t.lower() in [x.lower() for x in (a.get('tags') or [])]
+                        for t in active_tags
+                    )]
+            elif collection == "__trash__":
+                assets = library.list_trashed_assets()
+                if kwargs['query']:
+                    q = kwargs['query'].lower()
+                    assets = [a for a in assets if q in a['name'].lower()]
+                if kwargs['context']:
+                    assets = [a for a in assets if a.get('context') == kwargs['context']]
+            elif collection or collections_set:
+                if collections_set:
+                    coll_ids = list(collections_set)
+                else:
+                    coll_ids = [collection]
+                if subcontent:
+                    # _get_descendant_collection_ids reads DB — fine on worker
+                    for cid in list(coll_ids):
+                        children = library.list_collections(parent_id=cid)
+                        stack = list(children)
+                        while stack:
+                            child = stack.pop()
+                            coll_ids.append(child['id'])
+                            stack.extend(library.list_collections(parent_id=child['id']))
+
+                seen_ids = set()
+                assets = []
+                for cid in coll_ids:
+                    for a in library.get_collection_assets(cid):
+                        if a['id'] not in seen_ids:
+                            seen_ids.add(a['id'])
+                            a['_source_collection'] = cid
+                            assets.append(a)
+
+                if kwargs['query']:
+                    q = kwargs['query'].lower()
+                    assets = [a for a in assets if q in a['name'].lower()]
+                if kwargs['context']:
+                    assets = [a for a in assets if a['context'] == kwargs['context']]
+                if active_tags:
+                    assets = [a for a in assets if all(
+                        t.lower() in [x.lower() for x in (a.get('tags') or [])]
+                        for t in active_tags
+                    )]
             else:
-                coll_ids = [self.current_collection]
-            if self.subcontent_btn.isChecked():
-                for cid in list(coll_ids):
-                    coll_ids.extend(self._get_descendant_collection_ids(cid))
+                assets = library.search_assets(**kwargs)
 
-            seen_ids = set()
-            assets = []
-            for cid in coll_ids:
-                for a in library.get_collection_assets(cid):
-                    if a['id'] not in seen_ids:
-                        seen_ids.add(a['id'])
-                        a['_source_collection'] = cid
-                        assets.append(a)
+            return assets
 
-            if kwargs['query']:
-                q = kwargs['query'].lower()
-                assets = [a for a in assets if q in a['name'].lower()]
-            if kwargs['context']:
-                assets = [a for a in assets if a['context'] == kwargs['context']]
-            if active_tags:
-                # Filter to assets that have ALL selected tags
-                assets = [a for a in assets if all(
-                    t.lower() in [x.lower() for x in (a.get('tags') or [])]
-                    for t in active_tags
-                )]
-        else:
-            assets = library.search_assets(**kwargs)
+        # --- Cancel any in-flight worker ---
+        if self._worker is not None:
+            self._worker.cancel()
+            self._worker.finished.disconnect()
+            self._worker = None
 
+        # For personal library, run synchronously (fast, local SQLite)
+        if not is_team:
+            try:
+                library.get_db()
+            except TeamLibraryError as e:
+                from sopdrop.config import set_active_library
+                from sopdrop.library import close_db
+                set_active_library("personal")
+                close_db()
+                self._update_library_toggle()
+                self.show_toast(str(e), toast_type='error', duration=5000)
+                self._refresh_assets()
+                return
+
+            assets = query_fn()
+            self._apply_assets(assets, context_filter)
+            return
+
+        # --- Team library: run on background thread ---
+        self.asset_grid.set_loading(True)
+
+        # Stash UI state needed by _on_worker_finished
+        self._pending_context_filter = context_filter
+
+        worker = _LibraryWorker(
+            query_fn=query_fn,
+            do_mirror_refresh=True,
+            parent=self,
+        )
+        worker.finished.connect(self._on_worker_finished)
+        self._worker = worker
+        worker.start()
+
+    def _on_worker_finished(self, result):
+        """Handle results from the background _LibraryWorker.
+
+        Runs on the main thread (Qt signal delivery).
+        """
+        # Ignore if this isn't the current worker (superseded by a newer request)
+        worker = self.sender()
+        if worker is not self._worker:
+            return
+        self._worker = None
+
+        # Liveness guard (see docs/crash-safety.md Pattern 4)
+        try:
+            self.objectName()
+        except RuntimeError:
+            return
+
+        error = result.get('error')
+        if error:
+            # Team library completely unavailable (no mirror either)
+            from sopdrop.config import set_active_library
+            from sopdrop.library import close_db
+            set_active_library("personal")
+            close_db()
+            self._update_library_toggle()
+            self.show_toast(error, toast_type='error', duration=5000)
+            self._refresh_assets()
+            return
+
+        if result.get('stale'):
+            self.show_toast(
+                "Team drive unavailable — showing cached data",
+                toast_type='warning', duration=5000
+            )
+
+        context_filter = getattr(self, '_pending_context_filter', None)
+        self._apply_assets(result['assets'], context_filter)
+
+    def _apply_assets(self, assets, context_filter=None):
+        """Post-process and display assets (runs on main thread)."""
         # Hide pending-delete assets (single and bulk)
         pending_id = getattr(self, '_pending_delete_id', None)
         pending_bulk = set(getattr(self, '_pending_bulk_delete_ids', []))
@@ -4866,6 +5069,12 @@ class LibraryPanel(QtWidgets.QWidget):
 
         self._update_stats()
         self._update_filter_chips()
+
+        # Deferred scroll (set by reveal_asset)
+        scroll_target = getattr(self, '_pending_scroll_to', None)
+        if scroll_target:
+            self._pending_scroll_to = None
+            self.asset_grid.scroll_to_asset(scroll_target)
 
     def _get_descendant_collection_ids(self, collection_id):
         """Get all descendant collection IDs for subcontent inclusion."""
@@ -5980,7 +6189,14 @@ class LibraryPanel(QtWidgets.QWidget):
         self._pending_delete_timer = QtCore.QTimer(self)
         self._pending_delete_timer.setSingleShot(True)
         self._pending_delete_timer.setInterval(5000)
-        self._pending_delete_timer.timeout.connect(lambda: self._finalize_delete(asset_id))
+        _aid = asset_id  # capture for closure
+        def _safe_finalize():
+            try:
+                self.objectName()  # Guard: verify self is alive
+                self._finalize_delete(_aid)
+            except RuntimeError:
+                pass
+        self._pending_delete_timer.timeout.connect(_safe_finalize)
         self._pending_delete_timer.start()
 
         # Hide from grid immediately
@@ -6021,7 +6237,14 @@ class LibraryPanel(QtWidgets.QWidget):
         timer = QtCore.QTimer(self)
         timer.setSingleShot(True)
         timer.setInterval(5000)
-        timer.timeout.connect(lambda ids=list(asset_ids): self._finalize_bulk_delete(ids))
+        _ids = list(asset_ids)
+        def _safe_bulk_finalize():
+            try:
+                self.objectName()  # Guard: verify self is alive
+                self._finalize_bulk_delete(_ids)
+            except RuntimeError:
+                pass
+        timer.timeout.connect(_safe_bulk_finalize)
         self._pending_bulk_delete_timer = timer
         timer.start()
 
@@ -6179,17 +6402,8 @@ class LibraryPanel(QtWidgets.QWidget):
         # Close existing DB connections to force reconnect to new library
         close_db()
 
-        # Verify the new library is actually accessible
-        try:
-            library.get_db()
-        except TeamLibraryError as e:
-            # Switch back — the team library path exists in config but the
-            # directory itself isn't reachable (drive unmounted, etc.).
-            set_active_library("personal")
-            close_db()
-            self._update_library_toggle()
-            self.show_toast(str(e), toast_type='error', duration=5000)
-            return
+        # Mirror refresh + DB access will happen on the background worker
+        # thread inside _refresh_assets() — no blocking call here.
 
         # Reset to "All Assets" since collections are different per library
         self.current_collection = None
@@ -6224,7 +6438,6 @@ class LibraryPanel(QtWidgets.QWidget):
 
         # Show a toast immediately so the user knows something is happening
         self.show_toast("Pulling from cloud...", 'info', 30000)
-        QtWidgets.QApplication.processEvents()
 
         try:
             # Cleanup stale syncing (fast DB query)

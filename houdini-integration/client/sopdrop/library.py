@@ -28,7 +28,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-from .config import get_config_dir, get_library_path, get_active_library
+from .config import (
+    get_config_dir, get_library_path, get_active_library,
+    get_team_library_path, get_team_mirror_dir,
+    get_team_mirror_db_path, get_team_mirror_thumbnails_dir,
+)
 
 import re as _re
 
@@ -118,41 +122,121 @@ def _generate_slug(name, db=None):
 # Directory Management
 # ==============================================================================
 
+def _get_nas_library_dir():
+    """Get the NAS library root directory (always the real team path)."""
+    team_path = get_team_library_path()
+    if not team_path:
+        return None
+    return team_path / "library"
+
+
 def get_library_dir():
-    """Get the library root directory (respects active library setting)."""
+    """Get the library root directory (respects active library setting).
+
+    For team + write mode, returns the NAS path.
+    For team reads, returns the NAS path (mirror is only used for the DB).
+    """
+    if get_active_library() == "team" and _in_write_mode():
+        nas_dir = _get_nas_library_dir()
+        if nas_dir:
+            return nas_dir
     return get_library_path()
 
 
 def get_library_db_path():
-    """Get the SQLite database path."""
+    """Get the SQLite database path.
+
+    For team + write mode, returns the NAS DB path.
+    For team reads, this is NOT called directly — get_db() uses the mirror.
+    """
+    if get_active_library() == "team" and _in_write_mode():
+        nas_path = _get_nas_db_path()
+        if nas_path:
+            return nas_path
     return get_library_dir() / "library.db"
 
 
 def get_library_assets_dir():
-    """Get the directory for stored asset files."""
+    """Get the directory for stored asset files.
+
+    Always returns the NAS path for team — asset files are NOT mirrored.
+    """
+    if get_active_library() == "team":
+        nas_dir = _get_nas_library_dir()
+        if nas_dir:
+            return nas_dir / "assets"
     return get_library_dir() / "assets"
 
 
 def get_library_thumbnails_dir():
-    """Get the directory for thumbnail images."""
+    """Get the directory for thumbnail images.
+
+    For team: returns local mirror thumbnails dir (lazy-cached from NAS).
+    """
+    if get_active_library() == "team" and not _in_write_mode():
+        mirror_thumbs = get_team_mirror_thumbnails_dir()
+        if mirror_thumbs:
+            mirror_thumbs.mkdir(parents=True, exist_ok=True)
+            return mirror_thumbs
+    if get_active_library() == "team" and _in_write_mode():
+        # Writes go to NAS thumbnails
+        nas_dir = _get_nas_library_dir()
+        if nas_dir:
+            return nas_dir / "thumbnails"
     return get_library_dir() / "thumbnails"
 
 
+def _get_nas_thumbnails_dir():
+    """Get the NAS thumbnails directory (for lazy-caching to mirror)."""
+    nas_dir = _get_nas_library_dir()
+    if nas_dir:
+        return nas_dir / "thumbnails"
+    return None
+
+
 def get_library_trash_dir():
-    """Get the directory for trashed asset files."""
+    """Get the directory for trashed asset files.
+
+    Always returns the NAS path for team — trash lives on NAS.
+    """
+    if get_active_library() == "team":
+        nas_dir = _get_nas_library_dir()
+        if nas_dir:
+            return nas_dir / "trash"
     return get_library_dir() / "trash"
 
 
 def ensure_library_dirs():
     """Ensure all library directories exist."""
-    dirs = [
-        get_library_dir(),
-        get_library_assets_dir(),
-        get_library_thumbnails_dir(),
-        get_library_trash_dir(),
-    ]
-    for d in dirs:
-        d.mkdir(parents=True, exist_ok=True)
+    is_team = get_active_library() == "team"
+
+    if is_team:
+        # Ensure NAS dirs exist (may fail if NAS is down — that's OK)
+        nas_dir = _get_nas_library_dir()
+        if nas_dir:
+            for sub in ("", "assets", "thumbnails", "trash"):
+                d = nas_dir / sub if sub else nas_dir
+                try:
+                    d.mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    pass
+
+        # Ensure mirror dirs exist (local, always succeeds)
+        mirror_dir = get_team_mirror_dir()
+        if mirror_dir:
+            mirror_dir.mkdir(parents=True, exist_ok=True)
+        mirror_thumbs = get_team_mirror_thumbnails_dir()
+        if mirror_thumbs:
+            mirror_thumbs.mkdir(parents=True, exist_ok=True)
+    else:
+        dirs = [
+            get_library_dir(),
+            get_library_dir() / "assets",
+            get_library_dir() / "thumbnails",
+            get_library_dir() / "trash",
+        ]
+        for d in dirs:
+            d.mkdir(parents=True, exist_ok=True)
 
 
 def get_current_library_info():
@@ -372,11 +456,229 @@ _current_db_path = None
 _db_lock = threading.Lock()
 _trash_purged = False
 
+# Team mirror state
+_nas_db_mtime = None       # Last known mtime of the NAS library.db
+_nas_connection = None      # Direct connection to NAS DB (for writes)
+_mirror_available = False   # Whether a local mirror exists
+_nas_available = True       # Whether NAS is reachable
+_write_mode = threading.local()  # Thread-local flag for NAS write mode
+
+
+def _get_nas_db_path():
+    """Get the NAS library.db path (the real team library on the network drive)."""
+    team_path = get_team_library_path()
+    if not team_path:
+        return None
+    return team_path / "library" / "library.db"
+
+
+def _get_nas_db():
+    """Get or create a connection to the NAS database (for writes only)."""
+    global _nas_connection
+    nas_path = _get_nas_db_path()
+    if not nas_path or not nas_path.exists():
+        return None
+    if _nas_connection is None:
+        _nas_connection = sqlite3.connect(str(nas_path), check_same_thread=False)
+        _nas_connection.row_factory = sqlite3.Row
+        _nas_connection.execute("PRAGMA foreign_keys = ON")
+        _nas_connection.execute("PRAGMA mmap_size = 0")
+        _nas_connection.execute("PRAGMA busy_timeout = 5000")
+        # No WAL for NAS — network drives can't handle it
+        _nas_connection.executescript(SCHEMA)
+        try:
+            _nas_connection.executescript(FTS_SCHEMA)
+        except Exception:
+            pass
+        _run_migrations(_nas_connection)
+        _nas_connection.commit()
+    return _nas_connection
+
+
+def refresh_team_mirror(force=False):
+    """Copy the NAS library.db to the local mirror using SQLite's backup API.
+
+    Checks mtime to skip the copy if unchanged (unless force=True).
+    Closes existing mirror connection before overwrite so the file isn't locked.
+    """
+    global _nas_db_mtime, _mirror_available, _nas_available
+
+    nas_db_path = _get_nas_db_path()
+    if not nas_db_path:
+        return
+
+    # Check NAS accessibility
+    try:
+        if not nas_db_path.exists():
+            _nas_available = False
+            return
+        _nas_available = True
+    except OSError:
+        _nas_available = False
+        return
+
+    # Check mtime — skip if unchanged
+    try:
+        current_mtime = os.stat(str(nas_db_path)).st_mtime
+    except OSError:
+        _nas_available = False
+        return
+
+    if not force and _nas_db_mtime is not None and current_mtime == _nas_db_mtime:
+        return  # NAS DB hasn't changed
+
+    mirror_db_path = get_team_mirror_db_path()
+    if not mirror_db_path:
+        return
+
+    # Ensure mirror directory exists
+    mirror_db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Close existing mirror connection before overwriting the file
+    mirror_path_str = str(mirror_db_path)
+    with _db_lock:
+        if mirror_path_str in _connections:
+            try:
+                _connections[mirror_path_str].close()
+            except Exception:
+                pass
+            del _connections[mirror_path_str]
+
+    # Use SQLite backup API — safe against concurrent writers
+    source_conn = None
+    try:
+        source_conn = sqlite3.connect(str(nas_db_path))
+        dest_conn = sqlite3.connect(mirror_path_str)
+        source_conn.backup(dest_conn)
+        dest_conn.close()
+        _nas_db_mtime = current_mtime
+        _mirror_available = True
+    except Exception as e:
+        print(f"[Sopdrop] Mirror refresh failed: {e}")
+    finally:
+        if source_conn:
+            try:
+                source_conn.close()
+            except Exception:
+                pass
+
+
+def is_nas_available():
+    """Check whether the NAS team library is currently reachable."""
+    return _nas_available
+
+
+def is_mirror_stale():
+    """Check whether the local mirror may be out of date.
+
+    Returns True if the NAS is unreachable (so the mirror can't be refreshed).
+    """
+    return _mirror_available and not _nas_available
+
+
+class _nas_write_session:
+    """Context manager that routes get_db() to the NAS for writes.
+
+    On exit, refreshes the local mirror so reads pick up the new data.
+    Supports re-entrant nesting (inner sessions don't clobber the outer).
+    """
+
+    def __enter__(self):
+        self._was_active = getattr(_write_mode, 'active', False)
+        _write_mode.active = True
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        _write_mode.active = self._was_active
+        # Only refresh mirror when the outermost session exits successfully
+        if not self._was_active and exc_type is None:
+            try:
+                refresh_team_mirror(force=True)
+            except Exception:
+                pass
+        return False
+
+
+def _writes_to_nas(fn):
+    """Decorator that wraps a function in _nas_write_session when the active library is 'team'."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        if get_active_library() == "team":
+            with _nas_write_session():
+                return fn(*args, **kwargs)
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def _in_write_mode():
+    """Check if we're currently inside a _nas_write_session."""
+    return getattr(_write_mode, 'active', False)
+
 
 def get_db():
-    """Get or create database connection for the active library."""
+    """Get or create database connection for the active library.
+
+    For team libraries:
+      - Reads: returns connection to local mirror (fast, WAL-enabled)
+      - Writes (inside _nas_write_session): returns connection to NAS DB
+      - On first team access, bootstraps the mirror from NAS
+      - If NAS is unavailable but a stale mirror exists, serves from it
+    """
     global _connections, _current_db_path, _trash_purged
 
+    is_team = get_active_library() == "team"
+
+    # Team + write mode → use the NAS connection directly
+    if is_team and _in_write_mode():
+        nas_conn = _get_nas_db()
+        if nas_conn is not None:
+            return nas_conn
+        # NAS unreachable during write — fall through to raise or use mirror
+
+    # Team reads → use local mirror
+    if is_team:
+        mirror_path = get_team_mirror_db_path()
+        if mirror_path:
+            # Bootstrap mirror on first access
+            if not mirror_path.exists():
+                refresh_team_mirror()
+            # If NAS is unavailable but stale mirror exists, use it
+            if not mirror_path.exists():
+                # No mirror and NAS unavailable — fall through to original
+                # get_library_db_path() which will raise TeamLibraryError
+                pass
+            else:
+                db_path = str(mirror_path)
+                ensure_library_dirs()
+                with _db_lock:
+                    if db_path != _current_db_path:
+                        _current_db_path = db_path
+
+                    if db_path not in _connections:
+                        conn = sqlite3.connect(db_path, check_same_thread=False)
+                        conn.row_factory = sqlite3.Row
+                        conn.execute("PRAGMA foreign_keys = ON")
+                        conn.execute("PRAGMA busy_timeout = 5000")
+                        # Local mirror can use WAL — major perf win
+                        conn.execute("PRAGMA journal_mode = WAL")
+
+                        conn.executescript(SCHEMA)
+
+                        try:
+                            conn.executescript(FTS_SCHEMA)
+                        except Exception as e:
+                            print(f"[Sopdrop] FTS5 unavailable for mirror: {e}")
+
+                        _run_migrations(conn)
+                        conn.commit()
+                        _connections[db_path] = conn
+
+                    return _connections[db_path]
+
+    # Personal library or fallback
     ensure_library_dirs()
     db_path = str(get_library_db_path())
 
@@ -397,11 +699,7 @@ def get_db():
             # (team libraries may have concurrent access from multiple users).
             conn.execute("PRAGMA busy_timeout = 5000")
 
-            # WAL mode for better concurrent read performance (local DBs only).
-            # Skip for team libraries — WAL needs mmap which we've disabled for
-            # network drives, and Phase 2 will make team DBs local anyway.
-            if get_active_library() != "team":
-                conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA journal_mode = WAL")
 
             conn.executescript(SCHEMA)
 
@@ -519,8 +817,8 @@ def _run_migrations(conn):
 
 
 def close_db():
-    """Close all database connections."""
-    global _connections, _current_db_path
+    """Close all database connections (including NAS write connection)."""
+    global _connections, _current_db_path, _nas_connection, _nas_db_mtime
     with _db_lock:
         for conn in _connections.values():
             try:
@@ -529,6 +827,15 @@ def close_db():
                 pass
         _connections = {}
         _current_db_path = None
+
+    # Close NAS write connection
+    if _nas_connection is not None:
+        try:
+            _nas_connection.close()
+        except Exception:
+            pass
+        _nas_connection = None
+        _nas_db_mtime = None
 
 
 def _auto_purge_trash(conn, max_age_days=30):
@@ -569,6 +876,7 @@ def get_library_meta(key: str, db=None) -> Optional[str]:
     return row[0] if row else None
 
 
+@_writes_to_nas
 def set_library_meta(key: str, value: str, db=None):
     """Set a metadata value in the library_meta table."""
     conn = db or get_db()
@@ -594,6 +902,7 @@ def detect_team_from_library(path: str) -> Optional[Dict[str, str]]:
     if not db_path.exists():
         return None
 
+    conn = None
     try:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
@@ -603,7 +912,6 @@ def detect_team_from_library(path: str) -> Optional[Dict[str, str]]:
             "SELECT name FROM sqlite_master WHERE type='table' AND name='library_meta'"
         ).fetchone()
         if not tables:
-            conn.close()
             return None
 
         team_name = None
@@ -617,8 +925,6 @@ def detect_team_from_library(path: str) -> Optional[Dict[str, str]]:
         if row:
             team_slug = row[0]
 
-        conn.close()
-
         if team_name or team_slug:
             return {
                 'team_name': team_name,
@@ -626,6 +932,12 @@ def detect_team_from_library(path: str) -> Optional[Dict[str, str]]:
             }
     except Exception as e:
         print(f"[Sopdrop] Could not read team metadata from {db_path}: {e}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     return None
 
@@ -661,6 +973,7 @@ def dict_from_row(row):
 # Collection Operations
 # ==============================================================================
 
+@_writes_to_nas
 def create_collection(
     name: str,
     description: str = "",
@@ -733,6 +1046,7 @@ def get_collection_tree() -> List[Dict[str, Any]]:
     return root
 
 
+@_writes_to_nas
 def update_collection(collection_id: str, **kwargs) -> Optional[Dict[str, Any]]:
     """Update a collection's properties."""
     db = get_db()
@@ -753,6 +1067,7 @@ def update_collection(collection_id: str, **kwargs) -> Optional[Dict[str, Any]]:
     return get_collection(collection_id)
 
 
+@_writes_to_nas
 def delete_collection(collection_id: str, recursive: bool = False):
     """Delete a collection. If recursive, delete children too."""
     db = get_db()
@@ -791,6 +1106,7 @@ def delete_collection(collection_id: str, recursive: bool = False):
 # Asset Operations
 # ==============================================================================
 
+@_writes_to_nas
 def save_asset(
     name: str,
     context: str,
@@ -897,6 +1213,7 @@ def save_asset(
     return get_asset(asset_id)
 
 
+@_writes_to_nas
 def save_hda(
     name: str,
     hda_info: Dict[str, Any],
@@ -1161,6 +1478,7 @@ def load_asset_package(asset_id: str) -> Optional[Dict[str, Any]]:
     return json.loads(file_path.read_text())
 
 
+@_writes_to_nas
 def update_asset_package(asset_id: str, package_data: Dict[str, Any]) -> bool:
     """Update the package data (JSON file) for an asset."""
     asset = get_asset(asset_id)
@@ -1187,6 +1505,7 @@ def update_asset_package(asset_id: str, package_data: Dict[str, Any]) -> bool:
     return True
 
 
+@_writes_to_nas
 def update_asset(asset_id: str, **kwargs) -> Optional[Dict[str, Any]]:
     """Update asset metadata."""
     db = get_db()
@@ -1229,6 +1548,7 @@ def update_asset(asset_id: str, **kwargs) -> Optional[Dict[str, Any]]:
     return get_asset(asset_id)
 
 
+@_writes_to_nas
 def update_asset_thumbnail(asset_id: str, thumbnail_data: bytes) -> bool:
     """Update an asset's thumbnail image."""
     asset = get_asset(asset_id)
@@ -1242,6 +1562,7 @@ def update_asset_thumbnail(asset_id: str, thumbnail_data: bytes) -> bool:
     return update_asset(asset_id, thumbnail_path=thumb_name) is not None
 
 
+@_writes_to_nas
 def save_asset_version(
     asset_id: str,
     package_data: Dict[str, Any],
@@ -1437,6 +1758,7 @@ def load_version_package(version_id: str) -> Optional[Dict[str, Any]]:
     return json.loads(file_path.read_text())
 
 
+@_writes_to_nas
 def revert_to_version(asset_id: str, version_id: str) -> Optional[Dict[str, Any]]:
     """Revert an asset to a previous version.
 
@@ -1524,6 +1846,7 @@ def revert_to_version(asset_id: str, version_id: str) -> Optional[Dict[str, Any]
     return get_asset(asset_id)
 
 
+@_writes_to_nas
 def save_vex_snippet(
     name: str,
     code: str,
@@ -1788,6 +2111,7 @@ def get_path_file_path(asset_id: str) -> Optional[str]:
     return None
 
 
+@_writes_to_nas
 def record_asset_use(asset_id: str):
     """Record that an asset was used (pasted)."""
     db = get_db()
@@ -1800,6 +2124,7 @@ def record_asset_use(asset_id: str):
     db.commit()
 
 
+@_writes_to_nas
 def delete_asset(asset_id: str):
     """Soft-delete an asset: move files to trash/ and set deleted_at."""
     asset = get_asset(asset_id)
@@ -1839,6 +2164,7 @@ def delete_asset(asset_id: str):
     _trigger_menu_regenerate(skip_reload=False)
 
 
+@_writes_to_nas
 def restore_asset(asset_id: str):
     """Restore a soft-deleted asset from trash."""
     asset = get_asset(asset_id)
@@ -1891,6 +2217,7 @@ def restore_asset(asset_id: str):
     _trigger_menu_regenerate(skip_reload=False)
 
 
+@_writes_to_nas
 def purge_asset(asset_id: str):
     """Permanently delete a trashed asset (files + DB row)."""
     asset = get_asset(asset_id)
@@ -1941,6 +2268,7 @@ def list_trashed_assets() -> List[Dict[str, Any]]:
     return assets
 
 
+@_writes_to_nas
 def empty_trash():
     """Permanently delete all trashed assets."""
     for asset in list_trashed_assets():
@@ -1951,6 +2279,7 @@ def empty_trash():
 # Collection-Asset Relationships
 # ==============================================================================
 
+@_writes_to_nas
 def add_asset_to_collection(asset_id: str, collection_id: str):
     """Add an asset to a collection."""
     db = get_db()
@@ -1970,6 +2299,7 @@ def add_asset_to_collection(asset_id: str, collection_id: str):
     db.commit()
 
 
+@_writes_to_nas
 def remove_asset_from_collection(asset_id: str, collection_id: str):
     """Remove an asset from a collection."""
     db = get_db()
@@ -2153,6 +2483,7 @@ def search_assets(
         for cr in coll_rows:
             aid = cr[0]
             coll_dict = dict_from_row(cr)
+            # Remove the extra asset_id key from the collection dict
             coll_dict.pop('asset_id', None)
             coll_map.setdefault(aid, []).append(coll_dict)
         for asset in assets:
@@ -2214,6 +2545,7 @@ def get_frequent_assets(limit: int = 10) -> List[Dict[str, Any]]:
     return search_assets(sort_by='use_count', sort_order='desc', limit=limit)
 
 
+@_writes_to_nas
 def toggle_favorite(asset_id: str) -> bool:
     """Toggle favorite status for an asset. Returns new is_favorite state."""
     db = get_db()
@@ -2236,6 +2568,7 @@ def get_favorite_assets(limit: int = 50) -> List[Dict[str, Any]]:
 # Filter Presets (Saved Searches)
 # ==============================================================================
 
+@_writes_to_nas
 def save_filter_preset(
     name: str,
     filters: Dict[str, Any],
@@ -2283,6 +2616,7 @@ def list_filter_presets() -> List[Dict[str, Any]]:
     return presets
 
 
+@_writes_to_nas
 def delete_filter_preset(preset_id: str):
     """Delete a filter preset."""
     db = get_db()
@@ -3434,6 +3768,7 @@ def get_team_saved_assets(team_slug: str) -> List[Dict[str, Any]]:
         return []
 
 
+@_writes_to_nas
 def sync_team_library(team_slug: str = None, collection_name: str = None) -> Dict[str, Any]:
     """
     Sync assets from a team's saved library on the website to the local team library.
@@ -3595,6 +3930,7 @@ def get_user_teams() -> List[Dict[str, Any]]:
 # Cross-Library Operations
 # ==============================================================================
 
+@_writes_to_nas
 def copy_asset_to_library(asset_id: str, target_library: str) -> Optional[Dict[str, Any]]:
     """
     Copy an asset from current library to another library (personal or team).

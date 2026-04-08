@@ -317,6 +317,15 @@ def _import_v2(
     if not encoded_data:
         raise ImportError("Package contains no data")
 
+    # Guard against excessively large packages that could OOM Houdini.
+    # 500 MB decoded (667 MB base64-encoded) is a generous upper bound.
+    MAX_ENCODED_SIZE = 667 * 1024 * 1024
+    if len(encoded_data) > MAX_ENCODED_SIZE:
+        raise ImportError(
+            f"Package is too large ({len(encoded_data) // (1024*1024)} MB encoded). "
+            f"Maximum supported size is ~500 MB."
+        )
+
     # Decode from base64
     try:
         binary_data = base64.b64decode(encoded_data)
@@ -342,22 +351,50 @@ def _import_v2(
 
     # Write binary data to temp file
     # Note: We must close the file before Houdini can read it
-    temp_path = tempfile.mktemp(suffix='.cpio')
-    with open(temp_path, 'wb') as f:
-        f.write(binary_data)
-        f.flush()
-        os.fsync(f.fileno())  # Ensure data is written to disk
+    fd, temp_path = tempfile.mkstemp(suffix='.cpio')
+    try:
+        os.write(fd, binary_data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
     try:
         # Debug: print file size
         file_size = os.path.getsize(temp_path)
         print(f"[Sopdrop] Loading {file_size} bytes from temp file...")
 
+        # Check if this package came from a container HDA (e.g. SOP Create).
+        # If so, create the container first and load children into it.
+        container_hda = (package.get("metadata") or {}).get("container_hda")
+        load_target = target_node
+        container_node = None
+
+        if container_hda:
+            type_name = container_hda.get("type_name")
+            if type_name:
+                try:
+                    container_node = target_node.createNode(type_name)
+                    if container_node and container_node.isSubNetwork():
+                        # Remove any default children the container creates
+                        for child in list(container_node.children()):
+                            child.destroy()
+                        load_target = container_node
+                        print(f"[Sopdrop] Created container '{type_name}', loading children into it")
+                    else:
+                        # Not a subnet — can't load children into it, fall back
+                        if container_node:
+                            container_node.destroy()
+                            container_node = None
+                        print(f"[Sopdrop] Container type '{type_name}' is not a subnet, loading flat")
+                except hou.OperationFailed:
+                    container_node = None
+                    print(f"[Sopdrop] Could not create container '{type_name}' (type not available), loading flat")
+
         # Track items before import to detect new ones
         items_before = set(target_node.allItems())
 
         # Load items using Houdini's native method
-        result = target_node.loadItemsFromFile(temp_path)
+        result = load_target.loadItemsFromFile(temp_path)
 
         # Debug: see what we got back
         print(f"[Sopdrop] loadItemsFromFile returned: {type(result)}")
@@ -373,6 +410,17 @@ def _import_v2(
         # Also detect new items by comparing before/after (fallback for older Houdini)
         items_after = set(target_node.allItems())
         new_items = list(items_after - items_before)
+
+        # If we loaded into a container, the container is the only top-level item.
+        # Just position it, select it, and lay out its children.
+        if container_node is not None:
+            if position:
+                container_node.setPosition(hou.Vector2(position[0], position[1]))
+            container_node.layoutChildren()
+            target_node.setSelected(False, clear_all_selected=True)
+            container_node.setSelected(True, clear_all_selected=False)
+            print(f"[Sopdrop] Loaded into container '{container_node.type().name()}' with {len(container_node.children())} children")
+            return [container_node]
 
         # Collect items to move and items to select
         # Strategy:
@@ -396,12 +444,34 @@ def _import_v2(
                 if item.parent() == target_node:
                     all_nodes.append(item)
 
-        network_boxes = new_netboxes
         sticky_notes = new_stickies
+
+        # Filter to only top-level network boxes for repositioning.
+        # Nested boxes (box inside another box) move automatically when their
+        # parent box moves — moving them independently double-moves them.
+        new_netbox_set = set(new_netboxes)
+        top_level_netboxes = []
+        nested_netboxes = []
+        for netbox in new_netboxes:
+            try:
+                parent_box = netbox.parentNetworkBox()
+                if parent_box is not None and parent_box in new_netbox_set:
+                    nested_netboxes.append(netbox)
+                else:
+                    top_level_netboxes.append(netbox)
+            except Exception:
+                top_level_netboxes.append(netbox)
+
+        if nested_netboxes:
+            print(f"[Sopdrop] {len(nested_netboxes)} nested netbox(es) will move with parent — skipping independent move")
+
+        network_boxes = top_level_netboxes
+        # all_netboxes used for selection includes everything
+        all_netboxes = new_netboxes
 
         # Build set of nodes inside network boxes (we won't move these - the box moves them)
         nodes_in_boxes = set()
-        for netbox in network_boxes:
+        for netbox in all_netboxes:
             try:
                 for node in netbox.nodes():
                     nodes_in_boxes.add(node.path())
@@ -462,10 +532,10 @@ def _import_v2(
             except Exception as e:
                 print(f"[Sopdrop] Error capturing sticky data: {e}")
 
-        # For selection, we want all top-level items
-        all_top_level = all_nodes + network_boxes + sticky_notes
+        # For selection, we want all items (including nested boxes)
+        all_top_level = all_nodes + all_netboxes + sticky_notes
 
-        print(f"[Sopdrop] Found {len(all_nodes)} nodes ({len(nodes_to_move)} outside boxes), {len(network_boxes)} netboxes (unique), {len(sticky_notes)} sticky notes ({len(stickies_to_move)} outside boxes)")
+        print(f"[Sopdrop] Found {len(all_nodes)} nodes ({len(nodes_to_move)} outside boxes), {len(all_netboxes)} netboxes ({len(network_boxes)} top-level), {len(sticky_notes)} sticky notes ({len(stickies_to_move)} outside boxes)")
 
         # If no items found, return empty
         if not all_top_level:
@@ -681,6 +751,31 @@ def _import_v1(
     # Patch old-format packages to fix variable references.
     code = _patch_old_format_code(code)
 
+    # Check if this package came from a container HDA (e.g. SOP Create).
+    # If so, create the container first and load children into it.
+    container_hda = (package.get("metadata") or {}).get("container_hda")
+    container_node = None
+    original_target = target_node
+
+    if container_hda:
+        type_name = container_hda.get("type_name")
+        if type_name:
+            try:
+                container_node = target_node.createNode(type_name)
+                if container_node and container_node.isSubNetwork():
+                    for child in list(container_node.children()):
+                        child.destroy()
+                    target_node = container_node
+                    print(f"[Sopdrop] Created container '{type_name}', loading children into it")
+                else:
+                    if container_node:
+                        container_node.destroy()
+                        container_node = None
+                    print(f"[Sopdrop] Container type '{type_name}' is not a subnet, loading flat")
+            except hou.OperationFailed:
+                container_node = None
+                print(f"[Sopdrop] Could not create container '{type_name}' (type not available), loading flat")
+
     # Track items before import
     items_before = set(target_node.allItems())
 
@@ -690,15 +785,29 @@ def _import_v1(
     else:
         exec_parent = target_node
 
-    # Wrap the entire import in an undo group so the user can undo the
-    # paste with a single Ctrl+Z instead of one undo per setInput/createNode.
+    # Note: import_items() already wraps in hou.undos.group("Sopdrop Paste"),
+    # so we do NOT create a second nested undo group here.
     package_meta = package.get("metadata", {})
 
-    with hou.undos.group("Sopdrop Paste"):
-        return _import_v1_inner(
-            code, target_node, exec_parent, use_placeholders,
-            missing_type_names, items_before, position, package_meta,
-        )
+    # If loading into a container, don't reposition children — they keep
+    # their original layout inside the container. We position the container itself.
+    inner_position = None if container_node else position
+    result = _import_v1_inner(
+        code, target_node, exec_parent, use_placeholders,
+        missing_type_names, items_before, inner_position, package_meta,
+    )
+
+    # If we loaded into a container, return the container as the top-level item
+    if container_node is not None:
+        container_node.layoutChildren()
+        if position:
+            container_node.setPosition(hou.Vector2(position[0], position[1]))
+        original_target.setSelected(False, clear_all_selected=True)
+        container_node.setSelected(True, clear_all_selected=False)
+        print(f"[Sopdrop] Loaded into container '{container_node.type().name()}' with {len(container_node.children())} children")
+        return [container_node]
+
+    return result
 
 
 def _import_v1_inner(
@@ -763,10 +872,23 @@ def _import_v1_inner(
                         or (expected > 10 and partial_count < expected * 0.1))
 
         if should_retry:
-            # Delete any partial items before retrying to avoid duplicates
+            # Delete any partial items before retrying to avoid duplicates.
+            # Only destroy top-level nodes (direct children of target_node) —
+            # their children are destroyed automatically. Destroying in
+            # arbitrary order (e.g., child after parent) can segfault.
             if partial_count > 0:
                 print(f"[Sopdrop] Only {partial_count}/{expected} items created. Cleaning up partial result...")
-                for item in (items_after_fail - items_before):
+                new_partial = items_after_fail - items_before
+                top_level_to_destroy = []
+                for item in new_partial:
+                    try:
+                        if isinstance(item, hou.Node) and item.parent() == target_node:
+                            top_level_to_destroy.append(item)
+                        elif isinstance(item, (hou.NetworkBox, hou.StickyNote, hou.NetworkDot)):
+                            top_level_to_destroy.append(item)
+                    except Exception:
+                        pass
+                for item in top_level_to_destroy:
                     try:
                         item.destroy()
                     except Exception:
@@ -817,6 +939,19 @@ def _import_v1_inner(
             if item.parent() == target_node:
                 new_nodes.append(item)
 
+    # Filter to only top-level network boxes for repositioning.
+    # Nested boxes move automatically when their parent box moves.
+    new_netbox_set = set(new_netboxes)
+    top_level_netboxes = []
+    for netbox in new_netboxes:
+        try:
+            parent_box = netbox.parentNetworkBox()
+            if parent_box is not None and parent_box in new_netbox_set:
+                continue
+            top_level_netboxes.append(netbox)
+        except Exception:
+            top_level_netboxes.append(netbox)
+
     # Find nodes inside network boxes to avoid double-moving
     nodes_in_boxes = set()
     for netbox in new_netboxes:
@@ -828,9 +963,9 @@ def _import_v1_inner(
 
     nodes_to_move = [n for n in new_nodes if n.path() not in nodes_in_boxes]
 
-    # Capture netbox data for proper repositioning
+    # Capture netbox data for proper repositioning (top-level only)
     netbox_data = {}
-    for netbox in new_netboxes:
+    for netbox in top_level_netboxes:
         try:
             pos = netbox.position()
             size = netbox.size()
@@ -861,10 +996,10 @@ def _import_v1_inner(
             stickies_to_move.append(sticky)
 
     # Reposition: move loose nodes + loose stickies + dots individually,
-    # move network boxes separately (which moves their contents too)
+    # move top-level network boxes separately (which moves their contents too)
     items_to_move = nodes_to_move + stickies_to_move + new_dots
-    if position and (items_to_move or new_netboxes):
-        _reposition_items(items_to_move, position, new_netboxes, netbox_data, sticky_data)
+    if position and (items_to_move or top_level_netboxes):
+        _reposition_items(items_to_move, position, top_level_netboxes, netbox_data, sticky_data)
 
     # All top-level items for selection
     all_top_level = new_nodes + new_netboxes + new_stickies + new_dots
