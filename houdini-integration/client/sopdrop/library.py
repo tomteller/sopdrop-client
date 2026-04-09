@@ -483,13 +483,20 @@ def _get_nas_db():
         _nas_connection.row_factory = sqlite3.Row
         _nas_connection.execute("PRAGMA foreign_keys = ON")
         _nas_connection.execute("PRAGMA mmap_size = 0")
-        _nas_connection.execute("PRAGMA busy_timeout = 5000")
-        # No WAL for NAS — network drives can't handle it
-        _nas_connection.executescript(SCHEMA)
-        try:
-            _nas_connection.executescript(FTS_SCHEMA)
-        except Exception:
-            pass
+        _nas_connection.execute("PRAGMA busy_timeout = 15000")
+        # No WAL for NAS — network drives can't handle it.
+        # Only run schema if the core table is missing — avoids acquiring
+        # an exclusive write lock on every connection when the tables
+        # already exist (major contention reduction for multi-workstation).
+        _needs_schema = _nas_connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='library_assets'"
+        ).fetchone() is None
+        if _needs_schema:
+            _nas_connection.executescript(SCHEMA)
+            try:
+                _nas_connection.executescript(FTS_SCHEMA)
+            except Exception:
+                pass
         _run_migrations(_nas_connection)
         _nas_connection.commit()
     return _nas_connection
@@ -547,7 +554,8 @@ def refresh_team_mirror(force=False):
     # Use SQLite backup API — safe against concurrent writers
     source_conn = None
     try:
-        source_conn = sqlite3.connect(str(nas_db_path))
+        source_conn = sqlite3.connect(str(nas_db_path), timeout=15)
+        source_conn.execute("PRAGMA busy_timeout = 15000")
         dest_conn = sqlite3.connect(mirror_path_str)
         source_conn.backup(dest_conn)
         dest_conn.close()
@@ -665,12 +673,17 @@ def get_db():
                         # Local mirror can use WAL — major perf win
                         conn.execute("PRAGMA journal_mode = WAL")
 
-                        conn.executescript(SCHEMA)
-
-                        try:
-                            conn.executescript(FTS_SCHEMA)
-                        except Exception as e:
-                            print(f"[Sopdrop] FTS5 unavailable for mirror: {e}")
+                        # Only run schema if tables are missing — avoids
+                        # unnecessary write locks on the mirror file.
+                        _needs_schema = conn.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table' AND name='library_assets'"
+                        ).fetchone() is None
+                        if _needs_schema:
+                            conn.executescript(SCHEMA)
+                            try:
+                                conn.executescript(FTS_SCHEMA)
+                            except Exception as e:
+                                print(f"[Sopdrop] FTS5 unavailable for mirror: {e}")
 
                         _run_migrations(conn)
                         conn.commit()
@@ -701,14 +714,18 @@ def get_db():
 
             conn.execute("PRAGMA journal_mode = WAL")
 
-            conn.executescript(SCHEMA)
-
-            # FTS5 uses mmap internally and can crash on network filesystems.
-            # Create it separately so a failure doesn't block core functionality.
-            try:
-                conn.executescript(FTS_SCHEMA)
-            except Exception as e:
-                print(f"[Sopdrop] FTS5 unavailable for {db_path}: {e}")
+            # Only run schema if tables are missing
+            _needs_schema = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='library_assets'"
+            ).fetchone() is None
+            if _needs_schema:
+                conn.executescript(SCHEMA)
+                # FTS5 uses mmap internally and can crash on network filesystems.
+                # Create it separately so a failure doesn't block core functionality.
+                try:
+                    conn.executescript(FTS_SCHEMA)
+                except Exception as e:
+                    print(f"[Sopdrop] FTS5 unavailable for {db_path}: {e}")
 
             # Run migrations for existing databases
             _run_migrations(conn)
@@ -904,8 +921,9 @@ def detect_team_from_library(path: str) -> Optional[Dict[str, str]]:
 
     conn = None
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn = sqlite3.connect(str(db_path), timeout=10)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 10000")
 
         # Check if library_meta table exists
         tables = conn.execute(
