@@ -1149,16 +1149,42 @@ def _check_missing_hdas(dependencies: List[Dict]) -> List[Dict]:
         if not name:
             continue
 
-        # Try to find the node type in the specified category
         found = False
+        cat = None
+        all_types = None
         try:
             categories = hou.nodeTypeCategories()
-            if category_name in categories:
-                node_type = hou.nodeType(categories[category_name], name)
-                if node_type is not None:
+            cat = categories.get(category_name)
+            if cat:
+                # Look through all registered types in this category.
+                # hou.nodeType() can miss namespaced or versioned HDAs,
+                # so we check the full type map directly.
+                all_types = cat.nodeTypes()
+                if name in all_types:
                     found = True
+                else:
+                    # Handle version mismatches: an HDA registered as
+                    # "ns::Foo::2.0" should match dep name "ns::Foo",
+                    # and vice versa.
+                    for registered_name in all_types:
+                        base = registered_name.rsplit("::", 1)[0] if "::" in registered_name else registered_name
+                        dep_base = name.rsplit("::", 1)[0] if "::" in name else name
+                        if registered_name == name or base == name or registered_name == dep_base or base == dep_base:
+                            found = True
+                            break
         except Exception:
             pass
+
+        if not found and cat and all_types is not None:
+            # Debug: log close matches to help diagnose lookup failures
+            name_lower = name.lower()
+            close = [r for r in all_types if name_lower in r.lower()]
+            if close:
+                # Case or namespace variant exists — treat as found
+                found = True
+                print(f"[Sopdrop] HDA '{name}' matched via case-insensitive: {close[:3]}")
+            else:
+                print(f"[Sopdrop] HDA '{name}' (category '{category_name}') not found in {len(all_types)} registered types")
 
         if not found:
             missing.append(dep)

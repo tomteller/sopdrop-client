@@ -416,7 +416,10 @@ def paste_asset(asset_id: str):
         # Handle HDA assets differently to avoid UTF-8 issues
         if asset and asset.get('asset_type') == 'hda':
             _paste_hda(asset, target, pane)
-            record_asset_use(asset_id)
+            try:
+                record_asset_use(asset_id)
+            except Exception:
+                pass  # Non-critical — paste already succeeded
             return
 
         # Load the package for node assets
@@ -451,8 +454,11 @@ def paste_asset(asset_id: str):
         # Import the nodes
         import_items(package, target, position=cursor_pos)
 
-        # Record usage
-        record_asset_use(asset_id)
+        # Record usage (non-critical — paste already succeeded)
+        try:
+            record_asset_use(asset_id)
+        except Exception:
+            pass
 
     except Exception as e:
         import hou

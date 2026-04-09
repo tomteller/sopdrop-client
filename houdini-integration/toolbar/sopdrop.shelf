@@ -9,6 +9,7 @@
     <memberTool name="sopdrop_library"/>
     <memberTool name="sopdrop_save"/>
     <memberTool name="sopdrop_share"/>
+    <memberTool name="sopdrop_save_curves"/>
     <memberTool name="sopdrop_paste"/>
     <memberTool name="sopdrop_website"/>
     <memberTool name="sopdrop_settings"/>
@@ -157,6 +158,60 @@ except Exception as e:
     import traceback
     hou.ui.displayMessage(
         f"Error in Sopdrop share:\n{e}\n\n{traceback.format_exc()}",
+        title="Sopdrop - Error",
+        severity=hou.severityType.Error
+    )
+    ]]></script>
+  </tool>
+
+  <tool name="sopdrop_save_curves" label="Save Curves" icon="CHANNELS_chanlist">
+    <helpText><![CDATA[
+Save animation keyframe curves to your library.
+
+Select channels in the Animation Editor (or select a node with
+keyframed parameters), then click this tool to save the curves.
+
+Curves are saved by channel order, so they can be applied to any
+parameters — not just the ones they came from.
+    ]]></helpText>
+    <script scriptType="python"><![CDATA[
+import sys
+import os
+import importlib
+
+sopdrop_houdini = os.environ.get("SOPDROP_HOUDINI_PATH", "")
+if sopdrop_houdini:
+    for _sd in ["scripts", "client"]:
+        _p = os.path.join(sopdrop_houdini, _sd)
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
+
+try:
+    import sopdrop_library_panel
+    importlib.reload(sopdrop_library_panel)
+
+    dialog = sopdrop_library_panel.SaveCurvesDialog(hou.qt.mainWindow())
+    result = dialog.exec_()
+
+    if result:
+        try:
+            sopdrop_library_panel.refresh_all_panels()
+        except Exception:
+            pass
+
+except ImportError as e:
+    import hou
+    hou.ui.displayMessage(
+        f"Failed to load Sopdrop library:\n{e}\n\n"
+        "Make sure SOPDROP_HOUDINI_PATH is set in houdini.env",
+        title="Sopdrop - Error",
+        severity=hou.severityType.Error
+    )
+except Exception as e:
+    import hou
+    import traceback
+    hou.ui.displayMessage(
+        f"Error in Sopdrop save curves:\n{e}\n\n{traceback.format_exc()}",
         title="Sopdrop - Error",
         severity=hou.severityType.Error
     )

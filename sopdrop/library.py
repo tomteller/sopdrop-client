@@ -2103,6 +2103,44 @@ def save_path_asset(
     )
 
 
+def save_curves_asset(
+    name: str,
+    package_data: "Dict[str, Any]",
+    description: str = "",
+    tags: "List[str]" = None,
+    collection_id: str = None,
+    icon: str = None,
+) -> "Dict[str, Any]":
+    """
+    Save animation curves to the library.
+
+    Uses the same V2 cpio package as regular node assets, but tagged with
+    context="curves" and extra curve metadata (channel names, keyframe count).
+
+    Args:
+        name: Display name for the curves asset
+        package_data: V2 package dict from export_items() with context overridden
+        description: Optional description
+        tags: List of tags for organization
+        collection_id: Optional collection to add to
+        icon: Houdini icon name (default: CHANNELS_chanlist)
+
+    Returns:
+        The saved asset record
+    """
+    collection_ids = [collection_id] if collection_id else None
+
+    return save_asset(
+        name=name,
+        context="curves",
+        package_data=package_data,
+        description=description,
+        tags=tags,
+        collection_ids=collection_ids,
+        icon=icon or "CHANNELS_chanlist",
+    )
+
+
 def get_path_file_path(asset_id: str) -> Optional[str]:
     """Get the stored file path from a path asset."""
     package = load_asset_package(asset_id)
@@ -2111,17 +2149,23 @@ def get_path_file_path(asset_id: str) -> Optional[str]:
     return None
 
 
-@_writes_to_nas
 def record_asset_use(asset_id: str):
-    """Record that an asset was used (pasted)."""
-    db = get_db()
-    now = datetime.utcnow().isoformat()
-    db.execute("""
-        UPDATE library_assets
-        SET last_used_at = ?, use_count = use_count + 1
-        WHERE id = ?
-    """, (now, asset_id))
-    db.commit()
+    """Record that an asset was used (pasted).
+
+    Writes to local mirror only — this is per-user tracking, not shared state.
+    Never raises — callers should not fail just because usage tracking failed.
+    """
+    try:
+        db = get_db()
+        now = datetime.utcnow().isoformat()
+        db.execute("""
+            UPDATE library_assets
+            SET last_used_at = ?, use_count = use_count + 1
+            WHERE id = ?
+        """, (now, asset_id))
+        db.commit()
+    except Exception:
+        pass  # Non-critical — don't block the paste operation
 
 
 @_writes_to_nas

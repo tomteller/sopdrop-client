@@ -162,6 +162,7 @@ COLORS = {
     'out': '#8b8be0',    # Indigo (alias)
     'vex': '#e6b422',    # Gold/Amber
     'path': '#8bc4c4',   # Teal
+    'curves': '#e8a855', # Amber
 }
 
 
@@ -2557,6 +2558,8 @@ class AssetCardWidget(QtWidgets.QFrame):
                     painter.setOpacity(0.15)
                     if is_vex:
                         painter.drawText(pixmap.rect(), QtCore.Qt.AlignCenter, "{ }")
+                    elif context == 'curves':
+                        painter.drawText(pixmap.rect(), QtCore.Qt.AlignCenter, "~")
                     else:
                         painter.drawText(pixmap.rect(), QtCore.Qt.AlignCenter, context[0].upper())
 
@@ -2692,6 +2695,8 @@ class AssetCardWidget(QtWidgets.QFrame):
                 self._copy_vex_to_clipboard()
             elif self.asset.get('context') == 'path':
                 self._apply_path_to_selected()
+            elif self.asset.get('context') == 'curves':
+                self._paste_curves()
             else:
                 self.paste_requested.emit(self.asset['id'])
 
@@ -2774,6 +2779,13 @@ class AssetCardWidget(QtWidgets.QFrame):
                 parent = parent.parent()
             if parent and hasattr(parent, 'show_toast'):
                 parent.show_toast("Path copied to clipboard", 'success', 2000)
+
+    def _paste_curves(self):
+        """Paste curves asset — loads keyframed nodes into the current network."""
+        if not SOPDROP_AVAILABLE:
+            return
+        # Delegate to the same paste_requested flow as regular node assets
+        self.paste_requested.emit(self.asset['id'])
 
     def _reveal_path_in_finder(self):
         """Reveal the stored file path in the system file browser."""
@@ -3996,8 +4008,12 @@ class LibraryPanel(QtWidgets.QWidget):
         self._restore_ui_state()
         self._refresh_assets()
         # Ensure TAB menu is populated when the panel opens (covers the case
-        # where the startup pythonrc hook failed or the library was empty then)
-        self._regenerate_tab_menu()
+        # where the startup pythonrc hook failed or the library was empty then).
+        # IMPORTANT: skip if a background worker was just spawned — regenerate_menu()
+        # calls close_db() which would crash the worker.  The tab menu will be
+        # regenerated from _on_worker_finished instead.
+        if self._worker is None:
+            self._regenerate_tab_menu()
 
     def _setup_shortcuts(self):
         """Set up keyboard shortcuts for the panel."""
@@ -4253,6 +4269,27 @@ class LibraryPanel(QtWidgets.QWidget):
         save_path_btn.clicked.connect(self._save_path)
         top_bar.addWidget(save_path_btn)
 
+        # Save Curves button
+        save_curves_btn = QtWidgets.QPushButton("+ Curves")
+        save_curves_btn.setToolTip("Save animation curves to library")
+        save_curves_btn.setFixedHeight(scale(22))
+        save_curves_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        save_curves_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_light']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 2px;
+                padding: {spx(2)} {spx(8)};
+                color: {COLORS['text']};
+            }}
+            QPushButton:hover {{
+                border-color: {COLORS['curves']};
+                color: {COLORS['curves']};
+            }}
+        """)
+        save_curves_btn.clicked.connect(self._save_curves)
+        top_bar.addWidget(save_curves_btn)
+
         # Sync button (hidden in local-only mode)
         _local_only_bar = get_local_only() if SOPDROP_AVAILABLE else False
         if not _local_only_bar:
@@ -4351,7 +4388,7 @@ class LibraryPanel(QtWidgets.QWidget):
         self.context_combo = QtWidgets.QComboBox()
         self.context_combo.addItem("All", None)
         self.context_combo.addItem("Current Context", "__current__")
-        for ctx in ['sop', 'lop', 'obj', 'vop', 'dop', 'cop', 'top', 'chop', 'vex', 'path']:
+        for ctx in ['sop', 'lop', 'obj', 'vop', 'dop', 'cop', 'top', 'chop', 'vex', 'path', 'curves']:
             color = QtGui.QColor(get_context_color(ctx))
             pixmap = QtGui.QPixmap(8, 8)
             pixmap.fill(QtCore.Qt.transparent)
@@ -4795,9 +4832,12 @@ class LibraryPanel(QtWidgets.QWidget):
 
         For team libraries, the mirror refresh runs on the background worker
         thread (inside _refresh_assets) so the UI stays responsive.
+        Tab menu regen is deferred to _on_worker_finished for team libraries
+        to avoid close_db() racing with the worker.
         """
         self._refresh_assets()
-        self._regenerate_tab_menu()
+        if self._worker is None:
+            self._regenerate_tab_menu()
 
     def _regenerate_tab_menu(self):
         """Regenerate the TAB menu shelf in the background."""
@@ -4931,7 +4971,10 @@ class LibraryPanel(QtWidgets.QWidget):
         # --- Cancel any in-flight worker ---
         if self._worker is not None:
             self._worker.cancel()
-            self._worker.finished.disconnect()
+            try:
+                self._worker.finished.disconnect()
+            except (RuntimeError, TypeError):
+                pass
             self._worker = None
 
         # For personal library, run synchronously (fast, local SQLite)
@@ -5004,6 +5047,10 @@ class LibraryPanel(QtWidgets.QWidget):
 
         context_filter = getattr(self, '_pending_context_filter', None)
         self._apply_assets(result['assets'], context_filter)
+
+        # Safe to regenerate TAB menu now — worker is done using the DB.
+        # (Deferred from __init__ to avoid close_db() racing with the worker.)
+        self._regenerate_tab_menu()
 
     def _apply_assets(self, assets, context_filter=None):
         """Post-process and display assets (runs on main thread)."""
@@ -5889,6 +5936,27 @@ class LibraryPanel(QtWidgets.QWidget):
             import traceback
             traceback.print_exc()
 
+    def _save_curves(self):
+        """Open the Save Curves dialog."""
+        if not SOPDROP_AVAILABLE:
+            hou.ui.displayMessage("Sopdrop library not available")
+            return
+
+        try:
+            parent = hou.qt.mainWindow()
+            dialog = SaveCurvesDialog(parent=parent, default_collection_id=self._get_active_collection_id())
+            dialog.raise_()
+            dialog.activateWindow()
+            result = dialog.exec_()
+            if result == QtWidgets.QDialog.Accepted:
+                self.collections.refresh()
+                self._refresh_assets()
+                self.show_toast("Curves saved to library", 'success', 2500)
+        except Exception as e:
+            print(f"[Sopdrop] Error showing Curves save dialog: {e}")
+            import traceback
+            traceback.print_exc()
+
     def _apply_path_asset(self, asset_id):
         """Apply a path asset to the selected node's file parameter."""
         file_path = library.get_path_file_path(asset_id)
@@ -6000,6 +6068,10 @@ class LibraryPanel(QtWidgets.QWidget):
             ctx_map = {'sop': 'sop', 'object': 'obj', 'vop': 'vop', 'dop': 'dop', 'cop2': 'cop', 'top': 'top', 'lop': 'lop', 'chop': 'chop'}
             target_ctx = ctx_map.get(target_ctx, target_ctx)
 
+            # Curves assets: use the original network context for matching
+            if pkg_ctx == 'curves':
+                pkg_ctx = package.get('metadata', {}).get('source_context', pkg_ctx)
+
             if pkg_ctx and target_ctx and pkg_ctx != target_ctx:
                 reply = hou.ui.displayMessage(
                     f"This is a {pkg_ctx.upper()} asset but you're in a {target_ctx.upper()} network.\n\n"
@@ -6011,6 +6083,12 @@ class LibraryPanel(QtWidgets.QWidget):
                 )
                 if reply != 0:
                     return
+
+            # Curves assets: restore original context so the importer doesn't reject it
+            if package.get('context') == 'curves':
+                source_ctx = package.get('metadata', {}).get('source_context', '')
+                if source_ctx:
+                    package['context'] = source_ctx
 
             # Get paste position - use center of visible area since user is browsing the library panel
             # (cursor is over the library, not the network editor)
@@ -6396,6 +6474,18 @@ class LibraryPanel(QtWidgets.QWidget):
                 )
                 self._update_library_toggle()  # Reset toggle state
                 return
+
+        # Cancel any in-flight worker BEFORE closing DB — the worker
+        # may be mid-query on the connection we're about to close.
+        if self._worker is not None:
+            self._worker.cancel()
+            try:
+                self._worker.finished.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            # Wait briefly for the worker to finish its current operation
+            self._worker.wait(500)
+            self._worker = None
 
         set_active_library(library_type)
 
@@ -8559,6 +8649,416 @@ class SavePathDialog(QtWidgets.QDialog):
                 description=self.desc_input.toPlainText().strip(),
                 tags=tags,
                 thumbnail_data=self._thumbnail_data,
+                collection_id=coll_id,
+                icon=self._selected_icon,
+            )
+            self.accept()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Failed to save: {e}")
+            import traceback
+            traceback.print_exc()
+
+
+# ==============================================================================
+# Save Curves Dialog
+# ==============================================================================
+
+class SaveCurvesDialog(QtWidgets.QDialog):
+    """Dialog for saving animation curves to the library.
+
+    Uses the same V2 cpio export as regular node saves.  The nodes that
+    carry keyframes are saved whole — paste recreates them without
+    touching anything already in the scene.
+    """
+
+    def __init__(self, parent=None, default_collection_id=None):
+        super().__init__(parent)
+        self._default_collection_id = default_collection_id
+        self._curves_meta = None  # curve-specific metadata dict
+        self._nodes = []          # hou.Node objects with keyframes
+        self._detect_nodes()
+        self._setup_ui()
+
+    def _detect_nodes(self):
+        """Find nodes with keyframed parms from selected items or channel editor.
+
+        Returns a short diagnostic string for the stats label.
+        """
+        self._curves_meta = None
+        self._nodes = []
+
+        try:
+            import hou
+            from sopdrop.curves import get_keyframed_nodes, get_curves_metadata
+
+            # Priority 1: selected items in the Network Editor
+            pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
+            if pane:
+                selected = list(pane.pwd().selectedItems())
+                if selected:
+                    kf_nodes = get_keyframed_nodes(selected)
+                    if kf_nodes:
+                        self._nodes = kf_nodes
+                        self._curves_meta = get_curves_metadata(kf_nodes)
+                        return f"from {len(kf_nodes)} selected node{'s' if len(kf_nodes) != 1 else ''}"
+                    return "Selected nodes have no keyframes"
+                return "No nodes selected"
+
+            return "No Network Editor found"
+
+        except Exception as exc:
+            print(f"[Sopdrop] Curves detection error: {exc}")
+            import traceback
+            traceback.print_exc()
+            return f"Error: {exc}"
+
+    def _refresh_detection(self):
+        """Re-run detection and update UI."""
+        source = self._detect_nodes()
+        self._update_detection_ui(source)
+
+    def _update_detection_ui(self, source=""):
+        """Update stats, channel names, and save button from current detection."""
+        if self._curves_meta:
+            m = self._curves_meta
+            ch = m.get('channel_count', 0)
+            kf = m.get('keyframe_count', 0)
+            stats_text = f"{ch} channel{'s' if ch != 1 else ''} \u00b7 {kf} keyframe{'s' if kf != 1 else ''}"
+            ch_names = ", ".join(m.get('channel_names', []))
+            self.ch_label.setText(f"Channels: {ch_names}")
+            self.ch_label.setVisible(True)
+            self.save_btn.setEnabled(True)
+            self.save_btn.setToolTip("")
+        else:
+            stats_text = source or "No keyframed nodes detected"
+            self.ch_label.setVisible(False)
+            self.save_btn.setEnabled(False)
+            self.save_btn.setToolTip("Select keyframed nodes, then click Detect")
+        self.stats_label.setText(stats_text)
+
+    def _setup_ui(self):
+        self.setWindowTitle("Save Curves Asset")
+        self.setFixedWidth(scale(460))
+        self.setMinimumHeight(scale(400))
+        self.setStyleSheet(STYLESHEET)
+        self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
+        self._selected_icon = None
+
+        label_style = f"color: {COLORS['text_dim']}; {sfs(10)}"
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(scale(20), scale(20), scale(20), scale(16))
+        layout.setSpacing(scale(14))
+
+        # ── Row 1: Icon + Name + CURVES badge ──
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.setSpacing(scale(12))
+
+        self.icon_btn = QtWidgets.QPushButton()
+        self.icon_btn.setFixedSize(scale(48), scale(48))
+        self.icon_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.icon_btn.setToolTip("Click to choose icon")
+        self.icon_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_dark']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 6px;
+                {sfs(10)}
+                color: {COLORS['text_dim']};
+            }}
+            QPushButton:hover {{
+                border-color: {COLORS['accent']};
+            }}
+        """)
+        self.icon_btn.clicked.connect(self._show_icon_browser)
+        top_row.addWidget(self.icon_btn)
+        self._set_icon('CHANNELS_chanlist')
+
+        name_col = QtWidgets.QVBoxLayout()
+        name_col.setSpacing(scale(2))
+
+        self.name_input = QtWidgets.QLineEdit()
+        self.name_input.setPlaceholderText("Curves name...")
+        self.name_input.setFixedHeight(scale(30))
+        self.name_input.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: transparent;
+                border: none;
+                border-bottom: 2px solid {COLORS['border']};
+                border-radius: 0;
+                padding: {spx(2)} 0;
+                {sfs(15)}
+                font-weight: 600;
+                color: {COLORS['text_bright']};
+            }}
+            QLineEdit:focus {{
+                border-bottom: 2px solid {COLORS['accent']};
+            }}
+        """)
+        name_col.addWidget(self.name_input)
+
+        # Stats line (updated by _update_detection_ui)
+        self.stats_label = QtWidgets.QLabel("")
+        self.stats_label.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
+        name_col.addWidget(self.stats_label)
+
+        top_row.addLayout(name_col, 1)
+
+        badge_col = QtWidgets.QVBoxLayout()
+        badge_col.setAlignment(QtCore.Qt.AlignTop)
+        curves_badge = QtWidgets.QLabel("CURVES")
+        curves_badge.setStyleSheet(f"background-color: {get_context_color('curves')}; color: white; {sfs(9)} font-weight: bold; padding: {spx(2)} {spx(6)}; border-radius: 3px;")
+        badge_col.addWidget(curves_badge)
+        top_row.addLayout(badge_col)
+
+        layout.addLayout(top_row)
+
+        # ── Channel names + Detect button row ──
+        detect_row = QtWidgets.QHBoxLayout()
+        detect_row.setSpacing(scale(8))
+
+        self.ch_label = QtWidgets.QLabel("")
+        self.ch_label.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
+        self.ch_label.setWordWrap(True)
+        detect_row.addWidget(self.ch_label, 1)
+
+        detect_btn = QtWidgets.QPushButton("Detect")
+        detect_btn.setToolTip("Re-detect channels from Animation Editor or selected node")
+        detect_btn.setFixedHeight(scale(22))
+        detect_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        detect_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_light']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 2px;
+                padding: {spx(2)} {spx(10)};
+                color: {COLORS['text']};
+                {sfs(10)}
+            }}
+            QPushButton:hover {{
+                border-color: {COLORS['curves']};
+                color: {COLORS['curves']};
+            }}
+        """)
+        detect_btn.clicked.connect(self._refresh_detection)
+        detect_row.addWidget(detect_btn)
+
+        layout.addLayout(detect_row)
+
+        # ── Description ──
+        self.desc_input = QtWidgets.QTextEdit()
+        self.desc_input.setFixedHeight(scale(48))
+        self.desc_input.setPlaceholderText("Description (optional)")
+        self.desc_input.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {COLORS['bg_dark']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 3px;
+                padding: {spx(4)} {spx(8)};
+                {sfs(11)}
+                color: {COLORS['text']};
+            }}
+            QTextEdit:focus {{
+                border-color: {COLORS['accent']};
+            }}
+        """)
+        layout.addWidget(self.desc_input)
+
+        # ── Tags ──
+        self.tags_widget = TagInputWidget()
+        layout.addWidget(self.tags_widget)
+
+        # ── Collection ──
+        options_row = QtWidgets.QHBoxLayout()
+        options_row.setSpacing(scale(16))
+
+        coll_col = QtWidgets.QVBoxLayout()
+        coll_col.setSpacing(scale(2))
+        coll_lbl = QtWidgets.QLabel("Collection")
+        coll_lbl.setStyleSheet(label_style)
+        coll_col.addWidget(coll_lbl)
+        self.coll_combo = QtWidgets.QComboBox()
+        self.coll_combo.setFixedHeight(scale(24))
+        self._populate_collection_combo()
+        self._select_default_collection()
+        self.coll_combo.currentIndexChanged.connect(self._on_collection_combo_changed)
+        coll_col.addWidget(self.coll_combo)
+        options_row.addLayout(coll_col, 1)
+        options_row.addStretch(1)
+
+        layout.addLayout(options_row)
+
+        layout.addStretch()
+
+        # ── Separator ──
+        sep = QtWidgets.QFrame()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background-color: {COLORS['border']};")
+        layout.addWidget(sep)
+
+        # ── Action buttons ──
+        btns = QtWidgets.QHBoxLayout()
+        btns.setSpacing(scale(8))
+
+        cancel = QtWidgets.QPushButton("Cancel")
+        cancel.setFixedHeight(scale(30))
+        cancel.setCursor(QtCore.Qt.PointingHandCursor)
+        cancel.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                border: 1px solid {COLORS['border']};
+                border-radius: 3px;
+                padding: {spx(4)} {spx(16)};
+                color: {COLORS['text_secondary']};
+            }}
+            QPushButton:hover {{
+                border-color: {COLORS['text_dim']};
+                color: {COLORS['text']};
+            }}
+        """)
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(cancel)
+
+        btns.addStretch()
+
+        self.save_btn = QtWidgets.QPushButton("Save Curves")
+        self.save_btn.setFixedHeight(scale(30))
+        self.save_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.save_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['accent']};
+                border: none;
+                border-radius: 3px;
+                padding: {spx(4)} {spx(18)};
+                color: white;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['accent_hover']};
+            }}
+        """)
+        self.save_btn.clicked.connect(self._save)
+        btns.addWidget(self.save_btn)
+
+        layout.addLayout(btns)
+
+        # Set initial state from detection that already ran in __init__
+        self._update_detection_ui()
+
+    def _set_icon(self, icon_name):
+        """Set the icon button to display a Houdini icon."""
+        self._selected_icon = icon_name
+        try:
+            hou_icon = hou.qt.Icon(icon_name, 64, 64)
+            if hou_icon and not hou_icon.isNull():
+                icon = QtGui.QIcon(hou_icon.pixmap(64, 64))
+                self.icon_btn.setIcon(icon)
+                self.icon_btn.setIconSize(QtCore.QSize(scale(32), scale(32)))
+                self.icon_btn.setText("")
+                return
+        except Exception:
+            pass
+        self.icon_btn.setIcon(QtGui.QIcon())
+        self.icon_btn.setText("Icon")
+
+    def _show_icon_browser(self):
+        """Open the Houdini icon browser dialog."""
+        dialog = HoudiniIconBrowser(parent=self)
+        if dialog.exec_() == QtWidgets.QDialog.Accepted and dialog.selected_icon:
+            self._set_icon(dialog.selected_icon)
+
+    def _populate_collection_combo(self):
+        """Populate the collection combo with nested collections."""
+        self.coll_combo.blockSignals(True)
+        self.coll_combo.clear()
+        self.coll_combo.addItem("None", None)
+        if SOPDROP_AVAILABLE:
+            self._add_tree_to_combo(library.get_collection_tree())
+            self.coll_combo.insertSeparator(self.coll_combo.count())
+            self.coll_combo.addItem("+ New Collection...", "__new__")
+        self.coll_combo.blockSignals(False)
+
+    def _add_tree_to_combo(self, items, depth=0):
+        """Recursively add collection tree items to the combo with indentation."""
+        for coll in items:
+            if coll.get('source') == 'cloud':
+                continue
+            indent = "\u2003" * depth
+            prefix = "\u25B8 " if depth > 0 else ""
+            self.coll_combo.addItem(f"{indent}{prefix}{coll['name']}", coll['id'])
+            if coll.get('children'):
+                self._add_tree_to_combo(coll['children'], depth + 1)
+
+    def _select_default_collection(self):
+        """Pre-select the default collection in the combo if set."""
+        cid = getattr(self, '_default_collection_id', None)
+        if not cid:
+            return
+        for i in range(self.coll_combo.count()):
+            if self.coll_combo.itemData(i) == cid:
+                self.coll_combo.setCurrentIndex(i)
+                break
+
+    def _on_collection_combo_changed(self, index):
+        """Handle collection combo selection — create new collection inline."""
+        if self.coll_combo.currentData() != "__new__":
+            return
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "New Collection", "Collection name:")
+        if ok and name.strip():
+            try:
+                coll = library.create_collection(name.strip())
+                self._populate_collection_combo()
+                for i in range(self.coll_combo.count()):
+                    if self.coll_combo.itemData(i) == coll['id']:
+                        self.coll_combo.setCurrentIndex(i)
+                        break
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, "Error", f"Failed to create collection: {e}")
+                self.coll_combo.setCurrentIndex(0)
+        else:
+            self.coll_combo.setCurrentIndex(0)
+
+    def _save(self):
+        """Save the curves asset using V2 cpio export."""
+        name = self.name_input.text().strip()
+
+        if not name:
+            QtWidgets.QMessageBox.warning(self, "Error", "Please enter a name")
+            return
+        if not self._nodes:
+            QtWidgets.QMessageBox.warning(self, "Error", "No keyframed nodes detected")
+            return
+
+        try:
+            from sopdrop.export import export_items
+
+            # Export the keyframed nodes as a standard V2 package
+            package = export_items(self._nodes)
+
+            # Preserve original network context for paste-time validation,
+            # then override to "curves" so the library tags it correctly
+            package['metadata']['source_context'] = package.get('context', 'unknown')
+            package['context'] = 'curves'
+
+            # Clear HDA dependencies — curves are about the keyframes, not
+            # the node types.  The cpio still has the full node data so
+            # Houdini will load whatever it can; missing types just become
+            # placeholder subnets, which is fine for animation carriers.
+            package['dependencies'] = []
+            package['metadata']['has_hda_dependencies'] = False
+
+            if self._curves_meta:
+                package['metadata'].update(self._curves_meta)
+
+            tags = self.tags_widget.get_tags()
+            coll_id = self.coll_combo.currentData()
+
+            library.save_curves_asset(
+                name=name,
+                package_data=package,
+                description=self.desc_input.toPlainText().strip(),
+                tags=tags,
                 collection_id=coll_id,
                 icon=self._selected_icon,
             )
