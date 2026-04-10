@@ -1152,6 +1152,11 @@ class AssetPopover(QtWidgets.QFrame):
         row1.addWidget(self.ctx_badge, 0, QtCore.Qt.AlignTop)
         layout.addLayout(row1)
 
+        # Artist
+        self.artist_label = QtWidgets.QLabel()
+        self.artist_label.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(9)}")
+        layout.addWidget(self.artist_label)
+
         # Description
         self.desc_label = QtWidgets.QLabel()
         self.desc_label.setStyleSheet(f"color: {COLORS['text_secondary']}; {sfs(10)}")
@@ -1216,6 +1221,14 @@ class AssetPopover(QtWidgets.QFrame):
             padding: {spx(2)} {spx(6)};
             border-radius: 2px;
         """)
+
+        # Artist
+        created_by = asset.get('created_by', '')
+        if created_by:
+            self.artist_label.setText(f"by {created_by}")
+            self.artist_label.show()
+        else:
+            self.artist_label.hide()
 
         # Description
         desc = asset.get('description', '')
@@ -2105,6 +2118,9 @@ class AssetCardWidget(QtWidgets.QFrame):
     clicked = QtCore.Signal(object)  # Emits full asset dict on single click
     hovered = QtCore.Signal(object)  # Emits asset dict on hover enter, None on leave
 
+    # Class-level thumbnail cache — avoids re-reading from disk when cards are recycled
+    _thumb_cache = {}  # asset_id -> QPixmap (original, unscaled)
+
     def __init__(self, asset, card_size='medium', library_type='personal', display_settings=None, parent=None):
         super().__init__(parent)
         self.asset = asset
@@ -2416,6 +2432,12 @@ class AssetCardWidget(QtWidgets.QFrame):
             self._original_pixmap = None
             return
 
+        # Check class-level pixmap cache first (avoids disk I/O on card recycle)
+        aid = self.asset.get('id')
+        if aid and aid in AssetCardWidget._thumb_cache:
+            self._original_pixmap = AssetCardWidget._thumb_cache[aid]
+            return
+
         thumb_path_str = self.asset.get('thumbnail_path')
         if thumb_path_str and SOPDROP_AVAILABLE:
             try:
@@ -2434,6 +2456,9 @@ class AssetCardWidget(QtWidgets.QFrame):
                     pixmap = QtGui.QPixmap()
                     if pixmap.loadFromData(image_data):
                         self._original_pixmap = pixmap
+                        # Store in class-level cache
+                        if aid:
+                            AssetCardWidget._thumb_cache[aid] = pixmap
                         return
                     else:
                         print(f"[Sopdrop] loadFromData failed for: {thumb_path_resolved}")
@@ -3122,7 +3147,7 @@ class AssetCardWidget(QtWidgets.QFrame):
             panel = panel.parent()
         if panel:
             panel.collections.refresh()
-            panel._refresh_assets()
+            panel._refresh_assets_from_db()
             panel.show_toast(f"Restored {len(asset_ids)} asset(s)", 'success')
 
     def _purge_bulk(self, asset_ids):
@@ -3136,7 +3161,7 @@ class AssetCardWidget(QtWidgets.QFrame):
             panel = panel.parent()
         if panel:
             panel.collections.refresh()
-            panel._refresh_assets()
+            panel._refresh_assets_from_db()
             panel.show_toast(f"Permanently deleted {len(asset_ids)} asset(s)", 'warning')
 
     def _empty_trash(self):
@@ -3149,7 +3174,7 @@ class AssetCardWidget(QtWidgets.QFrame):
             panel = panel.parent()
         if panel:
             panel.collections.refresh()
-            panel._refresh_assets()
+            panel._refresh_assets_from_db()
             panel.show_toast("Trash emptied", 'success')
 
     def _copy_to_library_bulk(self, target_library, asset_ids):
@@ -3260,7 +3285,7 @@ class AssetCardWidget(QtWidgets.QFrame):
             if parent and hasattr(parent, 'show_toast'):
                 parent.show_toast("Version draft created — complete in browser", 'success', 4000)
             if parent:
-                parent._refresh_assets()
+                parent._refresh_assets_from_db()
         except Exception as e:
             if parent and hasattr(parent, 'show_toast'):
                 parent.show_toast(f"Push failed: {e}", 'error', 5000)
@@ -3317,7 +3342,7 @@ class AssetCardWidget(QtWidgets.QFrame):
         if parent and hasattr(parent, 'show_toast'):
             parent.show_toast(msg, 'info', 3000)
         if parent:
-            parent._refresh_assets()
+            parent._refresh_assets_from_db()
 
     def _copy_to_library(self, target_library):
         """Copy this asset to another library."""
@@ -3885,7 +3910,7 @@ def refresh_all_panels():
         if panel is not None:
             try:
                 panel.collections.refresh()
-                panel._refresh_assets()
+                panel._refresh_assets_from_db()
             except Exception:
                 pass
             alive.append(ref)
@@ -3943,17 +3968,19 @@ class _LibraryWorker(QtCore.QThread):
         self._cancelled = True
 
     def run(self):
+        import time as _time
+        _t0 = _time.time()
         stale = False
         error = None
-        assets = []
+        result = {}
 
         try:
             # Mirror refresh (team library only)
             if self._do_mirror_refresh and not self._cancelled:
                 try:
                     library.refresh_team_mirror()
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[Sopdrop] Worker: mirror refresh error: {e}")
 
             if self._cancelled:
                 return
@@ -3961,17 +3988,27 @@ class _LibraryWorker(QtCore.QThread):
             # Check mirror staleness
             stale = library.is_mirror_stale()
 
-            # Run the asset query
-            assets = self._query_fn()
+            # Run the query — may return a list or a dict with cache data
+            raw = self._query_fn()
+            if isinstance(raw, dict):
+                result = raw
+            else:
+                result = {'assets': raw}
 
         except TeamLibraryError as e:
             error = str(e)
         except Exception as e:
             error = str(e)
 
+        assets = result.get('assets', [])
+        elapsed = _time.time() - _t0
+        if elapsed > 2.0:
+            print(f"[Sopdrop] Worker completed in {elapsed:.1f}s ({len(assets)} assets)")
+
         if not self._cancelled:
             self.finished.emit({
                 'assets': assets,
+                'collection_map': result.get('collection_map', {}),
                 'stale': stale,
                 'error': error,
             })
@@ -4003,6 +4040,11 @@ class LibraryPanel(QtWidgets.QWidget):
         self._selected_assets = set()  # Multi-select asset IDs
         self._saved_sort = None  # Sort to restore when leaving system views
         self._worker = None  # Background _LibraryWorker thread
+        # In-memory asset cache — loaded once, filtered in Python for instant switching
+        self._asset_cache = None  # list of all asset dicts (None = not loaded)
+        self._collection_map = {}  # collection_id -> set of asset_ids
+        self._cache_library = None  # which library the cache was loaded for
+        self._save_state_timer = None  # Debounce timer for _save_ui_state
         self._setup_ui()
         self._setup_shortcuts()
         self._restore_ui_state()
@@ -4120,7 +4162,20 @@ class LibraryPanel(QtWidgets.QWidget):
             print(f"[Sopdrop] Could not restore UI state: {e}")
 
     def _save_ui_state(self):
-        """Save current UI state for next session."""
+        """Debounced save of UI state — avoids disk write on every click."""
+        if self._save_state_timer is not None:
+            self._save_state_timer.stop()
+            self._save_state_timer.deleteLater()
+        timer = QtCore.QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(500)
+        timer.timeout.connect(self._do_save_ui_state)
+        self._save_state_timer = timer
+        timer.start()
+
+    def _do_save_ui_state(self):
+        """Actually write UI state to config (called after debounce)."""
+        self._save_state_timer = None
         if not SOPDROP_AVAILABLE:
             return
 
@@ -4827,6 +4882,11 @@ class LibraryPanel(QtWidgets.QWidget):
             self.asset_grid._last_columns = 0
             self._refresh_assets()  # Respects grouping state
 
+    def _refresh_assets_from_db(self):
+        """Invalidate cache and reload from DB. Call after save/delete/rename/move."""
+        self._invalidate_cache()
+        self._refresh_assets()
+
     def _refresh_all(self):
         """Refresh the asset grid AND regenerate the TAB menu.
 
@@ -4835,6 +4895,7 @@ class LibraryPanel(QtWidgets.QWidget):
         Tab menu regen is deferred to _on_worker_finished for team libraries
         to avoid close_db() racing with the worker.
         """
+        self._invalidate_cache()
         self._refresh_assets()
         if self._worker is None:
             self._regenerate_tab_menu()
@@ -4856,6 +4917,92 @@ class LibraryPanel(QtWidgets.QWidget):
         self._pending_scroll_to = asset_id
         self._refresh_assets()
 
+    def _invalidate_cache(self):
+        """Clear the in-memory asset cache, forcing next _refresh_assets to reload from DB."""
+        self._asset_cache = None
+        self._collection_map = {}
+        self._cache_library = None
+
+    def _load_cache(self):
+        """Load all assets + collection memberships into memory (one-time DB hit)."""
+        from sopdrop.config import get_active_library
+        assets, coll_map = library.get_all_assets_cached()
+        self._asset_cache = assets
+        self._collection_map = coll_map
+        self._cache_library = get_active_library()
+        # Non-critical cleanup
+        try:
+            library.cleanup_stale_syncing()
+        except Exception:
+            pass
+
+    def _filter_cached_assets(self):
+        """Filter the in-memory cache using current UI state. No DB access."""
+        active_tags = list(self.current_tag_filters) if self.current_tag_filters else None
+
+        context_filter = self.current_context_filter
+        if self.context_combo.currentData() == "__current__":
+            context_filter = self._detect_current_context()
+
+        query = (self.search_input.text() or "").lower()
+        collection = self.current_collection
+        collections_set = set(self.current_collections)
+        subcontent = self.subcontent_btn.isChecked()
+
+        assets = self._asset_cache
+
+        # --- System views (not cacheable — need DB for last_used_at / is_favorite / deleted) ---
+        if collection == "__recent__":
+            assets = sorted(assets, key=lambda a: a.get('last_used_at') or '', reverse=True)
+            assets = [a for a in assets if a.get('last_used_at')][:50]
+        elif collection == "__favorites__":
+            assets = [a for a in assets if a.get('is_favorite')]
+        elif collection == "__trash__":
+            # Trash is special — assets not in cache (they're deleted_at != NULL)
+            # Fall back to DB query for trash
+            assets = library.list_trashed_assets()
+            if query:
+                assets = [a for a in assets if query in a['name'].lower()]
+            if context_filter:
+                assets = [a for a in assets if a.get('context') == context_filter]
+            return assets, context_filter
+        elif collection or collections_set:
+            # Filter by collection membership using the cached map
+            if collections_set:
+                coll_ids = list(collections_set)
+            else:
+                coll_ids = [collection]
+
+            if subcontent:
+                # Expand to include descendant collections
+                expanded = list(coll_ids)
+                for cid in list(coll_ids):
+                    expanded.extend(self._get_descendant_collection_ids(cid))
+                coll_ids = expanded
+
+            # Build set of asset IDs in these collections
+            member_ids = set()
+            for cid in coll_ids:
+                member_ids.update(self._collection_map.get(cid, set()))
+
+            assets = [a for a in assets if a['id'] in member_ids]
+
+        # --- Apply filters ---
+        if query:
+            assets = [a for a in assets if
+                      query in a.get('name', '').lower() or
+                      query in (a.get('description') or '').lower() or
+                      any(query in t.lower() for t in (a.get('tags') or []))]
+        if context_filter:
+            assets = [a for a in assets if a.get('context') == context_filter]
+        if active_tags:
+            assets = [a for a in assets if all(
+                t.lower() in [x.lower() for x in (a.get('tags') or [])]
+                for t in active_tags
+            )]
+
+        return assets, context_filter
+
     def _refresh_assets(self):
         if not SOPDROP_AVAILABLE:
             self.asset_grid.set_assets([])
@@ -4869,105 +5016,6 @@ class LibraryPanel(QtWidgets.QWidget):
         self.asset_grid.set_library_type(current_library)
         self.asset_grid._display_settings = self._display_settings
 
-        # --- Capture all UI state on the main thread ---
-
-        active_tags = list(self.current_tag_filters) if self.current_tag_filters else None
-
-        # Resolve "Current Context" on each refresh
-        context_filter = self.current_context_filter
-        if self.context_combo.currentData() == "__current__":
-            context_filter = self._detect_current_context()
-
-        kwargs = {
-            'query': self.search_input.text() or "",
-            'context': context_filter,
-            'tags': active_tags,
-            'limit': 100,
-        }
-
-        # Snapshot collection state for the worker closure
-        collection = self.current_collection
-        collections_set = set(self.current_collections)
-        subcontent = self.subcontent_btn.isChecked()
-
-        # Build query function (captures UI state, runs on worker thread)
-        def query_fn():
-            # Stale syncing cleanup (non-critical)
-            try:
-                library.cleanup_stale_syncing()
-            except Exception:
-                pass
-
-            if collection == "__recent__":
-                assets = library.get_recent_assets(limit=50)
-                if kwargs['query']:
-                    q = kwargs['query'].lower()
-                    assets = [a for a in assets if q in a['name'].lower()]
-                if kwargs['context']:
-                    assets = [a for a in assets if a.get('context') == kwargs['context']]
-                if active_tags:
-                    assets = [a for a in assets if all(
-                        t.lower() in [x.lower() for x in (a.get('tags') or [])]
-                        for t in active_tags
-                    )]
-            elif collection == "__favorites__":
-                assets = library.get_favorite_assets(limit=50)
-                if kwargs['query']:
-                    q = kwargs['query'].lower()
-                    assets = [a for a in assets if q in a['name'].lower()]
-                if kwargs['context']:
-                    assets = [a for a in assets if a.get('context') == kwargs['context']]
-                if active_tags:
-                    assets = [a for a in assets if all(
-                        t.lower() in [x.lower() for x in (a.get('tags') or [])]
-                        for t in active_tags
-                    )]
-            elif collection == "__trash__":
-                assets = library.list_trashed_assets()
-                if kwargs['query']:
-                    q = kwargs['query'].lower()
-                    assets = [a for a in assets if q in a['name'].lower()]
-                if kwargs['context']:
-                    assets = [a for a in assets if a.get('context') == kwargs['context']]
-            elif collection or collections_set:
-                if collections_set:
-                    coll_ids = list(collections_set)
-                else:
-                    coll_ids = [collection]
-                if subcontent:
-                    # _get_descendant_collection_ids reads DB — fine on worker
-                    for cid in list(coll_ids):
-                        children = library.list_collections(parent_id=cid)
-                        stack = list(children)
-                        while stack:
-                            child = stack.pop()
-                            coll_ids.append(child['id'])
-                            stack.extend(library.list_collections(parent_id=child['id']))
-
-                seen_ids = set()
-                assets = []
-                for cid in coll_ids:
-                    for a in library.get_collection_assets(cid):
-                        if a['id'] not in seen_ids:
-                            seen_ids.add(a['id'])
-                            a['_source_collection'] = cid
-                            assets.append(a)
-
-                if kwargs['query']:
-                    q = kwargs['query'].lower()
-                    assets = [a for a in assets if q in a['name'].lower()]
-                if kwargs['context']:
-                    assets = [a for a in assets if a['context'] == kwargs['context']]
-                if active_tags:
-                    assets = [a for a in assets if all(
-                        t.lower() in [x.lower() for x in (a.get('tags') or [])]
-                        for t in active_tags
-                    )]
-            else:
-                assets = library.search_assets(**kwargs)
-
-            return assets
-
         # --- Cancel any in-flight worker ---
         if self._worker is not None:
             self._worker.cancel()
@@ -4976,6 +5024,24 @@ class LibraryPanel(QtWidgets.QWidget):
             except (RuntimeError, TypeError):
                 pass
             self._worker = None
+
+        # --- If cache is valid for this library, filter in-memory (instant) ---
+        if self._asset_cache is not None and self._cache_library == current_library:
+            assets, context_filter = self._filter_cached_assets()
+            self._apply_assets(assets, context_filter)
+            return
+
+        # --- Cache miss: load from DB ---
+
+        # Build query function that loads the full cache
+        def query_fn():
+            assets, coll_map = library.get_all_assets_cached()
+            # Non-critical cleanup
+            try:
+                library.cleanup_stale_syncing()
+            except Exception:
+                pass
+            return {'assets': assets, 'collection_map': coll_map}
 
         # For personal library, run synchronously (fast, local SQLite)
         if not is_team:
@@ -4991,14 +5057,23 @@ class LibraryPanel(QtWidgets.QWidget):
                 self._refresh_assets()
                 return
 
-            assets = query_fn()
+            result = query_fn()
+            self._asset_cache = result['assets']
+            self._collection_map = result['collection_map']
+            self._cache_library = current_library
+
+            assets, context_filter = self._filter_cached_assets()
             self._apply_assets(assets, context_filter)
             return
 
-        # --- Team library: run on background thread ---
+        # --- Team library: load cache on background thread ---
+        print("[Sopdrop] Loading team library (background thread)...")
         self.asset_grid.set_loading(True)
 
-        # Stash UI state needed by _on_worker_finished
+        # Resolve context filter now on the main thread
+        context_filter = self.current_context_filter
+        if self.context_combo.currentData() == "__current__":
+            context_filter = self._detect_current_context()
         self._pending_context_filter = context_filter
 
         worker = _LibraryWorker(
@@ -5030,6 +5105,7 @@ class LibraryPanel(QtWidgets.QWidget):
         error = result.get('error')
         if error:
             # Team library completely unavailable (no mirror either)
+            print(f"[Sopdrop] Team library worker error: {error}")
             from sopdrop.config import set_active_library
             from sopdrop.library import close_db
             set_active_library("personal")
@@ -5039,14 +5115,27 @@ class LibraryPanel(QtWidgets.QWidget):
             self._refresh_assets()
             return
 
+        # Populate the in-memory cache from the worker result
+        from sopdrop.config import get_active_library
+        cache_assets = result.get('assets', [])
+        coll_map = result.get('collection_map', {})
+        asset_count = len(cache_assets)
+        print(f"[Sopdrop] Team library loaded: {asset_count} assets" +
+              (" (mirror stale)" if result.get('stale') else ""))
+
         if result.get('stale'):
             self.show_toast(
                 "Team drive unavailable — showing cached data",
                 toast_type='warning', duration=5000
             )
 
-        context_filter = getattr(self, '_pending_context_filter', None)
-        self._apply_assets(result['assets'], context_filter)
+        self._asset_cache = cache_assets
+        self._collection_map = coll_map
+        self._cache_library = get_active_library()
+
+        # Filter the freshly-loaded cache using current UI state
+        assets, context_filter = self._filter_cached_assets()
+        self._apply_assets(assets, context_filter)
 
         # Safe to regenerate TAB menu now — worker is done using the DB.
         # (Deferred from __init__ to avoid close_db() racing with the worker.)
@@ -5816,7 +5905,7 @@ class LibraryPanel(QtWidgets.QWidget):
 
     def _on_collection_changed(self):
         self.collections.refresh()
-        self._refresh_assets()
+        self._refresh_assets_from_db()
 
     def _get_active_collection_id(self):
         """Get the current collection ID for defaulting in save dialogs.
@@ -5861,7 +5950,7 @@ class LibraryPanel(QtWidgets.QWidget):
             print(f"[Sopdrop] Dialog result: {result}")
             if result == QtWidgets.QDialog.Accepted:
                 self.collections.refresh()
-                self._refresh_assets()
+                self._refresh_assets_from_db()
                 self.show_toast("Asset saved to library", 'success', 2500)
                 # Reload TAB menu shelf so new asset is immediately available
                 try:
@@ -5908,7 +5997,7 @@ class LibraryPanel(QtWidgets.QWidget):
             result = dialog.exec_()
             if result == QtWidgets.QDialog.Accepted:
                 self.collections.refresh()
-                self._refresh_assets()
+                self._refresh_assets_from_db()
                 self.show_toast("VEX snippet saved to library", 'success', 2500)
         except Exception as e:
             print(f"[Sopdrop] Error showing VEX save dialog: {e}")
@@ -5929,7 +6018,7 @@ class LibraryPanel(QtWidgets.QWidget):
             result = dialog.exec_()
             if result == QtWidgets.QDialog.Accepted:
                 self.collections.refresh()
-                self._refresh_assets()
+                self._refresh_assets_from_db()
                 self.show_toast("Path saved to library", 'success', 2500)
         except Exception as e:
             print(f"[Sopdrop] Error showing Path save dialog: {e}")
@@ -5950,7 +6039,7 @@ class LibraryPanel(QtWidgets.QWidget):
             result = dialog.exec_()
             if result == QtWidgets.QDialog.Accepted:
                 self.collections.refresh()
-                self._refresh_assets()
+                self._refresh_assets_from_db()
                 self.show_toast("Curves saved to library", 'success', 2500)
         except Exception as e:
             print(f"[Sopdrop] Error showing Curves save dialog: {e}")
@@ -6238,7 +6327,7 @@ class LibraryPanel(QtWidgets.QWidget):
         if asset:
             dialog = EditAssetDialog(asset, self)
             if dialog.exec_() == QtWidgets.QDialog.Accepted:
-                self._refresh_assets()
+                self._refresh_assets_from_db()
 
     def _delete_asset(self, asset_id):
         if not SOPDROP_AVAILABLE:
@@ -6293,6 +6382,7 @@ class LibraryPanel(QtWidgets.QWidget):
         if self._pending_delete_id == asset_id:
             library.delete_asset(asset_id)
             self._pending_delete_id = None
+            self._invalidate_cache()
             self.collections.refresh()
 
     def _delete_assets_bulk(self, asset_ids):
@@ -6345,6 +6435,7 @@ class LibraryPanel(QtWidgets.QWidget):
             for aid in asset_ids:
                 library.delete_asset(aid)
             self._pending_bulk_delete_ids = []
+            self._invalidate_cache()
             self.collections.refresh()
 
     def _update_asset(self, asset_id):
@@ -6375,7 +6466,7 @@ class LibraryPanel(QtWidgets.QWidget):
         dialog = SaveToLibraryDialog(items, existing_asset=asset, parent=self)
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
             self.collections.refresh()
-            self._refresh_assets()
+            self._refresh_assets_from_db()
             self.show_toast(f"Updated {asset['name']}", 'success', 2500)
 
     def _open_settings(self):
@@ -6384,7 +6475,7 @@ class LibraryPanel(QtWidgets.QWidget):
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
             self._update_library_toggle()
             self.collections.refresh()
-            self._refresh_assets()
+            self._refresh_assets_from_db()
 
     def _update_library_toggle(self):
         """Update the library toggle buttons."""
@@ -6502,6 +6593,7 @@ class LibraryPanel(QtWidgets.QWidget):
         # Refresh UI
         self._update_library_toggle()
         self.collections.refresh()
+        self._invalidate_cache()
         self._refresh_assets()
 
     def _sync_from_cloud(self):
@@ -6559,7 +6651,7 @@ class LibraryPanel(QtWidgets.QWidget):
             traceback.print_exc()
 
         self.collections.refresh()
-        self._refresh_assets()
+        self._refresh_assets_from_db()
 
     def _publish_asset(self, asset_id):
         """Publish a local asset to the cloud, pre-filling with existing data."""
@@ -10094,9 +10186,26 @@ class AssetDetailDialog(QtWidgets.QDialog):
         info_layout.setContentsMargins(scale(16), scale(12), scale(16), scale(12))
         info_layout.setSpacing(scale(8))
 
-        # Name + context badge row
+        # Name + icon + context badge row
         name_row = QtWidgets.QHBoxLayout()
         name_row.setSpacing(scale(8))
+
+        # Houdini icon (if set)
+        asset_icon = self.asset.get('icon')
+        if asset_icon:
+            try:
+                hou_icon = hou.qt.Icon(asset_icon, 64, 64)
+                if hou_icon and not hou_icon.isNull():
+                    icon_pm = hou_icon.pixmap(64, 64).scaled(
+                        scale(24), scale(24), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
+                    )
+                    icon_label = QtWidgets.QLabel()
+                    icon_label.setPixmap(icon_pm)
+                    icon_label.setFixedSize(scale(24), scale(24))
+                    name_row.addWidget(icon_label, 0, QtCore.Qt.AlignTop)
+            except Exception:
+                pass
+
         name_label = QtWidgets.QLabel(self.asset.get('name', 'Untitled'))
         name_label.setStyleSheet(f"{sfs(16)} font-weight: 700; color: {COLORS['text_bright']};")
         name_label.setWordWrap(True)
@@ -10121,6 +10230,13 @@ class AssetDetailDialog(QtWidgets.QDialog):
             name_row.addWidget(hda_badge, 0, QtCore.Qt.AlignTop)
 
         info_layout.addLayout(name_row)
+
+        # Artist / created_by
+        created_by = self.asset.get('created_by', '')
+        if created_by:
+            artist_label = QtWidgets.QLabel(f"by {created_by}")
+            artist_label.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(11)}")
+            info_layout.addWidget(artist_label)
 
         # Description
         desc = self.asset.get('description', '')
@@ -10421,13 +10537,38 @@ class AssetDetailDialog(QtWidgets.QDialog):
                         return
             except Exception:
                 pass
-        # Fallback placeholder
+        # Fallback: try Houdini icon, then context letter
         context = self.asset.get('context', 'sop')
-        self.thumb_label.setText(context.upper())
-        self.thumb_label.setStyleSheet(f"""
-            color: {get_context_color(context)};
-            {sfs(28)} font-weight: bold; opacity: 0.3;
-        """)
+        w, h = scale(420), scale(200)
+        pixmap = QtGui.QPixmap(w, h)
+        pixmap.fill(QtGui.QColor(COLORS['bg_base']))
+        painter = QtGui.QPainter(pixmap)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+
+        icon_drawn = False
+        asset_icon = self.asset.get('icon')
+        if asset_icon:
+            try:
+                hou_icon = hou.qt.Icon(asset_icon, 64, 64)
+                if hou_icon and not hou_icon.isNull():
+                    icon_pm = hou_icon.pixmap(64, 64)
+                    if not icon_pm.isNull():
+                        icon_s = scale(80)
+                        icon_pm = icon_pm.scaled(icon_s, icon_s, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+                        painter.setOpacity(0.5)
+                        painter.drawPixmap((w - icon_pm.width()) // 2, (h - icon_pm.height()) // 2, icon_pm)
+                        icon_drawn = True
+            except Exception:
+                pass
+
+        if not icon_drawn:
+            painter.setPen(QtGui.QColor(get_context_color(context)))
+            painter.setFont(QtGui.QFont("Arial", 28, QtGui.QFont.Bold))
+            painter.setOpacity(0.2)
+            painter.drawText(pixmap.rect(), QtCore.Qt.AlignCenter, context.upper())
+
+        painter.end()
+        self.thumb_label.setPixmap(pixmap)
 
     def _on_tag_clicked(self, tag):
         self.tag_clicked.emit(tag)
@@ -10484,7 +10625,7 @@ class AssetDetailDialog(QtWidgets.QDialog):
                 while parent and not isinstance(parent, LibraryPanel):
                     parent = parent.parent()
                 if parent:
-                    parent._refresh_assets()
+                    parent._refresh_assets_from_db()
                     parent.show_toast(f"Reverted to v{version_label}", 'success', 3000)
                 self.accept()
             else:

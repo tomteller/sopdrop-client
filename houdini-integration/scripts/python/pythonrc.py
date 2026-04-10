@@ -2,27 +2,47 @@
 Sopdrop Houdini Startup Script
 
 Initializes the Sopdrop TAB menu with your library assets on startup.
+
+On fresh Houdini:
+  - If a shelf file already exists from a previous session, load it immediately
+    (fast — no DB or NAS access).
+  - Regenerate using personal library only (fast, local SQLite).
+  - Team assets are added later when the Library panel opens and the
+    background mirror refresh completes.
 """
 
 
 def _init_sopdrop_menu():
     """Initialize the Sopdrop TAB menu on startup."""
     try:
-        from sopdrop.library import get_library_stats
         from sopdrop import menu
+        from sopdrop.config import get_active_library
 
-        stats = get_library_stats()
-        asset_count = stats.get('asset_count', 0)
+        shelf_file = menu.get_shelf_file()
 
-        if asset_count > 0:
-            menu.regenerate_menu(quiet=True)
-            print(f"[Sopdrop] TAB menu ready: {asset_count} assets (type 'sopdrop' in TAB)")
-        else:
-            # Still create browse tools
-            menu.regenerate_menu(quiet=True)
-            print("[Sopdrop] TAB menu ready (no assets yet - save some to your library!)")
+        # If a shelf file already exists from a previous session, load it
+        # immediately — no DB or NAS access needed.  This covers the common
+        # "restart Houdini" case instantly.
+        if shelf_file.exists():
+            try:
+                import hou
+                hou.shelves.loadFile(str(shelf_file))
+                print(f"[Sopdrop] TAB menu loaded from previous session")
+            except Exception:
+                pass
 
-    except ImportError as e:
+        # Regenerate with personal library only (fast, local SQLite).
+        # Team assets get added when the Library panel opens.
+        is_team = get_active_library() == "team"
+        if is_team:
+            print("[Sopdrop] Team library active — TAB menu will include team assets after panel opens")
+
+        # skip_team=True avoids NAS/mirror access on the main thread.
+        # Team assets get added when the Library panel opens.
+        menu.regenerate_menu(quiet=True, skip_team=True)
+        print("[Sopdrop] TAB menu ready (type 'sopdrop' in TAB)")
+
+    except ImportError:
         # sopdrop not installed
         pass
     except Exception as e:

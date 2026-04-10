@@ -479,6 +479,9 @@ def _get_nas_db():
     if not nas_path or not nas_path.exists():
         return None
     if _nas_connection is None:
+        import time as _time
+        _t0 = _time.time()
+        print(f"[Sopdrop] Connecting to NAS DB: {nas_path}")
         _nas_connection = sqlite3.connect(str(nas_path), check_same_thread=False)
         _nas_connection.row_factory = sqlite3.Row
         _nas_connection.execute("PRAGMA foreign_keys = ON")
@@ -499,6 +502,7 @@ def _get_nas_db():
                 pass
         _run_migrations(_nas_connection)
         _nas_connection.commit()
+        print(f"[Sopdrop] NAS DB connected ({_time.time() - _t0:.1f}s)")
     return _nas_connection
 
 
@@ -552,6 +556,9 @@ def refresh_team_mirror(force=False):
             del _connections[mirror_path_str]
 
     # Use SQLite backup API — safe against concurrent writers
+    import time as _time
+    _t0 = _time.time()
+    print(f"[Sopdrop] Refreshing team mirror from NAS...")
     source_conn = None
     try:
         source_conn = sqlite3.connect(str(nas_db_path), timeout=15)
@@ -561,8 +568,9 @@ def refresh_team_mirror(force=False):
         dest_conn.close()
         _nas_db_mtime = current_mtime
         _mirror_available = True
+        print(f"[Sopdrop] Mirror refreshed ({_time.time() - _t0:.1f}s)")
     except Exception as e:
-        print(f"[Sopdrop] Mirror refresh failed: {e}")
+        print(f"[Sopdrop] Mirror refresh failed ({_time.time() - _t0:.1f}s): {e}")
     finally:
         if source_conn:
             try:
@@ -608,15 +616,44 @@ class _nas_write_session:
 
 
 def _writes_to_nas(fn):
-    """Decorator that wraps a function in _nas_write_session when the active library is 'team'."""
+    """Decorator that wraps a function in _nas_write_session when the active library is 'team'.
+
+    Retries up to 3 times on 'database is locked' errors, which can occur when
+    multiple workstations or a concurrent mirror refresh hold locks on the NAS DB.
+    NAS/SMB filesystems have unreliable SQLite locking, so busy_timeout alone
+    isn't enough.
+    """
     import functools
+    import time as _time
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        if get_active_library() == "team":
-            with _nas_write_session():
-                return fn(*args, **kwargs)
-        return fn(*args, **kwargs)
+        if get_active_library() != "team":
+            return fn(*args, **kwargs)
+
+        last_err = None
+        for attempt in range(3):
+            try:
+                with _nas_write_session():
+                    return fn(*args, **kwargs)
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e).lower():
+                    raise
+                last_err = e
+                wait = 1.0 * (attempt + 1)
+                print(f"[Sopdrop] NAS DB locked during {fn.__name__}, "
+                      f"retrying in {wait:.0f}s (attempt {attempt + 1}/3)...")
+                # Close and discard the NAS connection so the next attempt
+                # gets a fresh one (the old one may hold a stale lock).
+                global _nas_connection
+                if _nas_connection is not None:
+                    try:
+                        _nas_connection.close()
+                    except Exception:
+                        pass
+                    _nas_connection = None
+                _time.sleep(wait)
+        raise last_err
 
     return wrapper
 
@@ -652,6 +689,7 @@ def get_db():
         if mirror_path:
             # Bootstrap mirror on first access
             if not mirror_path.exists():
+                print("[Sopdrop] Team mirror not found — bootstrapping from NAS...")
                 refresh_team_mirror()
             # If NAS is unavailable but stale mirror exists, use it
             if not mirror_path.exists():
@@ -921,6 +959,8 @@ def detect_team_from_library(path: str) -> Optional[Dict[str, str]]:
 
     conn = None
     try:
+        import time as _time
+        _t0 = _time.time()
         conn = sqlite3.connect(str(db_path), timeout=10)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 10000")
@@ -949,7 +989,8 @@ def detect_team_from_library(path: str) -> Optional[Dict[str, str]]:
                 'team_slug': team_slug,
             }
     except Exception as e:
-        print(f"[Sopdrop] Could not read team metadata from {db_path}: {e}")
+        _elapsed = _time.time() - _t0
+        print(f"[Sopdrop] Could not read team metadata from {db_path} ({_elapsed:.1f}s): {e}")
     finally:
         if conn:
             try:
@@ -2427,6 +2468,61 @@ def get_asset_collections(asset_id: str) -> List[Dict[str, Any]]:
         ORDER BY c.name
     """, (asset_id,)).fetchall()
     return [dict_from_row(r) for r in rows]
+
+
+def get_all_assets_cached():
+    """Load all active assets with collection memberships in two queries.
+
+    Returns a tuple of (assets, collection_map) where:
+    - assets: list of asset dicts (with parsed JSON fields and 'collections' populated)
+    - collection_map: dict mapping collection_id -> set of asset_ids
+    """
+    db = get_db()
+
+    # 1. All active assets
+    rows = db.execute(
+        "SELECT * FROM library_assets WHERE deleted_at IS NULL ORDER BY updated_at DESC"
+    ).fetchall()
+
+    assets = []
+    asset_ids = []
+    for row in rows:
+        asset = dict_from_row(row)
+        for field in ('node_types', 'node_names', 'tags', 'dependencies', 'metadata'):
+            if asset.get(field):
+                try:
+                    asset[field] = json.loads(asset[field])
+                except json.JSONDecodeError:
+                    asset[field] = []
+        asset['collections'] = []
+        assets.append(asset)
+        asset_ids.append(asset['id'])
+
+    # 2. All collection memberships in one query
+    coll_rows = db.execute("""
+        SELECT ca.asset_id, ca.collection_id, ca.sort_order, c.name, c.color, c.icon, c.parent_id
+        FROM collection_assets ca
+        JOIN collections c ON c.id = ca.collection_id
+        ORDER BY ca.sort_order, c.name
+    """).fetchall()
+
+    # Build asset->collections and collection->asset_ids maps
+    asset_coll_map = {}  # asset_id -> list of collection dicts
+    coll_asset_map = {}  # collection_id -> set of asset_ids
+    for cr in coll_rows:
+        aid = cr[0]
+        cid = cr[1]
+        coll_dict = {
+            'id': cid, 'sort_order': cr[2], 'name': cr[3],
+            'color': cr[4], 'icon': cr[5], 'parent_id': cr[6],
+        }
+        asset_coll_map.setdefault(aid, []).append(coll_dict)
+        coll_asset_map.setdefault(cid, set()).add(aid)
+
+    for asset in assets:
+        asset['collections'] = asset_coll_map.get(asset['id'], [])
+
+    return assets, coll_asset_map
 
 
 # ==============================================================================

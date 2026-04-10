@@ -1067,11 +1067,39 @@ def _fetch_library_asset(slug):
     """Load library asset package by slug. Returns package dict or None."""
     try:
         from sopdrop.library import get_asset_by_slug, load_asset_package
+        from sopdrop.config import get_active_library
+        print(f"[Sopdrop] Looking up library asset: {slug} (library={get_active_library()})")
         asset = get_asset_by_slug(slug)
         if asset:
             return load_asset_package(asset['id'])
+        print(f"[Sopdrop] Asset not found by slug: {slug}")
+
+        # Try the other library if not found
+        from sopdrop.library import close_db
+        from sopdrop.config import set_active_library, get_team_library_path
+        current = get_active_library()
+        other = 'team' if current == 'personal' else 'personal'
+        if other == 'team' and not get_team_library_path():
+            return None
+        try:
+            print(f"[Sopdrop] Trying {other} library...")
+            close_db()
+            set_active_library(other)
+            asset = get_asset_by_slug(slug)
+            if asset:
+                pkg = load_asset_package(asset['id'])
+                if pkg:
+                    print(f"[Sopdrop] Found in {other} library")
+                    return pkg
+        except Exception:
+            pass
+        finally:
+            close_db()
+            set_active_library(current)
     except Exception as e:
-        print(f"Could not load library asset: {e}")
+        print(f"[Sopdrop] Could not load library asset '{slug}': {e}")
+        import traceback
+        traceback.print_exc()
     return None
 
 

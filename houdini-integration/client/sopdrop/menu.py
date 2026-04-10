@@ -216,7 +216,7 @@ def generate_shelf_xml(personal_assets: List[Dict[str, Any]], team_assets: List[
 # Main Functions
 # ==============================================================================
 
-def regenerate_menu(quiet: bool = False, skip_reload: bool = False) -> bool:
+def regenerate_menu(quiet: bool = False, skip_reload: bool = False, skip_team: bool = False) -> bool:
     """
     Regenerate the TAB menu shelf file from the library.
 
@@ -225,6 +225,8 @@ def regenerate_menu(quiet: bool = False, skip_reload: bool = False) -> bool:
 
     Args:
         quiet: If True, suppress print output
+        skip_team: If True, only include personal library assets (avoids NAS access).
+                   Team assets will be added when the Library panel opens.
 
     Returns:
         True if successful
@@ -246,14 +248,15 @@ def regenerate_menu(quiet: bool = False, skip_reload: bool = False) -> bool:
         # Get team library assets if available
         team_assets = []
         team_path = get_team_library_path()
-        if team_path:
+        if team_path and not skip_team:
             try:
                 close_db()
                 set_active_library('team')
                 team_assets = search_assets(limit=500)
                 _enrich_with_collections(team_assets)
-            except Exception:
-                pass
+            except Exception as e:
+                if not quiet:
+                    print(f"[Sopdrop] Could not load team assets for TAB menu: {e}")
             finally:
                 close_db()
                 set_active_library(original_library)
@@ -393,7 +396,8 @@ def paste_asset(asset_id: str):
         return
 
     try:
-        from .library import load_asset_package, record_asset_use, get_asset
+        from .library import load_asset_package, record_asset_use, get_asset, close_db
+        from .config import get_active_library, set_active_library, get_team_library_path
         from .importer import import_items
     except ImportError:
         hou.ui.displayMessage(
@@ -410,55 +414,99 @@ def paste_asset(asset_id: str):
 
         target = pane.pwd()
 
-        # Load the asset info
+        # Load the asset info — try current library first, then the other one.
+        # This handles the case where a team asset is in the TAB menu from a
+        # previous session but the current library is set to personal (or vice
+        # versa).
+        original_library = get_active_library()
         asset = get_asset(asset_id)
+        switched = False
+        if asset is None:
+            other = 'team' if original_library == 'personal' else 'personal'
+            # Only try team if a team path is configured
+            if other == 'team' and not get_team_library_path():
+                pass
+            else:
+                try:
+                    print(f"[Sopdrop] Asset {asset_id[:8]}... not in {original_library} library, trying {other}...")
+                    close_db()
+                    set_active_library(other)
+                    asset = get_asset(asset_id)
+                    if asset is not None:
+                        switched = True
+                        print(f"[Sopdrop] Found in {other} library")
+                    else:
+                        # Restore original
+                        close_db()
+                        set_active_library(original_library)
+                except Exception as e:
+                    print(f"[Sopdrop] Could not check {other} library: {e}")
+                    try:
+                        close_db()
+                        set_active_library(original_library)
+                    except Exception:
+                        pass
 
-        # Handle HDA assets differently to avoid UTF-8 issues
-        if asset and asset.get('asset_type') == 'hda':
-            _paste_hda(asset, target, pane)
+        try:
+            # Handle HDA assets differently to avoid UTF-8 issues
+            if asset and asset.get('asset_type') == 'hda':
+                _paste_hda(asset, target, pane)
+                try:
+                    record_asset_use(asset_id)
+                except Exception:
+                    pass  # Non-critical — paste already succeeded
+                return
+
+            # Load the package for node assets
+            package = load_asset_package(asset_id)
+            if not package:
+                print(f"[Sopdrop] Asset not found: {asset_id}")
+                hou.ui.displayMessage(
+                    f"Asset not found in library (ID: {asset_id[:12]}...).\n\n"
+                    "This can happen if:\n"
+                    "  - The asset was deleted\n"
+                    "  - The team library mirror hasn't synced yet\n"
+                    "    (open the Library panel to trigger sync)\n"
+                    "  - The library database needs rebuilding",
+                    title="Sopdrop - Not Found")
+                return
+
+            # Check context compatibility (case-insensitive)
+            target_ctx = target.childTypeCategory().name().upper()
+            pkg_ctx = package.get('context', '').lower()
+            expected_ctx = CONTEXT_TO_NETTYPE.get(pkg_ctx, '').upper()
+
+            if expected_ctx and target_ctx != expected_ctx:
+                name = asset.get('name', 'Asset') if asset else 'Asset'
+                result = hou.ui.displayMessage(
+                    f"'{name}' is a {pkg_ctx.upper()} asset.\n"
+                    f"You're in a {target_ctx} network.\n\n"
+                    "Paste anyway?",
+                    buttons=("Paste", "Cancel"),
+                    default_choice=1
+                )
+                if result == 1:
+                    return
+
+            # Get cursor position for placement
+            cursor_pos = pane.cursorPosition()
+
+            # Import the nodes
+            import_items(package, target, position=cursor_pos)
+
+            # Record usage (non-critical — paste already succeeded)
             try:
                 record_asset_use(asset_id)
             except Exception:
-                pass  # Non-critical — paste already succeeded
-            return
-
-        # Load the package for node assets
-        package = load_asset_package(asset_id)
-        if not package:
-            hou.ui.displayMessage(
-                "Asset not found in library.\n"
-                "It may have been deleted or the library database may need rebuilding.",
-                title="Sopdrop")
-            return
-
-        # Check context compatibility (case-insensitive)
-        target_ctx = target.childTypeCategory().name().upper()
-        pkg_ctx = package.get('context', '').lower()
-        expected_ctx = CONTEXT_TO_NETTYPE.get(pkg_ctx, '').upper()
-
-        if expected_ctx and target_ctx != expected_ctx:
-            name = asset.get('name', 'Asset') if asset else 'Asset'
-            result = hou.ui.displayMessage(
-                f"'{name}' is a {pkg_ctx.upper()} asset.\n"
-                f"You're in a {target_ctx} network.\n\n"
-                "Paste anyway?",
-                buttons=("Paste", "Cancel"),
-                default_choice=1
-            )
-            if result == 1:
-                return
-
-        # Get cursor position for placement
-        cursor_pos = pane.cursorPosition()
-
-        # Import the nodes
-        import_items(package, target, position=cursor_pos)
-
-        # Record usage (non-critical — paste already succeeded)
-        try:
-            record_asset_use(asset_id)
-        except Exception:
-            pass
+                pass
+        finally:
+            # Restore original library if we switched
+            if switched:
+                try:
+                    close_db()
+                    set_active_library(original_library)
+                except Exception:
+                    pass
 
     except Exception as e:
         import hou
