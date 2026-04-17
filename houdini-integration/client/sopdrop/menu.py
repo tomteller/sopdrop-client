@@ -84,8 +84,10 @@ def generate_tool_xml(asset: Dict[str, Any], library_type: str = 'personal') -> 
     asset_type = asset.get('asset_type', 'node')
     description = asset.get('description', '')
 
-    # Skip VEX snippets - they don't belong in the TAB menu
+    # Skip VEX snippets and path assets - they don't belong in the TAB menu
     if asset_type == 'vex' or context == 'vex':
+        return ''
+    if context == 'path':
         return ''
 
     # Get Houdini network type
@@ -385,6 +387,28 @@ def cleanup_menu() -> bool:
 # Menu Actions (called from tool scripts)
 # ==============================================================================
 
+def _wait_for_library_worker(timeout_ms=2000):
+    """Wait for any in-flight library panel background worker to finish.
+
+    Must be called before close_db() to avoid closing the SQLite connection
+    while a _LibraryWorker thread is mid-query (segfault).
+    See docs/crash-safety.md Fix #13.
+    """
+    try:
+        import sopdrop_library_panel as panel_mod
+        panels = getattr(panel_mod, '_active_panels', [])
+    except ImportError:
+        return
+
+    for ref in panels:
+        panel = ref()
+        if panel is not None:
+            worker = getattr(panel, '_worker', None)
+            if worker is not None and worker.isRunning():
+                print("[Sopdrop] Waiting for library worker to finish before switching DB...")
+                worker.wait(timeout_ms)
+
+
 def paste_asset(asset_id: str):
     """
     Paste an asset from the library into the current network.
@@ -429,6 +453,7 @@ def paste_asset(asset_id: str):
             else:
                 try:
                     print(f"[Sopdrop] Asset {asset_id[:8]}... not in {original_library} library, trying {other}...")
+                    _wait_for_library_worker()
                     close_db()
                     set_active_library(other)
                     asset = get_asset(asset_id)
@@ -437,11 +462,13 @@ def paste_asset(asset_id: str):
                         print(f"[Sopdrop] Found in {other} library")
                     else:
                         # Restore original
+                        _wait_for_library_worker()
                         close_db()
                         set_active_library(original_library)
                 except Exception as e:
                     print(f"[Sopdrop] Could not check {other} library: {e}")
                     try:
+                        _wait_for_library_worker()
                         close_db()
                         set_active_library(original_library)
                     except Exception:
@@ -471,15 +498,24 @@ def paste_asset(asset_id: str):
                     title="Sopdrop - Not Found")
                 return
 
+            # Curves assets: use original network context for matching,
+            # then patch the package so the importer doesn't reject it.
+            # (Matches the panel's handling in _paste_asset.)
+            pkg_ctx_raw = package.get('context', '').lower()
+            if pkg_ctx_raw == 'curves':
+                source_ctx = package.get('metadata', {}).get('source_context', '')
+                if source_ctx:
+                    package['context'] = source_ctx
+                    pkg_ctx_raw = source_ctx
+
             # Check context compatibility (case-insensitive)
             target_ctx = target.childTypeCategory().name().upper()
-            pkg_ctx = package.get('context', '').lower()
-            expected_ctx = CONTEXT_TO_NETTYPE.get(pkg_ctx, '').upper()
+            expected_ctx = CONTEXT_TO_NETTYPE.get(pkg_ctx_raw, '').upper()
 
             if expected_ctx and target_ctx != expected_ctx:
                 name = asset.get('name', 'Asset') if asset else 'Asset'
                 result = hou.ui.displayMessage(
-                    f"'{name}' is a {pkg_ctx.upper()} asset.\n"
+                    f"'{name}' is a {pkg_ctx_raw.upper()} asset.\n"
                     f"You're in a {target_ctx} network.\n\n"
                     "Paste anyway?",
                     buttons=("Paste", "Cancel"),
@@ -503,6 +539,7 @@ def paste_asset(asset_id: str):
             # Restore original library if we switched
             if switched:
                 try:
+                    _wait_for_library_worker()
                     close_db()
                     set_active_library(original_library)
                 except Exception:

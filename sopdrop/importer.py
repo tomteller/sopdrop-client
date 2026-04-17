@@ -441,8 +441,11 @@ def _import_v2(
         all_nodes = []
         for item in new_items:
             if isinstance(item, hou.Node):
-                if item.parent() == target_node:
-                    all_nodes.append(item)
+                try:
+                    if item.parent() == target_node:
+                        all_nodes.append(item)
+                except Exception:
+                    pass
 
         sticky_notes = new_stickies
 
