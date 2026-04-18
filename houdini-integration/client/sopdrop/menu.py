@@ -116,16 +116,23 @@ def generate_tool_xml(asset: Dict[str, Any], library_type: str = 'personal') -> 
     if tags:
         keywords += "," + ",".join(t.lower() for t in tags[:3])
 
-    # Script — wrapped with error handling so TAB menu doesn't crash
-    # if Sopdrop modules aren't loaded yet (e.g. fresh Houdini startup
-    # before the Library panel has been opened).
-    script = f'''try:
+    # Script — ensure sopdrop paths are on sys.path (same setup as pypanel
+    # and shelf tools) so this works even if pythonrc hasn't run yet or the
+    # Library panel hasn't been opened.
+    script = f'''import sys, os
+_sp = os.environ.get("SOPDROP_HOUDINI_PATH", "")
+if _sp:
+    for _sd in ("scripts", "client"):
+        _p = os.path.join(_sp, _sd)
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
+try:
     import sopdrop.menu
     sopdrop.menu.paste_asset("{asset_id}")
 except ImportError:
     import hou
     hou.ui.displayMessage(
-        "Sopdrop module not loaded yet.\\nOpen the Library panel first, then try again.",
+        "Sopdrop is not installed.\\nRun: pip install sopdrop",
         title="Sopdrop", severity=hou.severityType.Warning)
 except Exception as e:
     import hou
@@ -170,8 +177,24 @@ def generate_browse_tool_xml(context: str) -> str:
       <contextNetType>{net_type}</contextNetType>
     </toolMenuContext>
     <script scriptType="python"><![CDATA[
-import sopdrop.menu
-sopdrop.menu.open_library_panel()
+import sys, os
+_sp = os.environ.get("SOPDROP_HOUDINI_PATH", "")
+if _sp:
+    for _sd in ("scripts", "client"):
+        _p = os.path.join(_sp, _sd)
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
+try:
+    import sopdrop.menu
+    sopdrop.menu.open_library_panel()
+except ImportError:
+    import hou
+    hou.ui.displayMessage(
+        "Sopdrop is not installed.\\nRun: pip install sopdrop",
+        title="Sopdrop", severity=hou.severityType.Warning)
+except Exception as e:
+    import hou
+    hou.ui.displayMessage(str(e), title="Sopdrop Error")
 ]]></script>
     <keywordList>
       <keyword>sopdrop,library,browse,assets</keyword>
@@ -423,9 +446,9 @@ def paste_asset(asset_id: str):
         from .library import load_asset_package, record_asset_use, get_asset, close_db
         from .config import get_active_library, set_active_library, get_team_library_path
         from .importer import import_items
-    except ImportError:
+    except ImportError as e:
         hou.ui.displayMessage(
-            "Sopdrop library not loaded.\nOpen the Library panel first, then try again.",
+            f"Sopdrop module import failed: {e}\n\nTry: pip install sopdrop",
             title="Sopdrop", severity=hou.severityType.Warning)
         return
 
@@ -498,9 +521,34 @@ def paste_asset(asset_id: str):
                     title="Sopdrop - Not Found")
                 return
 
-            # Curves assets: use original network context for matching,
+            # New-format curves: keyframe-only data, apply to scoped parms
+            if "curves" in package:
+                from .curves import apply_curves
+
+                target_parms = []
+                for node in hou.selectedNodes():
+                    for p in node.parms():
+                        if p.isScoped():
+                            target_parms.append(p)
+
+                if not target_parms:
+                    hou.ui.displayMessage(
+                        "No scoped channels found.\n\n"
+                        "Select a node and scope channels in the Animation Editor,\n"
+                        "then try pasting again.",
+                        title="Sopdrop - Paste Curves",
+                    )
+                    return
+
+                apply_curves(package["curves"], target_parms)
+                try:
+                    record_asset_use(asset_id)
+                except Exception:
+                    pass
+                return
+
+            # Old-format curves: use original network context for matching,
             # then patch the package so the importer doesn't reject it.
-            # (Matches the panel's handling in _paste_asset.)
             pkg_ctx_raw = package.get('context', '').lower()
             if pkg_ctx_raw == 'curves':
                 source_ctx = package.get('metadata', {}).get('source_context', '')

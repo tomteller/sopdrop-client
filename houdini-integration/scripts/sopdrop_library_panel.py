@@ -2126,7 +2126,7 @@ class AssetCardWidget(QtWidgets.QFrame):
         self.asset = asset
         self.card_size = card_size
         self.library_type = library_type
-        self.display_settings = display_settings or {'name': True, 'context': True, 'tags': False}
+        self.display_settings = display_settings or {'name': True, 'context': True, 'tags': False, 'artist': False}
         self._hovered = False
         self._selected = False
         self._original_pixmap = None  # Store original for resizing
@@ -2253,15 +2253,17 @@ class AssetCardWidget(QtWidgets.QFrame):
             sync_icon.setToolTip(tip)
             top_layout.addWidget(sync_icon)
 
-        # Bottom overlay - gradient for text (hidden when name display is off)
+        # Bottom overlay - gradient for text (hidden when no text is displayed)
         show_name = self.display_settings.get('name', True)
         show_tags = self.display_settings.get('tags', False)
+        show_artist = self.display_settings.get('artist', False)
+        has_text = show_name or show_tags or show_artist
 
         self.bottom_overlay = QtWidgets.QWidget(self.container)
         # Only pass through mouse events if tags aren't shown (tags need clicks)
         if not show_tags:
             self.bottom_overlay.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
-        if show_name or show_tags:
+        if has_text:
             self.bottom_overlay.setStyleSheet("""
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 rgba(0,0,0,0),
@@ -2296,6 +2298,20 @@ class AssetCardWidget(QtWidgets.QFrame):
             name.setText(elided)
             name.setToolTip(name_text)
             bottom_layout.addWidget(name)
+
+        # Artist name (optional)
+        if show_artist:
+            artist_text = self.asset.get('created_by', '')
+            if artist_text:
+                artist_font = max(scale(9), s['font'] - 2)
+                artist = QtWidgets.QLabel(artist_text)
+                artist.setStyleSheet(f"""
+                    color: {COLORS['text_secondary']};
+                    font-size: {artist_font}px;
+                    background: transparent;
+                """)
+                artist.setWordWrap(False)
+                bottom_layout.addWidget(artist)
 
         # Tag pills (optional, clickable to filter)
         if show_tags:
@@ -3421,7 +3437,7 @@ class AssetGridWidget(QtWidgets.QWidget):
         self._assets = []
         self._groups = None  # Store group data for resize reflow
         self._library_type = 'personal'
-        self._display_settings = {'name': True, 'context': True, 'tags': False}
+        self._display_settings = {'name': True, 'context': True, 'tags': False, 'artist': False}
         self._last_columns = 0
         self._resize_timer = None
         self._selected_asset = None
@@ -3637,13 +3653,16 @@ class AssetGridWidget(QtWidgets.QWidget):
                 w.deleteLater()
 
         # Place all cards at once — recycled cards are just repositioned (cheap),
-        # only genuinely new cards need full widget construction
+        # only genuinely new cards need full widget construction.
+        # Skip cache if display settings changed (cards bake settings into their layout).
         for i, asset in enumerate(assets):
             card = cached.pop(asset['id'], None)
-            if card:
+            if card and card.display_settings == self._display_settings:
                 card.setFixedWidth(card_width)
                 self.grid_layout.addWidget(card, i // columns, i % columns)
             else:
+                if card:
+                    card.deleteLater()
                 self._add_card(asset, i, columns, card_width)
 
         # Delete any leftover cached cards not placed
@@ -3785,6 +3804,9 @@ class AssetGridWidget(QtWidgets.QWidget):
             # Add asset cards — reuse cached where possible
             for i, asset in enumerate(group['assets']):
                 card = cached.pop(asset['id'], None)
+                if card and card.display_settings != self._display_settings:
+                    card.deleteLater()
+                    card = None
                 if not card:
                     card = AssetCardWidget(asset, self._card_size, self._library_type, self._display_settings)
                     card.paste_requested.connect(self.paste_requested.emit)
@@ -4036,10 +4058,12 @@ class LibraryPanel(QtWidgets.QWidget):
             'name': True,
             'context': True,
             'tags': False,
+            'artist': False,
         }
         self._selected_assets = set()  # Multi-select asset IDs
         self._saved_sort = None  # Sort to restore when leaving system views
         self._worker = None  # Background _LibraryWorker thread
+        self._save_dialog = None  # Non-modal SaveToLibraryDialog reference
         # In-memory asset cache — loaded once, filtered in Python for instant switching
         self._asset_cache = None  # list of all asset dicts (None = not loaded)
         self._collection_map = {}  # collection_id -> set of asset_ids
@@ -5514,6 +5538,8 @@ class LibraryPanel(QtWidgets.QWidget):
                            lambda v: self._toggle_display('context', v))
         popup.add_checkbox("Tags", self._display_settings.get('tags', False),
                            lambda v: self._toggle_display('tags', v))
+        popup.add_checkbox("Artist", self._display_settings.get('artist', False),
+                           lambda v: self._toggle_display('artist', v))
 
         popup.add_separator()
         popup.add_label("Collections")
@@ -5944,27 +5970,42 @@ class LibraryPanel(QtWidgets.QWidget):
             # Use Houdini's main window as parent for better compatibility
             parent = hou.qt.mainWindow()
             dialog = SaveToLibraryDialog(items, parent=parent, default_collection_id=self._get_active_collection_id())
+            # Keep reference so the dialog isn't garbage-collected
+            self._save_dialog = dialog
+            dialog.accepted.connect(self._on_save_dialog_accepted)
+            dialog.finished.connect(self._on_save_dialog_closed)
+            # Non-modal: user can still interact with Houdini (e.g. take screenshots)
+            dialog.setWindowModality(QtCore.Qt.NonModal)
+            dialog.show()
             dialog.raise_()
             dialog.activateWindow()
-            result = dialog.exec_()
-            print(f"[Sopdrop] Dialog result: {result}")
-            if result == QtWidgets.QDialog.Accepted:
-                self.collections.refresh()
-                self._refresh_assets_from_db()
-                self.show_toast("Asset saved to library", 'success', 2500)
-                # Reload TAB menu shelf so new asset is immediately available
-                try:
-                    from sopdrop.menu import get_shelf_file
-                    _sf = get_shelf_file()
-                    if _sf.exists():
-                        hou.shelves.loadFile(str(_sf))
-                except Exception:
-                    pass
         except Exception as e:
             print(f"[Sopdrop] Error showing save dialog: {e}")
             import traceback
             traceback.print_exc()
             hou.ui.displayMessage(f"Error opening save dialog: {e}")
+
+    def _on_save_dialog_accepted(self):
+        """Handle save dialog completion (non-modal)."""
+        try:
+            self.objectName()  # Liveness guard
+        except RuntimeError:
+            return
+        self.collections.refresh()
+        self._refresh_assets_from_db()
+        self.show_toast("Asset saved to library", 'success', 2500)
+        # Reload TAB menu shelf so new asset is immediately available
+        try:
+            from sopdrop.menu import get_shelf_file
+            _sf = get_shelf_file()
+            if _sf.exists():
+                hou.shelves.loadFile(str(_sf))
+        except Exception:
+            pass
+
+    def _on_save_dialog_closed(self):
+        """Clean up reference when save dialog is closed."""
+        self._save_dialog = None
 
     def _save_vex_snippet(self):
         """Open the Save VEX Snippet dialog."""
@@ -6107,6 +6148,11 @@ class LibraryPanel(QtWidgets.QWidget):
                 hou.ui.displayMessage("Failed to load asset")
                 return
 
+            # New-format curves: keyframe-only data, apply to scoped parms
+            if "curves" in package:
+                self._paste_curves_data(package, asset)
+                return
+
             # Pre-check HDA dependencies before paste
             use_placeholders = False
             deps = package.get('dependencies', [])
@@ -6130,25 +6176,19 @@ class LibraryPanel(QtWidgets.QWidget):
 
                         if is_v1:
                             lines.append("\nYou can paste with red placeholder subnets for the missing nodes.")
-                            reply = hou.ui.displayMessage(
-                                "\n".join(lines),
-                                buttons=("Paste with Placeholders", "Cancel"),
-                                title="Missing Dependencies",
-                                severity=hou.severityType.Warning,
-                                default_choice=1,
-                            )
-                            if reply != 0:
-                                return
-                            use_placeholders = True
                         else:
-                            lines.append("\nInstall the missing HDAs and try again.")
-                            lines.append("(Placeholder mode is only available for code-based packages.)")
-                            hou.ui.displayMessage(
-                                "\n".join(lines),
-                                title="Missing Dependencies",
-                                severity=hou.severityType.Warning,
-                            )
+                            lines.append("\nMissing types will appear as error nodes in the network.")
+
+                        reply = hou.ui.displayMessage(
+                            "\n".join(lines),
+                            buttons=("Paste Anyway", "Cancel"),
+                            title="Missing Dependencies",
+                            severity=hou.severityType.Warning,
+                            default_choice=1,
+                        )
+                        if reply != 0:
                             return
+                        use_placeholders = True
                 except ImportError:
                     pass
 
@@ -6157,7 +6197,7 @@ class LibraryPanel(QtWidgets.QWidget):
             ctx_map = {'sop': 'sop', 'object': 'obj', 'vop': 'vop', 'dop': 'dop', 'cop2': 'cop', 'top': 'top', 'lop': 'lop', 'chop': 'chop'}
             target_ctx = ctx_map.get(target_ctx, target_ctx)
 
-            # Curves assets: use the original network context for matching
+            # Old-format curves assets: use the original network context for matching
             if pkg_ctx == 'curves':
                 pkg_ctx = package.get('metadata', {}).get('source_context', pkg_ctx)
 
@@ -6173,7 +6213,7 @@ class LibraryPanel(QtWidgets.QWidget):
                 if reply != 0:
                     return
 
-            # Curves assets: restore original context so the importer doesn't reject it
+            # Old-format curves assets: restore original context so the importer doesn't reject it
             if package.get('context') == 'curves':
                 source_ctx = package.get('metadata', {}).get('source_context', '')
                 if source_ctx:
@@ -6200,6 +6240,40 @@ class LibraryPanel(QtWidgets.QWidget):
             self.show_toast(f"Paste failed: {err_first_line}", 'error', 5000)
             import traceback as _tb
             print(f"[Sopdrop] Paste error: {e}\n{_tb.format_exc()}")
+
+    def _paste_curves_data(self, package, asset):
+        """Apply new-format portable curves to scoped parms."""
+        try:
+            from sopdrop.curves import apply_curves
+
+            # Gather scoped parms with keyframes (or all parms) on selected nodes
+            target_parms = []
+            for node in hou.selectedNodes():
+                for parm in node.parms():
+                    if parm.isScoped():
+                        target_parms.append(parm)
+
+            if not target_parms:
+                hou.ui.displayMessage(
+                    "No scoped channels found.\n\n"
+                    "Select a node and scope channels in the Animation Editor,\n"
+                    "then try pasting again.",
+                    title="Sopdrop - Paste Curves",
+                )
+                return
+
+            curves_data = package["curves"]
+            apply_curves(curves_data, target_parms)
+            library.record_asset_use(asset['id'])
+
+            n = min(len(curves_data), len(target_parms)) if len(curves_data) > 1 else len(target_parms)
+            self.show_toast(f"Applied curves to {n} channel{'s' if n != 1 else ''}", 'success', 2000)
+
+        except Exception as e:
+            err_first_line = str(e).split('\n')[0][:200]
+            self.show_toast(f"Paste curves failed: {err_first_line}", 'error', 5000)
+            import traceback as _tb
+            print(f"[Sopdrop] Paste curves error: {e}\n{_tb.format_exc()}")
 
     def _install_hda(self, asset_id):
         """Install an HDA and place an instance of it."""
@@ -6462,12 +6536,15 @@ class LibraryPanel(QtWidgets.QWidget):
 
         print(f"[Sopdrop] Version up: {len(items)} items selected, updating '{asset.get('name')}'")
 
-        # Show save dialog with existing asset for update
+        # Show save dialog with existing asset for update (non-modal)
         dialog = SaveToLibraryDialog(items, existing_asset=asset, parent=self)
-        if dialog.exec_() == QtWidgets.QDialog.Accepted:
-            self.collections.refresh()
-            self._refresh_assets_from_db()
-            self.show_toast(f"Updated {asset['name']}", 'success', 2500)
+        self._save_dialog = dialog
+        dialog.accepted.connect(self._on_save_dialog_accepted)
+        dialog.finished.connect(self._on_save_dialog_closed)
+        dialog.setWindowModality(QtCore.Qt.NonModal)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _open_settings(self):
         """Open the settings dialog."""
@@ -8758,41 +8835,67 @@ class SavePathDialog(QtWidgets.QDialog):
 class SaveCurvesDialog(QtWidgets.QDialog):
     """Dialog for saving animation curves to the library.
 
-    Uses the same V2 cpio export as regular node saves.  The nodes that
-    carry keyframes are saved whole — paste recreates them without
-    touching anything already in the scene.
+    Saves keyframe data only (channel-agnostic) so curves can be
+    pasted onto any parameter.  Falls back to full-node detection
+    if nothing is scoped in the Animation Editor.
     """
 
     def __init__(self, parent=None, default_collection_id=None):
         super().__init__(parent)
         self._default_collection_id = default_collection_id
         self._curves_meta = None  # curve-specific metadata dict
-        self._nodes = []          # hou.Node objects with keyframes
+        self._parms = []          # hou.Parm objects with keyframes
         self._detect_nodes()
         self._setup_ui()
 
     def _detect_nodes(self):
-        """Find nodes with keyframed parms from selected items or channel editor.
+        """Find keyframed parms from scoped channels or selected nodes.
+
+        Priority:
+        1. Scoped parms in the Animation Editor that have keyframes
+        2. All keyframed parms on selected nodes in the Network Editor
 
         Returns a short diagnostic string for the stats label.
         """
         self._curves_meta = None
-        self._nodes = []
+        self._parms = []
 
         try:
             import hou
-            from sopdrop.curves import get_keyframed_nodes, get_curves_metadata
+            from sopdrop.curves import get_curves_metadata_from_parms
 
-            # Priority 1: selected items in the Network Editor
+            # Priority 1: scoped parms in the Channel Editor
+            try:
+                ch_editor = hou.ui.paneTabOfType(hou.paneTabType.ChannelEditor)
+                if ch_editor:
+                    scoped = []
+                    for node in hou.selectedNodes():
+                        for parm in node.parms():
+                            if parm.isScoped() and parm.keyframes():
+                                scoped.append(parm)
+                    if scoped:
+                        self._parms = scoped
+                        self._curves_meta = get_curves_metadata_from_parms(scoped)
+                        return f"{len(scoped)} scoped channel{'s' if len(scoped) != 1 else ''}"
+            except Exception:
+                pass
+
+            # Priority 2: all keyframed parms on selected nodes
             pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
             if pane:
                 selected = list(pane.pwd().selectedItems())
                 if selected:
-                    kf_nodes = get_keyframed_nodes(selected)
-                    if kf_nodes:
-                        self._nodes = kf_nodes
-                        self._curves_meta = get_curves_metadata(kf_nodes)
-                        return f"from {len(kf_nodes)} selected node{'s' if len(kf_nodes) != 1 else ''}"
+                    parms = []
+                    for item in selected:
+                        if isinstance(item, hou.Node):
+                            for parm in item.parms():
+                                if parm.keyframes():
+                                    parms.append(parm)
+                    if parms:
+                        self._parms = parms
+                        self._curves_meta = get_curves_metadata_from_parms(parms)
+                        n_nodes = len(set(p.node() for p in parms))
+                        return f"from {n_nodes} selected node{'s' if n_nodes != 1 else ''}"
                     return "Selected nodes have no keyframes"
                 return "No nodes selected"
 
@@ -9112,36 +9215,33 @@ class SaveCurvesDialog(QtWidgets.QDialog):
             self.coll_combo.setCurrentIndex(0)
 
     def _save(self):
-        """Save the curves asset using V2 cpio export."""
+        """Save the curves asset as portable keyframe data."""
         name = self.name_input.text().strip()
 
         if not name:
             QtWidgets.QMessageBox.warning(self, "Error", "Please enter a name")
             return
-        if not self._nodes:
-            QtWidgets.QMessageBox.warning(self, "Error", "No keyframed nodes detected")
+        if not self._parms:
+            QtWidgets.QMessageBox.warning(self, "Error", "No keyframed channels detected")
             return
 
         try:
-            from sopdrop.export import export_items
+            from sopdrop.curves import extract_curves
 
-            # Export the keyframed nodes as a standard V2 package
-            package = export_items(self._nodes)
+            curves_data = extract_curves(self._parms)
+            if not curves_data:
+                QtWidgets.QMessageBox.warning(self, "Error", "No keyframes found on selected channels")
+                return
 
-            # Preserve original network context for paste-time validation,
-            # then override to "curves" so the library tags it correctly
-            package['metadata']['source_context'] = package.get('context', 'unknown')
-            package['context'] = 'curves'
+            metadata = dict(self._curves_meta) if self._curves_meta else {}
+            metadata['has_hda_dependencies'] = False
 
-            # Clear HDA dependencies — curves are about the keyframes, not
-            # the node types.  The cpio still has the full node data so
-            # Houdini will load whatever it can; missing types just become
-            # placeholder subnets, which is fine for animation carriers.
-            package['dependencies'] = []
-            package['metadata']['has_hda_dependencies'] = False
-
-            if self._curves_meta:
-                package['metadata'].update(self._curves_meta)
+            package = {
+                "format": "sopdrop-v2",
+                "context": "curves",
+                "metadata": metadata,
+                "curves": curves_data,
+            }
 
             tags = self.tags_widget.get_tags()
             coll_id = self.coll_combo.currentData()

@@ -257,8 +257,10 @@ def import_items(
         package: The .sopdrop package dictionary
         target_node: Target parent node (default: current network)
         position: Position to place nodes at (default: cursor or center)
-        allow_placeholders: If True, missing HDA deps become red placeholder
-            subnets instead of raising MissingDependencyError (V1 only).
+        allow_placeholders: If True, missing HDA deps are tolerated instead
+            of raising MissingDependencyError. V1: creates red placeholder
+            subnets. V2: lets loadItemsFromFile() proceed (Houdini creates
+            native "unknown operator" nodes for missing types).
 
     Returns:
         List of created items
@@ -273,7 +275,7 @@ def import_items(
             return _import_v1(package, target_node, position, allow_placeholders)
         elif fmt.startswith("sopdrop-v") or fmt.startswith("chopsop-v"):
             # v2+ uses binary format (support old "chopsop" name for backwards compat)
-            return _import_v2(package, target_node, position)
+            return _import_v2(package, target_node, position, allow_placeholders)
         else:
             raise ImportError(f"Unknown package format: {fmt}")
 
@@ -282,6 +284,7 @@ def _import_v2(
     package: Dict[str, Any],
     target_node=None,
     position: Optional[Tuple[float, float]] = None,
+    allow_placeholders: bool = False,
 ) -> List:
     """Import v2 format (binary/cpio based)."""
     import hou
@@ -310,7 +313,14 @@ def _import_v2(
     if dependencies:
         missing = _check_missing_hdas(dependencies)
         if missing:
-            raise MissingDependencyError(_format_missing_deps_error(missing, v2=True))
+            if allow_placeholders:
+                # Let loadItemsFromFile() proceed — Houdini creates native
+                # "unknown operator" nodes for missing types (red error nodes).
+                names = [d.get('name', '?') for d in missing]
+                print(f"[Sopdrop] Proceeding with {len(missing)} missing HDA(s): {', '.join(names)}")
+                print("[Sopdrop] Missing types will appear as error nodes in the network")
+            else:
+                raise MissingDependencyError(_format_missing_deps_error(missing, v2=True))
 
     # Get the binary data
     encoded_data = package.get("data")
@@ -1031,8 +1041,8 @@ def import_at_cursor(package: Dict[str, Any], allow_placeholders: bool = False) 
 
     Args:
         package: The .sopdrop package dictionary
-        allow_placeholders: If True, missing HDA deps become red placeholder
-            subnets instead of raising MissingDependencyError (V1 only).
+        allow_placeholders: If True, missing HDA deps are tolerated instead
+            of raising MissingDependencyError.
 
     Returns:
         List of created items
@@ -1195,7 +1205,7 @@ def _check_missing_hdas(dependencies: List[Dict]) -> List[Dict]:
     return missing
 
 
-def _format_missing_deps_error(missing: List[Dict], v2: bool = False) -> str:
+def _format_missing_deps_error(missing: List[Dict], **kwargs) -> str:
     """Format a human-readable error message for missing HDA dependencies."""
     lines = [f"Missing {len(missing)} HDA dependenc{'y' if len(missing) == 1 else 'ies'}:"]
     for dep in missing:
@@ -1207,9 +1217,8 @@ def _format_missing_deps_error(missing: List[Dict], v2: bool = False) -> str:
         else:
             lines.append(f"  - {label} ({category})")
     lines.append("")
-    lines.append("Install the missing HDAs and try again.")
-    if v2:
-        lines.append("(Placeholder mode is only available for V1/code-based packages.)")
+    lines.append("Install the missing HDAs and try again,")
+    lines.append("or paste with allow_placeholders=True to load with error nodes.")
     return "\n".join(lines)
 
 

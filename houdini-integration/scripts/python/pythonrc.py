@@ -11,6 +11,20 @@ On fresh Houdini:
     background mirror refresh completes.
 """
 
+import sys
+import os
+
+# Ensure sopdrop directories are on sys.path before importing.
+# Without this, `import sopdrop` fails because Houdini's HOUDINI_PATH
+# only adds scripts/python/ — not the client package directory.
+# This matches the path setup done by the pypanel and shelf tools.
+_sopdrop_houdini = os.environ.get("SOPDROP_HOUDINI_PATH", "")
+if _sopdrop_houdini:
+    for _subdir in ("scripts", "client"):
+        _p = os.path.join(_sopdrop_houdini, _subdir)
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
+
 
 def _init_sopdrop_menu():
     """Initialize the Sopdrop TAB menu on startup."""
