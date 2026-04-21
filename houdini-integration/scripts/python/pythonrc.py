@@ -30,7 +30,7 @@ def _init_sopdrop_menu():
     """Initialize the Sopdrop TAB menu on startup."""
     try:
         from sopdrop import menu
-        from sopdrop.config import get_active_library
+        from sopdrop.config import get_active_library, get_team_library_path
 
         shelf_file = menu.get_shelf_file()
 
@@ -46,21 +46,60 @@ def _init_sopdrop_menu():
                 pass
 
         # Regenerate with personal library only (fast, local SQLite).
-        # Team assets get added when the Library panel opens.
-        is_team = get_active_library() == "team"
-        if is_team:
-            print("[Sopdrop] Team library active — TAB menu will include team assets after panel opens")
-
         # skip_team=True avoids NAS/mirror access on the main thread.
-        # Team assets get added when the Library panel opens.
         menu.regenerate_menu(quiet=True, skip_team=True)
         print("[Sopdrop] TAB menu ready (type 'sopdrop' in TAB)")
+
+        # If a team library is configured, kick off a background mirror
+        # refresh + menu regen so team assets show up in the TAB menu
+        # without requiring the user to open the library panel first.
+        if get_team_library_path():
+            import threading
+            threading.Thread(target=_deferred_team_sync, daemon=True).start()
 
     except ImportError:
         # sopdrop not installed
         pass
     except Exception as e:
         print(f"[Sopdrop] Menu init: {e}")
+
+
+def _deferred_team_sync():
+    """Background: refresh team mirror, then schedule menu regen on main thread.
+
+    Mirror refresh is NAS I/O and must stay off the main thread.  Menu
+    regeneration calls hou.shelves.loadFile which must run on the main thread,
+    so it is posted via hou.ui.addEventLoopCallback as a one-shot.
+    """
+    try:
+        from sopdrop import library
+        try:
+            library.refresh_team_mirror()
+        except Exception as e:
+            print(f"[Sopdrop] Team mirror refresh failed: {e}")
+            return
+
+        try:
+            import hou
+        except ImportError:
+            return
+
+        def _regen_on_main():
+            try:
+                from sopdrop import menu
+                menu.regenerate_menu(quiet=True, skip_team=False)
+                print("[Sopdrop] TAB menu updated with team assets")
+            except Exception as e:
+                print(f"[Sopdrop] Team menu regen failed: {e}")
+            finally:
+                try:
+                    hou.ui.removeEventLoopCallback(_regen_on_main)
+                except Exception:
+                    pass
+
+        hou.ui.addEventLoopCallback(_regen_on_main)
+    except Exception as e:
+        print(f"[Sopdrop] Team sync error: {e}")
 
 
 # Defer initialization until UI is ready

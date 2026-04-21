@@ -10992,6 +10992,7 @@ class EditAssetDialog(QtWidgets.QDialog):
             )
             if self._new_thumbnail:
                 library.update_asset_thumbnail(self.asset['id'], self._new_thumbnail)
+                AssetCardWidget._thumb_cache.pop(self.asset['id'], None)
             self.accept()
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed: {e}")
