@@ -457,6 +457,10 @@ def _import_v2(
                 except Exception:
                     pass
 
+        # Network dots (connector waypoints) also need repositioning — they
+        # aren't captured by networkBoxes()/stickyNotes() so pull from new_items.
+        new_dots = [item for item in new_items if isinstance(item, hou.NetworkDot)]
+
         sticky_notes = new_stickies
 
         # Filter to only top-level network boxes for repositioning.
@@ -546,9 +550,9 @@ def _import_v2(
                 print(f"[Sopdrop] Error capturing sticky data: {e}")
 
         # For selection, we want all items (including nested boxes)
-        all_top_level = all_nodes + all_netboxes + sticky_notes
+        all_top_level = all_nodes + all_netboxes + sticky_notes + new_dots
 
-        print(f"[Sopdrop] Found {len(all_nodes)} nodes ({len(nodes_to_move)} outside boxes), {len(all_netboxes)} netboxes ({len(network_boxes)} top-level), {len(sticky_notes)} sticky notes ({len(stickies_to_move)} outside boxes)")
+        print(f"[Sopdrop] Found {len(all_nodes)} nodes ({len(nodes_to_move)} outside boxes), {len(all_netboxes)} netboxes ({len(network_boxes)} top-level), {len(sticky_notes)} sticky notes ({len(stickies_to_move)} outside boxes), {len(new_dots)} dots")
 
         # If no items found, return empty
         if not all_top_level:
@@ -556,9 +560,9 @@ def _import_v2(
             return []
 
         # Reposition items to target location
-        # - Nodes/stickies outside boxes: move individually
+        # - Nodes/stickies/dots outside boxes: move individually
         # - Network boxes: move the box (contents move with it)
-        items_to_move = nodes_to_move + stickies_to_move
+        items_to_move = nodes_to_move + stickies_to_move + new_dots
         if position and (items_to_move or network_boxes):
             print(f"[Sopdrop] Repositioning {len(items_to_move)} loose items + {len(network_boxes)} netboxes to ({position[0]:.1f}, {position[1]:.1f})")
             _reposition_items(items_to_move, position, network_boxes, netbox_data, sticky_data)
@@ -1279,6 +1283,14 @@ def _reposition_items(items, target_position: Tuple[float, float], network_boxes
                     except:
                         max_x = max(max_x, x + 3)
                         max_y = max(max_y, y + 1)
+            elif isinstance(item, hou.NetworkDot):
+                # Dots are point-sized connector waypoints
+                pos = item.position()
+                x, y = pos[0], pos[1]
+                min_x = min(min_x, x)
+                min_y = min(min_y, y)
+                max_x = max(max_x, x)
+                max_y = max(max_y, y)
             else:
                 # Regular nodes
                 pos = item.position()

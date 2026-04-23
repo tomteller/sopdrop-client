@@ -10753,6 +10753,8 @@ class EditAssetDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.asset = asset
         self._new_thumbnail = None  # bytes if changed
+        self._selected_icon = asset.get('icon')  # Houdini icon name or None
+        self._icon_changed = False  # Track whether user touched the icon
         self._setup_ui()
 
     def _setup_ui(self):
@@ -10830,6 +10832,65 @@ class EditAssetDialog(QtWidgets.QDialog):
         thumb_actions.addStretch()
         thumb_layout.addLayout(thumb_actions, 1)
         layout.addWidget(thumb_section)
+
+        # -- Icon section --
+        icon_section = QtWidgets.QFrame()
+        icon_section.setStyleSheet(f"""
+            QFrame {{
+                background-color: {COLORS['bg_base']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 4px;
+            }}
+        """)
+        icon_layout = QtWidgets.QHBoxLayout(icon_section)
+        icon_layout.setContentsMargins(scale(10), scale(10), scale(10), scale(10))
+        icon_layout.setSpacing(scale(10))
+
+        self.icon_preview = QtWidgets.QLabel()
+        self.icon_preview.setFixedSize(scale(48), scale(48))
+        self.icon_preview.setAlignment(QtCore.Qt.AlignCenter)
+        self.icon_preview.setStyleSheet(f"""
+            background-color: {COLORS['bg_dark']};
+            border: 1px solid {COLORS['border']};
+            border-radius: 3px;
+        """)
+        icon_layout.addWidget(self.icon_preview)
+
+        icon_actions = QtWidgets.QVBoxLayout()
+        icon_actions.setSpacing(scale(4))
+
+        icon_label = QtWidgets.QLabel("Icon")
+        icon_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)} font-weight: 600; border: none; background: transparent;")
+        icon_actions.addWidget(icon_label)
+
+        self.icon_name_label = QtWidgets.QLabel("(none)")
+        self.icon_name_label.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(9)} border: none; background: transparent;")
+        icon_actions.addWidget(self.icon_name_label)
+
+        icon_btns = QtWidgets.QHBoxLayout()
+        icon_btns.setSpacing(scale(4))
+
+        change_icon_btn = QtWidgets.QPushButton("Change Icon...")
+        change_icon_btn.setFixedHeight(scale(22))
+        change_icon_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        change_icon_btn.setStyleSheet(btn_style)
+        change_icon_btn.clicked.connect(self._show_icon_browser)
+        icon_btns.addWidget(change_icon_btn)
+
+        clear_icon_btn = QtWidgets.QPushButton("Clear")
+        clear_icon_btn.setFixedHeight(scale(22))
+        clear_icon_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        clear_icon_btn.setStyleSheet(btn_style)
+        clear_icon_btn.clicked.connect(self._clear_icon)
+        icon_btns.addWidget(clear_icon_btn)
+
+        icon_btns.addStretch()
+        icon_actions.addLayout(icon_btns)
+        icon_actions.addStretch()
+        icon_layout.addLayout(icon_actions, 1)
+        layout.addWidget(icon_section)
+
+        self._update_icon_preview()
 
         # -- Name --
         name_label = QtWidgets.QLabel("Name")
@@ -10977,19 +11038,57 @@ class EditAssetDialog(QtWidgets.QDialog):
             if not img.isNull():
                 self._set_preview_from_image(img)
 
+    def _update_icon_preview(self):
+        """Refresh the icon preview pixmap + name label from self._selected_icon."""
+        icon_name = self._selected_icon
+        if icon_name:
+            try:
+                hou_icon = hou.qt.Icon(icon_name, 48, 48)
+                if hou_icon and not hou_icon.isNull():
+                    self.icon_preview.setPixmap(hou_icon.pixmap(48, 48))
+                    self.icon_name_label.setText(icon_name)
+                    self.icon_name_label.setStyleSheet(
+                        f"color: {COLORS['text']}; {sfs(9)} border: none; background: transparent;"
+                    )
+                    return
+            except Exception:
+                pass
+            self.icon_preview.clear()
+            self.icon_name_label.setText(icon_name)
+        else:
+            self.icon_preview.clear()
+            self.icon_name_label.setText("(none)")
+            self.icon_name_label.setStyleSheet(
+                f"color: {COLORS['text_dim']}; {sfs(9)} border: none; background: transparent;"
+            )
+
+    def _show_icon_browser(self):
+        dialog = HoudiniIconBrowser(self)
+        if dialog.exec_() == QtWidgets.QDialog.Accepted and dialog.selected_icon:
+            self._selected_icon = dialog.selected_icon
+            self._icon_changed = True
+            self._update_icon_preview()
+
+    def _clear_icon(self):
+        self._selected_icon = None
+        self._icon_changed = True
+        self._update_icon_preview()
+
     def _save(self):
         name = self.name_input.text().strip()
         if not name:
             QtWidgets.QMessageBox.warning(self, "Error", "Please enter a name")
             return
         try:
-            library.update_asset(
-                self.asset['id'],
+            update_kwargs = dict(
                 name=name,
                 description=self.desc_input.toPlainText().strip(),
                 tags=self.tags_widget.get_tags(),
-                created_by=self.artist_input.text().strip() or None
+                created_by=self.artist_input.text().strip() or None,
             )
+            if self._icon_changed:
+                update_kwargs['icon'] = self._selected_icon
+            library.update_asset(self.asset['id'], **update_kwargs)
             if self._new_thumbnail:
                 library.update_asset_thumbnail(self.asset['id'], self._new_thumbnail)
                 AssetCardWidget._thumb_cache.pop(self.asset['id'], None)

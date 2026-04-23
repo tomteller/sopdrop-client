@@ -1569,7 +1569,7 @@ def update_asset(asset_id: str, **kwargs) -> Optional[Dict[str, Any]]:
     """Update asset metadata."""
     db = get_db()
 
-    allowed = {'name', 'description', 'tags', 'thumbnail_path', 'slug', 'created_by'}
+    allowed = {'name', 'description', 'tags', 'thumbnail_path', 'slug', 'created_by', 'icon'}
     updates = {k: v for k, v in kwargs.items() if k in allowed}
 
     if not updates:
