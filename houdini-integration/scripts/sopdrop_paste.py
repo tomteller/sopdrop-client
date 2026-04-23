@@ -614,6 +614,25 @@ def _show_paste_dialog(slug, pane):
     except Exception:
         pass
 
+    # Skip the confirmation dialog for local-library pastes when the target
+    # context matches the package — the dialog is just friction at that point.
+    # We still show it for web/share sources (safety check) and for context
+    # mismatches (warning).
+    if local_asset:
+        try:
+            target_context = _get_context(pane.pwd())
+            pkg_context = str(asset_info.get("context", "?")).lower()
+            context_ok = (
+                target_context == "unknown"
+                or pkg_context in ("?", "", "unknown")
+                or target_context == pkg_context
+            )
+        except Exception:
+            context_ok = False
+        if context_ok:
+            _paste_by_slug(slug, pane)
+            return
+
     dialog = PasteConfirmDialog(slug, pane, asset_info, local_asset=local_asset)
     result = dialog.exec_()
 
