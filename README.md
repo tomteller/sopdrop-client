@@ -117,6 +117,59 @@ sopdrop config server https://sopdrop.com
 - **HDA Support** - Install Houdini Digital Assets
 - **Local Caching** - Downloaded assets are cached for offline use
 - **Security Warnings** - Review assets before executing code
+- **Team Library** - Optional shared library for studios (see "Self-hosting")
+
+## Self-hosting (team library)
+
+For studios that want a private team registry on the LAN — no cloud
+account, no NAS-shared SQLite, no per-artist Login dance — this repo
+ships the server source and a turn-key Docker Compose stack:
+
+- [`server/`](server) — the Node.js + Postgres server (same code that
+  runs sopdrop.com).
+- [`deploy/onprem/`](deploy/onprem) — `docker-compose.yml`,
+  `.env.example`, and a setup README. One Linux box on the LAN runs
+  Postgres + the API server. All workstations point at it via HTTP — no
+  shared file locking, no auth tokens to distribute.
+- [`scripts/migrate-nas-to-server.py`](scripts) — one-shot migration
+  tool if you currently have a shared-SQLite team library and want to
+  move everything onto a self-hosted server.
+- [`docs/on-prem.md`](docs/on-prem.md) — the canonical reference for
+  architecture, auth modes, schema, and operations.
+
+### Sixty-second setup
+
+```bash
+# On the server box (Linux, Docker installed):
+cd deploy/onprem
+cp .env.example .env
+# fill in POSTGRES_PASSWORD, JWT_SECRET, PUBLIC_URL, CORS_ORIGINS
+docker compose up -d --build
+```
+
+The compose stack defaults to **trust-LAN auth** (`TRUST_LAN_AUTH=true`)
+which is the recommended mode for an internal LAN. Artists don't need
+tokens or a Login flow — identity comes from their workstation OS
+username, sent automatically by the panel.
+
+On every workstation (in Houdini → Sopdrop panel → Settings):
+
+1. Tick **Local only mode** at the top.
+2. Under **TEAM LIBRARY**, pick **On-prem Sopdrop server**.
+3. In **SERVER**, set Server URL to your LAN address (e.g.
+   `http://sopdrop.lan:4848`).
+4. Click **Fetch Teams**, pick your team from the dropdown.
+5. Status line shows: *Connected as alice to 'your-team' on
+   http://sopdrop.lan:4848 — N asset(s).*
+6. **Save Settings.**
+
+That's it. No "Login" button, no API token, no slug typing. Personal
+library stays local SQLite, untouched.
+
+See [`deploy/onprem/README.md`](deploy/onprem/README.md) for the full
+walkthrough including backups, upgrades, and the
+`TRUST_LAN_AUTH=false` token-based flow if you'd rather have explicit
+auth.
 
 ## Configuration
 

@@ -1,0 +1,32 @@
+{
+  "name": "sopdrop-server",
+  "version": "0.1.0",
+  "description": "Sopdrop - Houdini asset registry server",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "init-db": "node scripts/init-database.js",
+    "migrate": "node scripts/migrate.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.700.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^4.21.2",
+    "express-rate-limit": "^8.2.1",
+    "fluent-ffmpeg": "^2.1.3",
+    "google-auth-library": "^10.5.0",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "file-type": "^19.6.0",
+    "multer": "^2.0.2",
+    "pg": "^8.13.1",
+    "sharp": "^0.34.4",
+    "uuid": "^11.0.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

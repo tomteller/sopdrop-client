@@ -33,8 +33,18 @@ from .config import (
     get_team_library_path, get_team_mirror_dir,
     get_team_mirror_db_path, get_team_mirror_thumbnails_dir,
 )
+from . import _team_http  # HTTP-mode team library shim (see _team_http.py)
 
 import re as _re
+
+
+def _http_mode():
+    """True iff team library is in HTTP mode and active. All team-library
+    functions in this module check this and dispatch to _team_http."""
+    try:
+        return _team_http.is_active()
+    except Exception:
+        return False
 
 
 # ==============================================================================
@@ -1041,6 +1051,11 @@ def create_collection(
     parent_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new collection."""
+    if _http_mode():
+        return _team_http.create_collection(
+            name=name, description=description, color=color, icon=icon,
+            parent_id=parent_id,
+        )
     db = get_db()
     collection_id = str(uuid.uuid4())
     now = datetime.utcnow().isoformat()
@@ -1065,6 +1080,8 @@ def create_collection(
 
 def get_collection(collection_id: str) -> Optional[Dict[str, Any]]:
     """Get a collection by ID."""
+    if _http_mode():
+        return _team_http.get_collection(collection_id)
     db = get_db()
     row = db.execute("SELECT * FROM collections WHERE id = ?", (collection_id,)).fetchone()
     return dict_from_row(row)
@@ -1072,6 +1089,8 @@ def get_collection(collection_id: str) -> Optional[Dict[str, Any]]:
 
 def list_collections(parent_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """List collections, optionally filtered by parent."""
+    if _http_mode():
+        return _team_http.list_collections(parent_id)
     db = get_db()
     if parent_id is None:
         rows = db.execute(
@@ -1087,6 +1106,8 @@ def list_collections(parent_id: Optional[str] = None) -> List[Dict[str, Any]]:
 
 def get_collection_tree() -> List[Dict[str, Any]]:
     """Get full collection hierarchy as nested structure."""
+    if _http_mode():
+        return _team_http.get_collection_tree()
     all_collections = [dict_from_row(r) for r in get_db().execute(
         "SELECT * FROM collections ORDER BY sort_order, name"
     ).fetchall()]
@@ -1108,6 +1129,8 @@ def get_collection_tree() -> List[Dict[str, Any]]:
 @_writes_to_nas
 def update_collection(collection_id: str, **kwargs) -> Optional[Dict[str, Any]]:
     """Update a collection's properties."""
+    if _http_mode():
+        return _team_http.update_collection(collection_id, **kwargs)
     db = get_db()
     allowed = {'name', 'description', 'color', 'icon', 'parent_id', 'sort_order'}
     updates = {k: v for k, v in kwargs.items() if k in allowed}
@@ -1129,6 +1152,8 @@ def update_collection(collection_id: str, **kwargs) -> Optional[Dict[str, Any]]:
 @_writes_to_nas
 def delete_collection(collection_id: str, recursive: bool = False):
     """Delete a collection. If recursive, delete children too."""
+    if _http_mode():
+        return _team_http.delete_collection(collection_id, recursive=recursive)
     db = get_db()
 
     if recursive:
@@ -1192,6 +1217,16 @@ def save_asset(
     Returns:
         The saved asset record
     """
+    if _http_mode():
+        new_id = _team_http.save_asset(
+            name=name,
+            package_data=package_data,
+            description=description or "",
+            tags=tags or [],
+            thumbnail_data=thumbnail_data,
+            icon=icon,
+        )
+        return _team_http.get_asset(new_id) if new_id else None
     ensure_library_dirs()
     db = get_db()
     asset_id = str(uuid.uuid4())
@@ -1297,6 +1332,20 @@ def save_hda(
     Returns:
         The saved asset record
     """
+    if _http_mode():
+        source_path = hda_info['library_path']
+        with open(source_path, 'rb') as f:
+            hda_bytes = f.read()
+        new_id = _team_http.save_hda(
+            name=name,
+            hda_bytes=hda_bytes,
+            hda_filename=Path(source_path).name,
+            description=description or "",
+            tags=tags or [],
+            thumbnail_data=thumbnail_data,
+        )
+        return _team_http.get_asset(new_id) if new_id else None
+
     import shutil
 
     ensure_library_dirs()
@@ -1436,6 +1485,8 @@ def install_hda(asset_id: str) -> bool:
 
 def get_asset(asset_id: str) -> Optional[Dict[str, Any]]:
     """Get an asset by ID."""
+    if _http_mode():
+        return _team_http.get_asset(asset_id)
     db = get_db()
     row = db.execute("SELECT * FROM library_assets WHERE id = ?", (asset_id,)).fetchone()
     if row is None:
@@ -1526,6 +1577,8 @@ def get_asset_by_remote_slug(remote_slug: str) -> Optional[Dict[str, Any]]:
 
 def load_asset_package(asset_id: str) -> Optional[Dict[str, Any]]:
     """Load the full package data for an asset."""
+    if _http_mode():
+        return _team_http.load_asset_package(asset_id)
     asset = get_asset(asset_id)
     if not asset:
         return None
@@ -1540,6 +1593,8 @@ def load_asset_package(asset_id: str) -> Optional[Dict[str, Any]]:
 @_writes_to_nas
 def update_asset_package(asset_id: str, package_data: Dict[str, Any]) -> bool:
     """Update the package data (JSON file) for an asset."""
+    if _http_mode():
+        return _team_http.update_asset_package(asset_id, package_data)
     asset = get_asset(asset_id)
     if not asset:
         return False
@@ -1567,6 +1622,8 @@ def update_asset_package(asset_id: str, package_data: Dict[str, Any]) -> bool:
 @_writes_to_nas
 def update_asset(asset_id: str, **kwargs) -> Optional[Dict[str, Any]]:
     """Update asset metadata."""
+    if _http_mode():
+        return _team_http.update_asset(asset_id, **kwargs)
     db = get_db()
 
     allowed = {'name', 'description', 'tags', 'thumbnail_path', 'slug', 'created_by', 'icon'}
@@ -1610,6 +1667,8 @@ def update_asset(asset_id: str, **kwargs) -> Optional[Dict[str, Any]]:
 @_writes_to_nas
 def update_asset_thumbnail(asset_id: str, thumbnail_data: bytes) -> bool:
     """Update an asset's thumbnail image."""
+    if _http_mode():
+        return _team_http.update_asset_thumbnail(asset_id, thumbnail_data)
     asset = get_asset(asset_id)
     if not asset:
         return False
@@ -1623,6 +1682,21 @@ def update_asset_thumbnail(asset_id: str, thumbnail_data: bytes) -> bool:
 
 @_writes_to_nas
 def save_asset_version(
+    asset_id: str,
+    package_data: Dict[str, Any],
+    description: str = None,
+    tags: List[str] = None,
+    thumbnail_data: bytes = None,
+) -> Optional[Dict[str, Any]]:
+    if _http_mode():
+        return _team_http.save_asset_version(
+            asset_id, package_data,
+            description=description, tags=tags, thumbnail_data=thumbnail_data,
+        )
+    return _save_asset_version_sqlite(asset_id, package_data, description, tags, thumbnail_data)
+
+
+def _save_asset_version_sqlite(
     asset_id: str,
     package_data: Dict[str, Any],
     description: str = None,
@@ -1823,7 +1897,11 @@ def revert_to_version(asset_id: str, version_id: str) -> Optional[Dict[str, Any]
 
     Copies the version's snapshot file back as the current package and
     creates a new version record marking the revert.
-    """
+    Note: HTTP team mode does not support per-asset version history yet,
+    so this no-ops with a warning."""
+    if _http_mode():
+        return _team_http.revert_to_version(asset_id, version_id)
+
     import hashlib
     import shutil
 
@@ -2214,6 +2292,12 @@ def record_asset_use(asset_id: str):
     Writes to local mirror only — this is per-user tracking, not shared state.
     Never raises — callers should not fail just because usage tracking failed.
     """
+    if _http_mode():
+        try:
+            _team_http.record_asset_use(asset_id)
+        except Exception:
+            pass
+        return
     try:
         db = get_db()
         now = datetime.utcnow().isoformat()
@@ -2230,6 +2314,8 @@ def record_asset_use(asset_id: str):
 @_writes_to_nas
 def delete_asset(asset_id: str):
     """Soft-delete an asset: move files to trash/ and set deleted_at."""
+    if _http_mode():
+        return _team_http.delete_asset(asset_id)
     asset = get_asset(asset_id)
     if not asset:
         return
@@ -2270,6 +2356,8 @@ def delete_asset(asset_id: str):
 @_writes_to_nas
 def restore_asset(asset_id: str):
     """Restore a soft-deleted asset from trash."""
+    if _http_mode():
+        return _team_http.restore_asset(asset_id)
     asset = get_asset(asset_id)
     if not asset or not asset.get('deleted_at'):
         return
@@ -2323,6 +2411,8 @@ def restore_asset(asset_id: str):
 @_writes_to_nas
 def purge_asset(asset_id: str):
     """Permanently delete a trashed asset (files + DB row)."""
+    if _http_mode():
+        return _team_http.purge_asset(asset_id)
     asset = get_asset(asset_id)
     if not asset:
         return
@@ -2353,6 +2443,8 @@ def purge_asset(asset_id: str):
 
 def list_trashed_assets() -> List[Dict[str, Any]]:
     """List all soft-deleted assets, newest deletion first."""
+    if _http_mode():
+        return _team_http.list_trashed_assets()
     db = get_db()
     rows = db.execute(
         "SELECT * FROM library_assets WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC"
@@ -2374,6 +2466,8 @@ def list_trashed_assets() -> List[Dict[str, Any]]:
 @_writes_to_nas
 def empty_trash():
     """Permanently delete all trashed assets."""
+    if _http_mode():
+        return _team_http.empty_trash()
     for asset in list_trashed_assets():
         purge_asset(asset['id'])
 
@@ -2385,6 +2479,8 @@ def empty_trash():
 @_writes_to_nas
 def add_asset_to_collection(asset_id: str, collection_id: str):
     """Add an asset to a collection."""
+    if _http_mode():
+        return _team_http.add_asset_to_collection(asset_id, collection_id)
     db = get_db()
     now = datetime.utcnow().isoformat()
 
@@ -2405,6 +2501,8 @@ def add_asset_to_collection(asset_id: str, collection_id: str):
 @_writes_to_nas
 def remove_asset_from_collection(asset_id: str, collection_id: str):
     """Remove an asset from a collection."""
+    if _http_mode():
+        return _team_http.remove_asset_from_collection(asset_id, collection_id)
     db = get_db()
     db.execute(
         "DELETE FROM collection_assets WHERE collection_id = ? AND asset_id = ?",
@@ -2415,6 +2513,8 @@ def remove_asset_from_collection(asset_id: str, collection_id: str):
 
 def get_collection_assets(collection_id: str) -> List[Dict[str, Any]]:
     """Get all assets in a collection."""
+    if _http_mode():
+        return _team_http.get_collection_assets(collection_id)
     db = get_db()
     rows = db.execute("""
         SELECT a.* FROM library_assets a
@@ -2460,6 +2560,8 @@ def get_collection_assets(collection_id: str) -> List[Dict[str, Any]]:
 
 def get_asset_collections(asset_id: str) -> List[Dict[str, Any]]:
     """Get all collections an asset belongs to."""
+    if _http_mode():
+        return _team_http.get_asset_collections(asset_id)
     db = get_db()
     rows = db.execute("""
         SELECT c.* FROM collections c
@@ -2477,6 +2579,8 @@ def get_all_assets_cached():
     - assets: list of asset dicts (with parsed JSON fields and 'collections' populated)
     - collection_map: dict mapping collection_id -> set of asset_ids
     """
+    if _http_mode():
+        return _team_http.get_all_assets_cached()
     db = get_db()
 
     # 1. All active assets
@@ -2556,6 +2660,13 @@ def search_assets(
     Returns:
         List of matching assets
     """
+    if _http_mode():
+        return _team_http.search_assets(
+            query=query, context=context, tags=tags,
+            collection_id=collection_id, sort_by=sort_by,
+            sort_order=sort_order, limit=limit, offset=offset,
+            favorites_only=favorites_only,
+        )
     db = get_db()
 
     # Build query
@@ -2652,6 +2763,8 @@ def search_assets(
 
 def get_all_tags() -> List[Dict[str, Any]]:
     """Get all unique tags with usage counts."""
+    if _http_mode():
+        return _team_http.get_all_tags()
     db = get_db()
     rows = db.execute("""
         SELECT t.tag, COUNT(*) as count
@@ -2669,6 +2782,8 @@ def get_all_artists() -> List[Dict[str, Any]]:
 
     Uses remote_slug user prefix for cloud assets, falls back to created_by for local assets.
     """
+    if _http_mode():
+        return _team_http.get_all_artists()
     db = get_db()
     rows = db.execute("""
         SELECT artist, SUM(count) as count FROM (
@@ -2706,6 +2821,8 @@ def get_frequent_assets(limit: int = 10) -> List[Dict[str, Any]]:
 @_writes_to_nas
 def toggle_favorite(asset_id: str) -> bool:
     """Toggle favorite status for an asset. Returns new is_favorite state."""
+    if _http_mode():
+        return _team_http.toggle_favorite(asset_id)
     db = get_db()
     row = db.execute("SELECT is_favorite FROM library_assets WHERE id = ?", (asset_id,)).fetchone()
     if row is None:
@@ -2833,6 +2950,8 @@ def _trigger_menu_regenerate(skip_reload: bool = True):
 
 def get_library_stats() -> Dict[str, Any]:
     """Get library statistics."""
+    if _http_mode():
+        return _team_http.get_library_stats()
     db = get_db()
 
     asset_count = db.execute("SELECT COUNT(*) FROM library_assets WHERE deleted_at IS NULL").fetchone()[0]

@@ -24,8 +24,9 @@ DEFAULTS = {
     # Library settings
     "active_library": "personal",  # "personal" or "team"
     "personal_library_path": None,  # Custom personal library path (None = ~/.sopdrop/library/)
-    "team_library_path": None,  # Path to shared team library folder
-    "team_slug": None,  # Slug of the team to sync from (e.g., "my-team")
+    "team_library_path": None,  # Path to shared team library folder (NAS mode only)
+    "team_slug": None,  # Slug of the team (used in both modes for HTTP routing)
+    "team_library_mode": "nas",  # "nas" (legacy SQLite over NAS) or "http" (on-prem server)
     # UI settings
     "ui_scale": 1.0,  # UI scale factor (0.8 - 2.5)
     # Mode
@@ -119,6 +120,54 @@ def get_local_only():
     return config.get("local_only", False)
 
 
+def get_workstation_user():
+    """Return the OS username of the current workstation user, sanitized.
+
+    Used for trust-LAN auth (X-Sopdrop-User header) in local-only HTTP
+    team mode. Lowercase, alphanumeric + dash + underscore + dot, max
+    32 chars. Returns None if the OS username can't be determined or
+    sanitizes to nothing usable.
+
+    Falls back through getpass → env vars → None.
+    """
+    import getpass
+    import re
+    raw = None
+    try:
+        raw = getpass.getuser()
+    except Exception:
+        pass
+    if not raw:
+        for var in ("USER", "USERNAME", "LOGNAME"):
+            v = os.environ.get(var)
+            if v:
+                raw = v
+                break
+    if not raw:
+        return None
+    cleaned = re.sub(r"[^a-z0-9._-]", "", raw.lower().strip())[:32]
+    return cleaned if len(cleaned) >= 2 else None
+
+
+def use_lan_trust_auth():
+    """True iff requests should use trust-LAN auth instead of a Bearer token.
+
+    Trust-LAN mode applies when:
+      - local-only mode is on (the user has opted out of cloud features), AND
+      - team library mode is 'http' (talking to an on-prem server), AND
+      - a workstation username can be determined.
+
+    Server side must also have TRUST_LAN_AUTH=true for this to actually
+    work — but the client always sends the header in this mode; the
+    server ignores it when its own flag is off.
+    """
+    if not get_local_only():
+        return False
+    if get_team_library_mode() != "http":
+        return False
+    return get_workstation_user() is not None
+
+
 def get_token():
     """Get stored API token."""
     token_file = get_token_file()
@@ -195,6 +244,39 @@ def set_active_library(library_type):
         raise ValueError("library_type must be 'personal' or 'team'")
     config = get_config()
     config["active_library"] = library_type
+    save_config(config)
+
+
+def get_team_library_mode():
+    """Return 'nas' or 'http'.
+
+    'nas' = the legacy shared-SQLite-on-NAS team library (default for
+            backwards compat).
+    'http' = the on-prem sopdrop-server team library, accessed over HTTP.
+            Requires `team_slug` to be set and an account on the server.
+    """
+    mode = (get_config().get("team_library_mode") or "nas").lower()
+    return "http" if mode == "http" else "nas"
+
+
+def set_team_library_mode(mode):
+    """Set the team library mode."""
+    if mode not in ("nas", "http"):
+        raise ValueError("mode must be 'nas' or 'http'")
+    config = get_config()
+    config["team_library_mode"] = mode
+    save_config(config)
+
+
+def get_team_slug():
+    """Get the configured team slug (used in HTTP mode)."""
+    return get_config().get("team_slug") or None
+
+
+def set_team_slug(slug):
+    """Set the team slug used by HTTP mode."""
+    config = get_config()
+    config["team_slug"] = (slug or "").strip().lower() or None
     save_config(config)
 
 

@@ -2105,6 +2105,124 @@ class _SyncIcon(QtWidgets.QWidget):
 # Asset Card Widget
 # ==============================================================================
 
+class _HttpThumbnailDispatcher(QtCore.QObject):
+    """Marshals worker-thread fetches back to the main thread.
+
+    The HTTP thumbnail loader runs on a QThreadPool. When a worker
+    completes, it emits the `loaded(asset_id, bytes)` signal which is
+    delivered (Qt.QueuedConnection by default for cross-thread emits) to
+    a slot running on the main thread. That slot decodes bytes →
+    QPixmap on the main thread and stores it in AssetCardWidget._thumb_cache,
+    so any live card displaying that asset id picks it up on next paint.
+
+    Singleton so all cards share the same pool / signal target.
+    """
+
+    loaded = QtCore.Signal(str, object)  # (asset_id, bytes_or_none)
+
+    _instance = None
+
+    @classmethod
+    def instance(cls):
+        if cls._instance is None:
+            cls._instance = _HttpThumbnailDispatcher()
+        return cls._instance
+
+    def __init__(self):
+        super().__init__()
+        self._pool = QtCore.QThreadPool()
+        self._pool.setMaxThreadCount(4)  # bounded: don't flood the LAN
+        self._inflight = set()  # asset_ids currently being fetched
+        self._inflight_lock = QtCore.QMutex()
+        self.loaded.connect(self._on_loaded)  # auto-queued (cross-thread)
+
+    def request(self, asset_id, url):
+        """Kick off a background fetch. No-op if already in flight or
+        already cached. Safe to call from the main thread only."""
+        if not asset_id or not url:
+            return
+        if asset_id in AssetCardWidget._thumb_cache:
+            return
+        self._inflight_lock.lock()
+        try:
+            if asset_id in self._inflight:
+                return
+            self._inflight.add(asset_id)
+        finally:
+            self._inflight_lock.unlock()
+        self._pool.start(_HttpThumbnailRunnable(asset_id, url, self))
+
+    def _on_loaded(self, asset_id, data):
+        """Main-thread slot. Decode bytes → QPixmap, store in class cache,
+        prod live cards to repaint themselves with the new pixmap."""
+        self._inflight_lock.lock()
+        try:
+            self._inflight.discard(asset_id)
+        finally:
+            self._inflight_lock.unlock()
+        if not data:
+            return
+        try:
+            pixmap = QtGui.QPixmap()
+            if not pixmap.loadFromData(data) or pixmap.isNull():
+                return
+            AssetCardWidget._thumb_cache[asset_id] = pixmap
+        except Exception:
+            return
+        # Reset _thumb_loaded on every live card with this id and re-trigger
+        # its display path. Cards are tracked weakly via the active panel.
+        try:
+            for panel_ref in list(LibraryPanel._active_panels):
+                panel = panel_ref()
+                if panel is None:
+                    continue
+                try:
+                    panel.objectName()  # liveness check
+                except RuntimeError:
+                    continue
+                grid = getattr(panel, 'grid', None)
+                if not grid:
+                    continue
+                for card in grid.findChildren(AssetCardWidget):
+                    try:
+                        card.objectName()
+                    except RuntimeError:
+                        continue
+                    if card.asset.get('id') == asset_id:
+                        card._thumb_loaded = False
+                        card.lazy_load_thumbnail()
+        except Exception:
+            pass
+
+
+class _HttpThumbnailRunnable(QtCore.QRunnable):
+    """QRunnable that fetches one thumbnail via the disk-LRU cache.
+
+    Runs on a worker thread — must not touch any Qt widgets. Emits
+    bytes back through the dispatcher's signal, which Qt delivers on
+    the main thread via QueuedConnection.
+    """
+
+    def __init__(self, asset_id, url, dispatcher):
+        super().__init__()
+        self.asset_id = asset_id
+        self.url = url
+        self.dispatcher = dispatcher
+
+    def run(self):
+        try:
+            from sopdrop.thumbnail_cache import get_default_cache
+            data = get_default_cache().fetch(self.url)
+        except Exception:
+            data = None
+        # Emit even on failure so dispatcher can clear the in-flight flag
+        try:
+            self.dispatcher.loaded.emit(self.asset_id, data)
+        except RuntimeError:
+            # Dispatcher was destroyed during shutdown; nothing to do.
+            pass
+
+
 class AssetCardWidget(QtWidgets.QFrame):
     """Card widget for displaying assets in the grid."""
 
@@ -2452,6 +2570,19 @@ class AssetCardWidget(QtWidgets.QFrame):
         aid = self.asset.get('id')
         if aid and aid in AssetCardWidget._thumb_cache:
             self._original_pixmap = AssetCardWidget._thumb_cache[aid]
+            return
+
+        # HTTP team-library mode: thumbnail comes from a URL, not a local
+        # file. Kick off an async fetch via the disk-cached dispatcher and
+        # return — when bytes arrive the dispatcher repopulates _thumb_cache
+        # and re-runs lazy_load_thumbnail() on this card.
+        thumb_url = self.asset.get('_thumbnail_url')
+        if thumb_url and aid:
+            try:
+                _HttpThumbnailDispatcher.instance().request(aid, thumb_url)
+            except Exception as e:
+                print(f"[Sopdrop] HTTP thumbnail dispatch failed: {e}")
+            self._original_pixmap = None
             return
 
         thumb_path_str = self.asset.get('thumbnail_path')
@@ -9509,9 +9640,38 @@ class SettingsDialog(QtWidgets.QDialog):
         team_layout = QtWidgets.QVBoxLayout(team_group)
         team_layout.setSpacing(scale(8))
 
-        # Team library path
+        # Mode toggle: NAS shared folder vs on-prem HTTP server. Switching
+        # changes which fields below are visible.
+        mode_label = QtWidgets.QLabel("Mode:")
+        mode_label.setStyleSheet(f"color: {COLORS['text_secondary']}; {sfs(10)}")
+        team_layout.addWidget(mode_label)
+
+        radio_style = f"color: {COLORS['text']}; {sfs(11)}"
+        self.mode_radio_nas = QtWidgets.QRadioButton("Shared folder (NAS / SMB)")
+        self.mode_radio_nas.setStyleSheet(radio_style)
+        self.mode_radio_http = QtWidgets.QRadioButton("On-prem Sopdrop server")
+        self.mode_radio_http.setStyleSheet(radio_style)
+        self._mode_button_group = QtWidgets.QButtonGroup(team_group)
+        self._mode_button_group.addButton(self.mode_radio_nas)
+        self._mode_button_group.addButton(self.mode_radio_http)
+        self.mode_radio_nas.setChecked(True)  # default, overridden by _load_settings
+        self.mode_radio_nas.toggled.connect(self._on_team_mode_changed)
+        self.mode_radio_http.toggled.connect(self._on_team_mode_changed)
+        team_layout.addWidget(self.mode_radio_nas)
+        team_layout.addWidget(self.mode_radio_http)
+
+        mode_help = QtWidgets.QLabel(
+            "On-prem mode talks to a self-hosted server (configured below in SERVER) "
+            "and avoids the locking issues of a shared SQLite file."
+        )
+        mode_help.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(9)} margin-bottom: {spx(4)};")
+        mode_help.setWordWrap(True)
+        team_layout.addWidget(mode_help)
+
+        # Path label/row — visible only in NAS mode.
         path_label = QtWidgets.QLabel("Team Library Path:")
         path_label.setStyleSheet(f"color: {COLORS['text_secondary']}; {sfs(10)} margin-top: {spx(4)};")
+        self._team_path_label = path_label
         team_layout.addWidget(path_label)
         path_row = QtWidgets.QHBoxLayout()
         self.team_path_input = QtWidgets.QLineEdit()
@@ -9549,7 +9709,19 @@ class SettingsDialog(QtWidgets.QDialog):
         """)
         browse_btn.clicked.connect(self._browse_team_path)
         path_row.addWidget(browse_btn)
-        team_layout.addLayout(path_row)
+        # Wrap path row in a container so we can hide it as a unit in HTTP mode
+        self._team_path_row = QtWidgets.QWidget()
+        self._team_path_row.setLayout(path_row)
+        team_layout.addWidget(self._team_path_row)
+
+        # The "Team Slug" label/input was previously shown in HTTP mode for
+        # manual entry. We dropped it — the slug is an internal id, users
+        # pick their team from the combo (Fetch Teams populates it). The
+        # hidden team_slug_input below still stores the canonical slug.
+        # Keeping these names so the dialog code that references them
+        # doesn't break:
+        self._team_slug_label = None  # no longer rendered
+        self.team_slug_visible_input = None  # no longer rendered
 
         # Team selection (fetch from server)
         team_select_label = QtWidgets.QLabel("Team:")
@@ -9720,7 +9892,12 @@ class SettingsDialog(QtWidgets.QDialog):
         url_label.setStyleSheet(f"color: {COLORS['text_secondary']}; {sfs(10)}")
         server_layout.addWidget(url_label)
         self.server_input = QtWidgets.QLineEdit()
-        self.server_input.setPlaceholderText("https://sopdrop.com")
+        self.server_input.setPlaceholderText("https://sopdrop.com  or  http://sopdrop.lan:4848")
+        self.server_input.setToolTip(
+            "Sopdrop server address. Use https://sopdrop.com for the hosted "
+            "service, or your LAN address (e.g. http://sopdrop.lan:4848) "
+            "for an on-prem deployment."
+        )
         self.server_input.setFixedHeight(scale(22))
         self.server_input.setStyleSheet(f"""
             QLineEdit {{
@@ -9794,7 +9971,12 @@ class SettingsDialog(QtWidgets.QDialog):
     def _load_settings(self):
         """Load current settings."""
         if SOPDROP_AVAILABLE:
-            from sopdrop.config import get_config, get_token, get_team_library_path, get_team_slug, get_team_name, get_personal_library_path, get_ui_scale as _get_ui_scale, get_local_only as _get_local_only
+            from sopdrop.config import (
+                get_config, get_token, get_team_library_path, get_team_slug,
+                get_team_name, get_personal_library_path,
+                get_ui_scale as _get_ui_scale, get_local_only as _get_local_only,
+                get_team_library_mode,
+            )
 
             config = get_config()
             self.server_input.setText(config.get('server_url', 'https://sopdrop.com'))
@@ -9836,6 +10018,15 @@ class SettingsDialog(QtWidgets.QDialog):
                 self.personal_path_input.setText(custom_path)
             self._update_personal_info()
 
+            # Team library mode (NAS vs on-prem HTTP) — drives which
+            # subset of fields below are visible.
+            mode = get_team_library_mode()
+            if mode == "http":
+                self.mode_radio_http.setChecked(True)
+            else:
+                self.mode_radio_nas.setChecked(True)
+            self._on_team_mode_changed()
+
             # Team library settings
             team_path = get_team_library_path()
             if team_path:
@@ -9875,10 +10066,42 @@ class SettingsDialog(QtWidgets.QDialog):
             self._current_scale = 1.0
 
     def _on_local_only_toggled(self, checked):
-        """Show/hide cloud-related settings groups."""
-        self.account_group.setVisible(not checked)
-        self.server_group.setVisible(not checked)
-        self.fetch_teams_btn.setVisible(not checked)
+        """Show/hide cloud-related settings groups.
+
+        HTTP team mode talks to a server, so even when the user has
+        local-only checked we keep SERVER + Fetch Teams visible (the
+        on-prem server isn't "the cloud" the local-only checkbox is
+        warning about).
+        """
+        self._apply_settings_visibility()
+
+    def _apply_settings_visibility(self):
+        """Compute visibility for the SERVER, ACCOUNT, and Fetch Teams widgets
+        based on local-only mode + team library mode.
+
+        Rules:
+          - SERVER URL field is always available when not in pure local-only
+            (i.e. visible whenever any cloud OR on-prem-server interaction is
+            possible). HTTP team mode forces it visible even with local-only on.
+          - ACCOUNT/Login section (browser-flow OAuth) is hidden when local-only
+            is on AND HTTP team mode is on — that's the trust-LAN scenario where
+            the workstation OS username supplies identity, no login dance.
+          - Fetch Teams stays visible whenever SERVER is visible (it queries
+            the server's team list).
+        """
+        local_only = self.local_only_checkbox.isChecked()
+        http_team = self.mode_radio_http.isChecked()
+        trust_lan = local_only and http_team
+
+        # SERVER + Fetch Teams: visible whenever we might talk to a server.
+        cloud_visible = (not local_only) or http_team
+        self.server_group.setVisible(cloud_visible)
+        self.fetch_teams_btn.setVisible(cloud_visible)
+
+        # ACCOUNT (Login button): hide in trust-LAN scenario. Otherwise
+        # follow the local-only rule (hidden in pure local-only, shown
+        # for cloud or NAS-with-cloud-login flows).
+        self.account_group.setVisible(cloud_visible and not trust_lan)
 
     def _toggle_login(self):
         """Login or logout."""
@@ -9962,7 +10185,26 @@ class SettingsDialog(QtWidgets.QDialog):
     def _save_settings(self):
         """Save settings and close."""
         if SOPDROP_AVAILABLE:
-            from sopdrop.config import get_config, save_config, set_team_library_path, set_team_slug, set_team_name, set_personal_library_path, set_ui_scale
+            from sopdrop.config import (
+                get_config, save_config,
+                set_team_library_path, set_team_slug, set_team_name,
+                set_personal_library_path, set_ui_scale,
+                set_team_library_mode,
+            )
+
+            # Save team library mode first — drives which fields below
+            # are authoritative.
+            mode = "http" if self.mode_radio_http.isChecked() else "nas"
+            try:
+                set_team_library_mode(mode)
+            except Exception as e:
+                hou.ui.displayMessage(f"Failed to save team library mode: {e}")
+                return
+
+            # In HTTP mode the slug comes from the visible input; in NAS
+            # mode it comes from the (auto-detected) hidden input wired to
+            # the team_combo. In HTTP mode the slug is also set by the
+            # team_combo via _on_team_selected. No special handling needed.
 
             # Save personal library path
             personal_path = self.personal_path_input.text().strip()
@@ -10080,9 +10322,110 @@ class SettingsDialog(QtWidgets.QDialog):
             # Try to auto-detect team from existing library database
             self._try_detect_team(path)
 
+    def _on_team_mode_changed(self, *_):
+        """Show/hide team-library fields based on the selected mode.
+
+        Called whenever either radio's checked state changes; the radios
+        are mutually exclusive in a QButtonGroup so we just react to the
+        currently checked one.
+        """
+        is_http = self.mode_radio_http.isChecked()
+        # NAS-mode widgets
+        self._team_path_label.setVisible(not is_http)
+        self._team_path_row.setVisible(not is_http)
+        # HTTP mode needs SERVER + Fetch Teams visible. Recompute global
+        # visibility now (also handles ACCOUNT/Login show/hide).
+        self._apply_settings_visibility()
+        # Refresh the status line for the new mode
+        self._update_team_info()
+
+    def _update_team_info_http(self):
+        """Probe the on-prem server with the configured team.
+
+        Best-effort: failure to reach the server doesn't block saving.
+        Tight timeout so the dialog doesn't hang. Identity comes from
+        either the saved Bearer token OR the workstation OS username
+        in trust-LAN mode.
+        """
+        slug = self.team_slug_input.text().strip().lower()
+        server_url = self.server_input.text().strip().rstrip('/')
+        if not server_url:
+            self.team_info.setText("Set the Server URL below first.")
+            self.team_info.setStyleSheet(f"color: {COLORS['warning']}; {sfs(10)}")
+            return
+        if not slug:
+            self.team_info.setText(
+                "Click 'Fetch Teams' to pick your team from the server."
+            )
+            self.team_info.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
+            return
+
+        from sopdrop.config import get_token, use_lan_trust_auth, get_workstation_user
+        trust_lan = use_lan_trust_auth()
+        ws_user = get_workstation_user() if trust_lan else None
+        token = get_token()
+        if not token and not trust_lan:
+            self.team_info.setText(
+                "Not logged in. Save settings then click Login above, "
+                "or enable Local-only mode for trust-LAN auth."
+            )
+            self.team_info.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
+            return
+
+        # Quick, blocking probe — short timeout so the UI doesn't hang.
+        try:
+            from urllib.request import Request
+            from urllib.error import HTTPError, URLError
+            import socket
+            from sopdrop.api import _ssl_urlopen
+            url = f"{server_url}/api/v1/teams/{slug}/library/stats"
+            headers = {"Accept": "application/json", "User-Agent": "sopdrop-client/0.1.2"}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            if ws_user:
+                headers["X-Sopdrop-User"] = ws_user
+            req = Request(url, headers=headers)
+            response = _ssl_urlopen(req, timeout=5)
+            import json as _json
+            body = _json.loads(response.read().decode("utf-8") or "{}")
+            count = body.get("assetCount", 0)
+            who = ws_user if trust_lan else "your account"
+            self.team_info.setText(
+                f"Connected as {who} to '{slug}' on {server_url} — {count} asset(s)."
+            )
+            self.team_info.setStyleSheet(f"color: {COLORS['success']}; {sfs(10)}")
+        except HTTPError as e:
+            if e.code == 401:
+                if trust_lan:
+                    msg = ("Server rejected trust-LAN auth. Make sure the "
+                           "server has TRUST_LAN_AUTH=true in its env.")
+                else:
+                    msg = "Token rejected by server. Try Login again."
+            elif e.code == 404:
+                msg = f"No team '{slug}' on this server, or you're not a member."
+            else:
+                msg = f"Server error ({e.code})."
+            self.team_info.setText(msg)
+            self.team_info.setStyleSheet(f"color: {COLORS['warning']}; {sfs(10)}")
+        except (URLError, socket.timeout, ConnectionError, OSError) as e:
+            self.team_info.setText(f"Cannot reach {server_url}: {e}")
+            self.team_info.setStyleSheet(f"color: {COLORS['warning']}; {sfs(10)}")
+        except Exception as e:
+            self.team_info.setText(f"Probe failed: {e}")
+            self.team_info.setStyleSheet(f"color: {COLORS['warning']}; {sfs(10)}")
+
     def _update_team_info(self):
-        """Update team library info label."""
+        """Update team library info label.
+
+        NAS mode: count rows in the local NAS library.db.
+        HTTP mode: probe the configured server with the team slug and
+                   show a connection / asset-count summary.
+        """
         if not SOPDROP_AVAILABLE:
+            return
+
+        if self.mode_radio_http.isChecked():
+            self._update_team_info_http()
             return
 
         team_path = self.team_path_input.text().strip()
@@ -10184,6 +10527,12 @@ class SettingsDialog(QtWidgets.QDialog):
 
         self.team_slug_input.setText(slug or "")
         self.team_name_input.setText(name if slug else "")
+        # Mirror into the visible HTTP slug input so the user sees what
+        # was picked rather than having to remember to also type it.
+        # In HTTP mode, re-probe the server with the new selection so the
+        # status line shows confirmation right away.
+        if self.mode_radio_http.isChecked():
+            self._update_team_info()
 
     def _try_detect_team(self, path):
         """Try to detect team identity from an existing library database."""

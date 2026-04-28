@@ -1,0 +1,92 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sopdrop}
+      POSTGRES_USER: ${POSTGRES_USER:-sopdrop}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sopdrop} -d ${POSTGRES_DB:-sopdrop}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Postgres is internal-only by default. Uncomment to expose for backups/admin.
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+
+  sopdrop-server:
+    build:
+      context: ../../server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      DATABASE_URL: postgres://${POSTGRES_USER:-sopdrop}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sopdrop}
+      DB_SSL_REJECT_UNAUTHORIZED: "false"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required (>=32 chars hex)}
+      PUBLIC_URL: ${PUBLIC_URL:?PUBLIC_URL is required, e.g. http://sopdrop.lan:4848}
+      WEB_URL: ${WEB_URL:-http://localhost:5173}
+      CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS is required (comma-separated)}
+      LIBRARY_PATH: /data/library
+      UPLOAD_DIR: /data/library/nodes
+      HDA_DIR: /data/library/hdas
+      TEMP_DIR: /data/library/temp
+      BETA_MODE: ${BETA_MODE:-false}
+      SKIP_EMAIL_VERIFICATION: ${SKIP_EMAIL_VERIFICATION:-true}
+      TRUST_LAN_AUTH: ${TRUST_LAN_AUTH:-true}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:-}
+      DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET:-}
+      DISCORD_REDIRECT_URI: ${DISCORD_REDIRECT_URI:-}
+    volumes:
+      - assets:/data/library
+    ports:
+      - "${BIND_HOST:-0.0.0.0}:${BIND_PORT:-4848}:8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Nightly pg_dump to a host-mounted backups dir. Keeps the last 14 dumps.
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-sopdrop}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-sopdrop}
+    volumes:
+      - ./backups:/backups
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        echo "[backup] sleeping until first run..."
+        while true; do
+          ts=$$(date -u +%Y%m%dT%H%M%SZ)
+          out="/backups/sopdrop-$${ts}.sql.gz"
+          echo "[backup] dumping to $$out"
+          pg_dump --no-owner --clean --if-exists | gzip > "$$out.tmp" && mv "$$out.tmp" "$$out"
+          # keep last 14
+          ls -1t /backups/sopdrop-*.sql.gz 2>/dev/null | tail -n +15 | xargs -r rm -f
+          # 24h
+          sleep 86400
+        done
+
+volumes:
+  pgdata:
+  assets:
