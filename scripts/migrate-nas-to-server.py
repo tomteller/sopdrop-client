@@ -10,7 +10,7 @@ Usage:
     export SOPDROP_TOKEN=sdrop_xxxxxxxxxxxx...
     python3 scripts/migrate-nas-to-server.py \\
         --nas /Volumes/team/library \\
-        --server http://sopdrop.lan:4848 \\
+        --server http://sopdrop.lan:4800 \\
         --visibility unlisted
 
 Run with --dry-run first to see what would be uploaded.
@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--nas", required=True, type=Path,
                    help="Path to the NAS team library root (the dir that contains library/library.db)")
     p.add_argument("--server", required=True,
-                   help="On-prem server URL, e.g. http://sopdrop.lan:4848")
+                   help="On-prem server URL, e.g. http://sopdrop.lan:4800")
     p.add_argument("--token", default=os.environ.get("SOPDROP_TOKEN"),
                    help="API token (or set SOPDROP_TOKEN env var)")
     p.add_argument("--visibility", default="unlisted", choices=VALID_VISIBILITIES,

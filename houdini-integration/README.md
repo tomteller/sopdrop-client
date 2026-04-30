@@ -190,7 +190,7 @@ For studio deployments, you can configure all workstations to use a local Sopdro
 
 ```bash
 # In houdini.env
-SOPDROP_SERVER_URL = "http://your-server:4848"
+SOPDROP_SERVER_URL = "http://your-server:4800"
 ```
 
 Or use the Settings tool to change the server URL per-user.

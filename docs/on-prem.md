@@ -15,7 +15,7 @@ This doc is the canonical reference for everything on-prem. For the broader libr
 ```
 LAN
  │
- ├─ <linux-box>:4848         ← docker compose up
+ ├─ <linux-box>:4800         ← docker compose up
  │  ├─ sopdrop-server (Node.js + Express)
  │  ├─ Postgres 16 (named volume: pgdata)
  │  ├─ Asset files (named volume: assets, served at /library/*)
@@ -24,7 +24,7 @@ LAN
  └─ Workstations (12+)
     └─ Houdini → Sopdrop panel → HTTPS to LAN box
        ├─ Personal library → still local SQLite at ~/.sopdrop/library/
-       └─ Team library    → HTTP to <linux-box>:4848/api/v1/teams/<slug>/library
+       └─ Team library    → HTTP to <linux-box>:4800/api/v1/teams/<slug>/library
                             (no NAS share needed)
 ```
 
@@ -160,7 +160,7 @@ In `~/.sopdrop/config.json`:
 
 ```json
 {
-  "server_url": "http://sopdrop.lan:4848",
+  "server_url": "http://sopdrop.lan:4800",
   "active_library": "team",
   "team_library_mode": "http",
   "team_slug": "f48",

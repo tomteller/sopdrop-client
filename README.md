@@ -157,10 +157,10 @@ On every workstation (in Houdini → Sopdrop panel → Settings):
 1. Tick **Local only mode** at the top.
 2. Under **TEAM LIBRARY**, pick **On-prem Sopdrop server**.
 3. In **SERVER**, set Server URL to your LAN address (e.g.
-   `http://sopdrop.lan:4848`).
+   `http://sopdrop.lan:4800`).
 4. Click **Fetch Teams**, pick your team from the dropdown.
 5. Status line shows: *Connected as alice to 'your-team' on
-   http://sopdrop.lan:4848 — N asset(s).*
+   http://sopdrop.lan:4800 — N asset(s).*
 6. **Save Settings.**
 
 That's it. No "Login" button, no API token, no slug typing. Personal

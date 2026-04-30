@@ -9892,10 +9892,10 @@ class SettingsDialog(QtWidgets.QDialog):
         url_label.setStyleSheet(f"color: {COLORS['text_secondary']}; {sfs(10)}")
         server_layout.addWidget(url_label)
         self.server_input = QtWidgets.QLineEdit()
-        self.server_input.setPlaceholderText("https://sopdrop.com  or  http://sopdrop.lan:4848")
+        self.server_input.setPlaceholderText("https://sopdrop.com  or  http://sopdrop.lan:4800")
         self.server_input.setToolTip(
             "Sopdrop server address. Use https://sopdrop.com for the hosted "
-            "service, or your LAN address (e.g. http://sopdrop.lan:4848) "
+            "service, or your LAN address (e.g. http://sopdrop.lan:4800) "
             "for an on-prem deployment."
         )
         self.server_input.setFixedHeight(scale(22))

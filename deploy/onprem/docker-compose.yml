@@ -32,7 +32,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-sopdrop}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sopdrop}
       DB_SSL_REJECT_UNAUTHORIZED: "false"
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required (>=32 chars hex)}
-      PUBLIC_URL: ${PUBLIC_URL:?PUBLIC_URL is required, e.g. http://sopdrop.lan:4848}
+      PUBLIC_URL: ${PUBLIC_URL:?PUBLIC_URL is required, e.g. http://sopdrop.lan:4800}
       WEB_URL: ${WEB_URL:-http://localhost:5173}
       CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS is required (comma-separated)}
       LIBRARY_PATH: /data/library
@@ -49,7 +49,7 @@ services:
     volumes:
       - assets:/data/library
     ports:
-      - "${BIND_HOST:-0.0.0.0}:${BIND_PORT:-4848}:8080"
+      - "${BIND_HOST:-0.0.0.0}:${BIND_PORT:-4800}:8080"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s

@@ -33,7 +33,7 @@ $EDITOR .env
 
 docker compose up -d --build
 docker compose logs -f sopdrop-server   # watch for "Sopdrop Server" banner
-curl http://localhost:4848/api/health   # → {"status":"healthy",...}
+curl http://localhost:4800/api/health   # → {"status":"healthy",...}
 ```
 
 The schema is created automatically on first boot (`initDB()` in
@@ -46,7 +46,7 @@ With `SKIP_EMAIL_VERIFICATION=true` and `BETA_MODE=false` (the defaults in
 
 ```python
 import sopdrop
-sopdrop.set_server_url("http://sopdrop.lan:4848")
+sopdrop.set_server_url("http://sopdrop.lan:4800")
 sopdrop.login()   # opens browser → register → token saved to ~/.sopdrop/config.json
 ```
 
@@ -63,10 +63,10 @@ stack), each workstation just configures the server URL and team:
 1. In Houdini → open the Sopdrop panel → **Settings** (gear icon).
 2. Tick **Local only mode** at the top.
 3. Under **TEAM LIBRARY**, pick **On-prem Sopdrop server**.
-4. In **SERVER**, set Server URL to `http://sopdrop.lan:4848` (or your IP).
+4. In **SERVER**, set Server URL to `http://sopdrop.lan:4800` (or your IP).
 5. Click **Fetch Teams** → pick your team from the dropdown.
 6. Status line shows: `Connected as <your-os-username> to '<team>' on
-   http://sopdrop.lan:4848 — N asset(s).`
+   http://sopdrop.lan:4800 — N asset(s).`
 7. Click **Save Settings.**
 
 No "Login" button, no API token, no browser dance. The panel sends the
@@ -78,7 +78,7 @@ Or set the same thing programmatically:
 ```python
 import sopdrop
 import sopdrop.config as cfg
-sopdrop.set_server_url("http://sopdrop.lan:4848")
+sopdrop.set_server_url("http://sopdrop.lan:4800")
 cfg.set_team_library_mode("http")
 cfg.set_team_slug("your-team")
 cfg.set_active_library("team")
@@ -109,13 +109,13 @@ export SOPDROP_TOKEN=sdrop_...
 # 2. Dry run — lists what would be uploaded
 python3 scripts/migrate-nas-to-server.py \
     --nas /Volumes/team/library \
-    --server http://sopdrop.lan:4848 \
+    --server http://sopdrop.lan:4800 \
     --dry-run
 
 # 3. Real run
 python3 scripts/migrate-nas-to-server.py \
     --nas /Volumes/team/library \
-    --server http://sopdrop.lan:4848 \
+    --server http://sopdrop.lan:4800 \
     --visibility unlisted
 ```
 
@@ -168,7 +168,7 @@ server:
 not `127.0.0.1`) and the host firewall on the server box.
 
 **"CORS_ORIGINS is required in production".** Set it in `.env` to the exact
-URL artists hit, e.g. `http://sopdrop.lan:4848`. No trailing slash.
+URL artists hit, e.g. `http://sopdrop.lan:4800`. No trailing slash.
 
 **Login redirects to localhost.** `WEB_URL` is wrong in `.env`. Set it to the
 LAN URL.

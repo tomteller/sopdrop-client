@@ -18,14 +18,14 @@ To set the mode programmatically or by editing `~/.sopdrop/config.json` directly
   "active_library": "team",
   "team_library_mode": "http",
   "team_slug": "your-team",
-  "server_url": "http://sopdrop.lan:4848",
+  "server_url": "http://sopdrop.lan:4800",
   "local_only": true
 }
 ```
 
 ```python
 import sopdrop, sopdrop.config as cfg
-sopdrop.set_server_url("http://sopdrop.lan:4848")
+sopdrop.set_server_url("http://sopdrop.lan:4800")
 cfg.set_team_library_mode("http")
 cfg.set_team_slug("your-team")
 cfg.set_active_library("team")
