@@ -39,6 +39,23 @@ curl http://localhost:4800/api/health   # → {"status":"healthy",...}
 The schema is created automatically on first boot (`initDB()` in
 `packages/sopdrop-server/src/models/db.js`).
 
+### Windows Server
+
+There's a one-shot installer that wraps the Linux flow above in WSL2:
+
+```powershell
+# In an elevated PowerShell on the Windows Server box:
+.\setup-windows.ps1
+# Reboot when prompted, finish the Ubuntu first-run dialog, re-run the script.
+# It generates secrets, writes .env, brings up the stack, opens the firewall.
+```
+
+See [`setup-windows.ps1`](setup-windows.ps1) header for details and flags
+(`-PublicUrl`, `-Port`, `-Distro`). The script is idempotent — safe to re-run.
+All operational tooling (compose, pg_dump backups, schema migrations) is
+identical to the Linux path because the stack is still Linux containers
+underneath.
+
 ## Creating accounts
 
 With `SKIP_EMAIL_VERIFICATION=true` and `BETA_MODE=false` (the defaults in
