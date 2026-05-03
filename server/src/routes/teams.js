@@ -7,7 +7,7 @@
 
 import { Router } from 'express';
 import crypto from 'crypto';
-import { query } from '../models/db.js';
+import { query, getClient } from '../models/db.js';
 import { authenticate, optionalAuth } from '../middleware/auth.js';
 import { ValidationError, NotFoundError, ForbiddenError } from '../middleware/errorHandler.js';
 
@@ -84,6 +84,7 @@ router.get('/', authenticate, async (req, res, next) => {
  * Create a new team
  */
 router.post('/', authenticate, async (req, res, next) => {
+  const client = await getClient();
   try {
     const { name, description, isPublic } = req.body;
 
@@ -93,14 +94,18 @@ router.post('/', authenticate, async (req, res, next) => {
 
     const slug = slugify(name);
 
+    await client.query('BEGIN');
+
     // Check slug uniqueness
-    const existing = await query('SELECT id FROM teams WHERE slug = $1', [slug]);
+    const existing = await client.query('SELECT id FROM teams WHERE slug = $1', [slug]);
     if (existing.rows.length > 0) {
       throw new ValidationError('A team with this name already exists');
     }
 
-    // Create team
-    const teamResult = await query(`
+    // Create team and add the creator as the owner in the same transaction.
+    // Without this, an owner could end up missing from team_members and lose
+    // access to their own team (GET /teams gates on team_members membership).
+    const teamResult = await client.query(`
       INSERT INTO teams (name, slug, description, owner_id, is_public)
       VALUES ($1, $2, $3, $4, $5)
       RETURNING *
@@ -108,11 +113,12 @@ router.post('/', authenticate, async (req, res, next) => {
 
     const team = teamResult.rows[0];
 
-    // Add creator as owner
-    await query(`
+    await client.query(`
       INSERT INTO team_members (team_id, user_id, role)
       VALUES ($1, $2, 'owner')
     `, [team.id, req.user.id]);
+
+    await client.query('COMMIT');
 
     res.status(201).json({
       id: team.team_id,
@@ -125,7 +131,10 @@ router.post('/', authenticate, async (req, res, next) => {
       createdAt: team.created_at,
     });
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
     next(error);
+  } finally {
+    client.release();
   }
 });
 

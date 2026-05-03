@@ -6810,9 +6810,14 @@ class LibraryPanel(QtWidgets.QWidget):
             hou.ui.displayMessage("Sopdrop library not available")
             return
 
-        from sopdrop.config import get_token, get_active_library, get_team_slug
-        if not get_token():
-            hou.ui.displayMessage("Please log in first using the Settings tool")
+        from sopdrop.config import (
+            get_token, get_active_library, get_team_slug, use_lan_trust_auth,
+        )
+        if not get_token() and not use_lan_trust_auth():
+            hou.ui.displayMessage(
+                "Either log in via Settings, or enable Local-only mode "
+                "with HTTP team mode for trust-LAN auth."
+            )
             return
 
         is_team_mode = get_active_library() == "team"
@@ -9661,12 +9666,50 @@ class SettingsDialog(QtWidgets.QDialog):
         team_layout.addWidget(self.mode_radio_http)
 
         mode_help = QtWidgets.QLabel(
-            "On-prem mode talks to a self-hosted server (configured below in SERVER) "
+            "On-prem mode talks to a self-hosted server (Server URL below) "
             "and avoids the locking issues of a shared SQLite file."
         )
         mode_help.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(9)} margin-bottom: {spx(4)};")
         mode_help.setWordWrap(True)
         team_layout.addWidget(mode_help)
+
+        # Server URL — lives inside TEAM LIBRARY because in HTTP/on-prem
+        # mode the server address IS the team's location. Keeping it here
+        # avoids the "where do I put my LAN address?" confusion of having
+        # a separate SERVER group lower down. Wrapped in a container so
+        # _apply_settings_visibility can hide it in pure-local-only mode.
+        self.server_row = QtWidgets.QWidget()
+        server_row_layout = QtWidgets.QVBoxLayout(self.server_row)
+        server_row_layout.setContentsMargins(0, 0, 0, 0)
+        server_row_layout.setSpacing(scale(4))
+        url_label = QtWidgets.QLabel("Server URL")
+        url_label.setStyleSheet(f"color: {COLORS['text_secondary']}; {sfs(10)}")
+        server_row_layout.addWidget(url_label)
+        self.server_input = QtWidgets.QLineEdit()
+        self.server_input.setPlaceholderText("https://sopdrop.com  or  http://sopdrop.lan:4800")
+        self.server_input.setToolTip(
+            "Sopdrop server address. Use https://sopdrop.com for the hosted "
+            "service, or your LAN address (e.g. http://sopdrop.lan:4800) "
+            "for an on-prem deployment."
+        )
+        self.server_input.setFixedHeight(scale(22))
+        self.server_input.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {COLORS['bg_dark']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 2px;
+                padding: {spx(2)} {spx(6)};
+                color: {COLORS['text']};
+            }}
+            QLineEdit:focus {{
+                border-color: {COLORS['accent']};
+            }}
+        """)
+        server_row_layout.addWidget(self.server_input)
+        team_layout.addWidget(self.server_row)
+        # Back-compat alias: existing visibility code refers to
+        # self.server_group. Point it at the row container.
+        self.server_group = self.server_row
 
         # Path label/row — visible only in NAS mode.
         path_label = QtWidgets.QLabel("Team Library Path:")
@@ -9882,38 +9925,11 @@ class SettingsDialog(QtWidgets.QDialog):
 
         layout.addWidget(display_group)
 
-        # Server section
-        self.server_group = QtWidgets.QGroupBox("SERVER")
-        self.server_group.setStyleSheet(groupbox_style)
-        server_layout = QtWidgets.QVBoxLayout(self.server_group)
-        server_layout.setSpacing(scale(8))
-
-        url_label = QtWidgets.QLabel("Server URL")
-        url_label.setStyleSheet(f"color: {COLORS['text_secondary']}; {sfs(10)}")
-        server_layout.addWidget(url_label)
-        self.server_input = QtWidgets.QLineEdit()
-        self.server_input.setPlaceholderText("https://sopdrop.com  or  http://sopdrop.lan:4800")
-        self.server_input.setToolTip(
-            "Sopdrop server address. Use https://sopdrop.com for the hosted "
-            "service, or your LAN address (e.g. http://sopdrop.lan:4800) "
-            "for an on-prem deployment."
-        )
-        self.server_input.setFixedHeight(scale(22))
-        self.server_input.setStyleSheet(f"""
-            QLineEdit {{
-                background-color: {COLORS['bg_dark']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 2px;
-                padding: {spx(2)} {spx(6)};
-                color: {COLORS['text']};
-            }}
-            QLineEdit:focus {{
-                border-color: {COLORS['accent']};
-            }}
-        """)
-        server_layout.addWidget(self.server_input)
-
-        layout.addWidget(self.server_group)
+        # SERVER URL is now rendered inside the TEAM LIBRARY group above —
+        # in HTTP/on-prem mode the server address is part of the team's
+        # configuration, and a separate group lower down made it unclear
+        # where the LAN address belonged. self.server_input still exists
+        # as the same attribute, so save/load logic is unchanged.
 
         # Finish scroll area
         scroll.setWidget(scroll_content)
@@ -10072,7 +10088,26 @@ class SettingsDialog(QtWidgets.QDialog):
         local-only checked we keep SERVER + Fetch Teams visible (the
         on-prem server isn't "the cloud" the local-only checkbox is
         warning about).
+
+        When the box is checked, also drop any saved ~/.sopdrop/token.
+        Trust-LAN auth only kicks in if no Authorization header is
+        present, so a stale token would silently override the new
+        trust-LAN flow (see Bug 4).
         """
+        if checked and SOPDROP_AVAILABLE:
+            try:
+                from sopdrop.config import get_token, clear_token
+                if get_token():
+                    clear_token()
+                    if hasattr(self, "login_status"):
+                        self.login_status.setText("Not logged in")
+                        self.login_status.setStyleSheet(
+                            f"color: {COLORS['text_dim']}; {sfs(11)}"
+                        )
+                    if hasattr(self, "login_btn"):
+                        self.login_btn.setText("Login")
+            except Exception as e:
+                print(f"[Sopdrop] Failed to clear token on local-only toggle: {e}")
         self._apply_settings_visibility()
 
     def _apply_settings_visibility(self):
@@ -10228,21 +10263,57 @@ class SettingsDialog(QtWidgets.QDialog):
             else:
                 set_team_library_path(None)
 
-            # Save team name
-            team_name = self.team_name_input.text().strip()
-            set_team_name(team_name if team_name else None)
+            # Resolve team selection. In HTTP mode the team_combo is the
+            # source of truth; the hidden inputs only get populated by
+            # _on_team_selected when currentIndexChanged fires, which can
+            # be missed (e.g. after Fetch Teams setCurrentIndex runs while
+            # signals are blocked). Reading combo data directly avoids
+            # writing team_slug=null to config.json.
+            combo_slug = ""
+            combo_name = ""
+            try:
+                combo_slug = (self.team_combo.currentData() or "").strip().lower()
+                combo_text = self.team_combo.currentText() or ""
+                if " (" in combo_text:
+                    combo_name = combo_text.rsplit(" (", 1)[0]
+                else:
+                    combo_name = combo_text
+                # The placeholder "None" entry has empty data but text "None".
+                if not combo_slug:
+                    combo_name = ""
+            except Exception:
+                combo_slug = ""
+                combo_name = ""
 
-            # Save team slug (normalize to lowercase to match server)
-            team_slug = self.team_slug_input.text().strip().lower()
+            input_slug = self.team_slug_input.text().strip().lower()
+            input_name = self.team_name_input.text().strip()
+
+            if mode == "http":
+                team_slug = combo_slug or input_slug
+                team_name = combo_name or input_name
+            else:
+                team_slug = input_slug or combo_slug
+                team_name = input_name or combo_name
+
+            set_team_name(team_name if team_name else None)
             set_team_slug(team_slug if team_slug else None)
 
             # Now get fresh config and update other settings
             config = get_config()
             config['server_url'] = self.server_input.text().strip() or 'https://sopdrop.com'
             config['tab_menu_enabled'] = self.tab_menu_checkbox.isChecked()
-            config['local_only'] = self.local_only_checkbox.isChecked()
+            new_local_only = bool(self.local_only_checkbox.isChecked())
+            was_local_only = bool(config.get('local_only', False))
+            config['local_only'] = new_local_only
             config['show_thumbnails'] = self.show_thumbnails_checkbox.isChecked()
             save_config(config)
+
+            # Toggling Local-only on clears any stale Bearer token so
+            # trust-LAN takes over (the server falls back to X-Sopdrop-User
+            # only when no Authorization header is present).
+            if new_local_only and not was_local_only:
+                from sopdrop.config import clear_token
+                clear_token()
 
             # Save UI scale
             set_ui_scale(self._current_scale)
@@ -10468,14 +10539,29 @@ class SettingsDialog(QtWidgets.QDialog):
             self.team_info.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
 
     def _fetch_teams(self):
-        """Fetch teams from the server and populate the dropdown."""
+        """Fetch teams from the server and populate the dropdown.
+
+        Works with either a Bearer token (cloud / standard auth) or
+        trust-LAN auth (local-only + HTTP team mode + a workstation
+        username). On-prem deployments rely on the trust-LAN path —
+        gating this behind a token would block the documented flow.
+        """
         if not SOPDROP_AVAILABLE:
             return
 
-        from sopdrop.config import get_token
+        # Reflect any in-dialog changes the user hasn't saved yet so
+        # _fetch_teams works the first time without requiring a Save +
+        # reopen round-trip.
+        self._sync_dialog_state_to_config()
 
-        if not get_token():
-            QtWidgets.QMessageBox.warning(self, "Login Required", "Please login first to fetch your teams.")
+        from sopdrop.config import get_token, use_lan_trust_auth
+
+        if not get_token() and not use_lan_trust_auth():
+            QtWidgets.QMessageBox.warning(
+                self, "Identity Required",
+                "Either log in with an API token, or enable Local-only mode "
+                "with HTTP team mode (trust-LAN) before fetching teams."
+            )
             return
 
         try:
@@ -10503,19 +10589,66 @@ class SettingsDialog(QtWidgets.QDialog):
                 role = team.get('role', 'member')
                 self.team_combo.addItem(f"{name} ({role})", slug)
 
-            # Restore selection if it exists
+            # Restore prior selection if still in the list. Otherwise,
+            # auto-select when there's exactly one team — that's the
+            # common on-prem case where a studio has a single team and
+            # forcing every artist to expand the dropdown is friction.
+            selected_idx = -1
             if current_slug:
                 idx = self.team_combo.findData(current_slug)
                 if idx >= 0:
-                    self.team_combo.setCurrentIndex(idx)
+                    selected_idx = idx
+            if selected_idx < 0 and len(teams) == 1:
+                only_slug = teams[0].get('slug', '')
+                idx = self.team_combo.findData(only_slug)
+                if idx >= 0:
+                    selected_idx = idx
 
             self.team_combo.blockSignals(False)
+
+            if selected_idx >= 0:
+                # Trigger _on_team_selected so the slug/name inputs are
+                # populated immediately.
+                self.team_combo.setCurrentIndex(selected_idx)
 
             self.team_info.setText(f"Found {len(teams)} team(s)")
             self.team_info.setStyleSheet(f"color: {COLORS['success']}; {sfs(10)}")
 
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed to fetch teams: {e}")
+
+    def _sync_dialog_state_to_config(self):
+        """Push the local-only / HTTP-mode toggles from the dialog into
+        config so use_lan_trust_auth() reflects the user's current
+        choice. Called before any in-dialog network probe that depends
+        on those settings (Fetch Teams, status probe, etc.)."""
+        if not SOPDROP_AVAILABLE:
+            return
+        try:
+            from sopdrop.config import (
+                get_config, save_config,
+                set_team_library_mode, clear_token,
+            )
+            mode = "http" if self.mode_radio_http.isChecked() else "nas"
+            try:
+                set_team_library_mode(mode)
+            except Exception:
+                pass
+            config = get_config()
+            new_local_only = bool(self.local_only_checkbox.isChecked())
+            was_local_only = bool(config.get("local_only", False))
+            config["local_only"] = new_local_only
+            server_url = self.server_input.text().strip()
+            if server_url:
+                config["server_url"] = server_url.rstrip("/")
+            save_config(config)
+            # Toggling Local-only on clears any stale Bearer token so
+            # trust-LAN actually takes over (server ignores X-Sopdrop-User
+            # whenever an Authorization header is present).
+            if new_local_only and not was_local_only:
+                clear_token()
+        except Exception as e:
+            print(f"[Sopdrop] Failed to sync dialog state to config: {e}")
 
     def _on_team_selected(self, index):
         """Handle team selection from dropdown."""

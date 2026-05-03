@@ -39,6 +39,36 @@ curl http://localhost:4800/api/health   # → {"status":"healthy",...}
 The schema is created automatically on first boot (`initDB()` in
 `packages/sopdrop-server/src/models/db.js`).
 
+### Create your team
+
+The schema starts empty — you need at least one team before any artist
+can use the team library. With `TRUST_LAN_AUTH=true` (the compose default)
+the server accepts an `X-Sopdrop-User` header in place of a token, so a
+single curl call is enough:
+
+```sh
+# Replace "admin" with whatever username you want to own the team — the
+# user record is auto-created on first sight.
+curl -X POST http://localhost:4800/api/v1/teams \
+  -H "Content-Type: application/json" \
+  -H "X-Sopdrop-User: admin" \
+  -d '{"name":"My Team"}'
+# → {"id":"...","slug":"my-team","myRole":"owner",...}
+```
+
+Take note of the returned `slug` — that's what artists pick from the
+**Fetch Teams** dropdown in the panel (or set under `team_slug` in
+`~/.sopdrop/config.json`).
+
+There's a helper script that wraps this:
+
+```sh
+./scripts/create-team.sh "My Team"           # against http://localhost:4800
+./scripts/create-team.sh "My Team" admin     # owner = admin
+PUBLIC_URL=http://sopdrop.lan:4800 \
+    ./scripts/create-team.sh "My Team"        # against another host
+```
+
 ### Windows Server
 
 There's a one-shot installer that wraps the Linux flow above in WSL2:

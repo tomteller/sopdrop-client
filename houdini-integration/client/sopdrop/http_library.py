@@ -38,19 +38,24 @@ from .config import get_api_url, get_token, get_workstation_user, use_lan_trust_
 def _auth_headers() -> dict:
     """Headers carrying the caller's identity to the server.
 
-    In trust-LAN mode (local-only + HTTP team mode), sends the
-    workstation OS username via X-Sopdrop-User. Otherwise sends the
-    standard Bearer token. Server prefers token if both are present.
-    Caller decides whether missing identity is an error.
+    In trust-LAN mode (local-only + HTTP team mode), sends ONLY the
+    workstation OS username via X-Sopdrop-User and deliberately omits
+    any Bearer token — the server's trust-LAN fallback only kicks in
+    when no Authorization header is present, so a stale token would
+    silently override trust-LAN and 401 the request.
+
+    Outside trust-LAN mode, sends the standard Bearer token if one
+    is configured. Caller decides whether missing identity is an error.
     """
     headers = {}
-    token = get_token()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
     if use_lan_trust_auth():
         ws_user = get_workstation_user()
         if ws_user:
             headers["X-Sopdrop-User"] = ws_user
+        return headers
+    token = get_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     return headers
 
 

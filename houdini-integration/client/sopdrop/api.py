@@ -23,6 +23,8 @@ from .config import (
     clear_token,
     get_cache_dir,
     get_config,
+    get_workstation_user,
+    use_lan_trust_auth,
 )
 
 # Import export/import modules (lazy, only when needed in Houdini)
@@ -124,9 +126,18 @@ class SopdropClient:
         }
 
         if auth:
-            token = get_token()
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
+            # Trust-LAN: send the workstation OS username and omit any
+            # Bearer token. The server's trust-LAN fallback only triggers
+            # when no Authorization header is present, so a stale token
+            # would silently override trust-LAN and 401 the request.
+            if use_lan_trust_auth():
+                ws_user = get_workstation_user()
+                if ws_user:
+                    headers["X-Sopdrop-User"] = ws_user
+            else:
+                token = get_token()
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
 
         body = None
         if data is not None:

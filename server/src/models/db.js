@@ -13,10 +13,20 @@ const __dirname = path.dirname(__filename);
 
 // PostgreSQL connection pool
 // Prefer DATABASE_URL (standard for Neon, Heroku, etc.), fall back to individual vars
+//
+// SSL is opt-in via DB_SSL=true. Cloud/managed Postgres (Neon, Heroku, RDS)
+// requires it; the bundled on-prem Postgres image has SSL disabled by default,
+// so leaving it off here lets a fresh `docker compose up` succeed without
+// any extra config. DB_SSL_REJECT_UNAUTHORIZED only controls cert verification
+// once SSL is already enabled.
+const sslConfig = process.env.DB_SSL === 'true'
+  ? { rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false' }
+  : false;
+
 const poolConfig = process.env.DATABASE_URL
   ? {
       connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false' },
+      ssl: sslConfig,
       max: 10,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 5000,
@@ -27,6 +37,7 @@ const poolConfig = process.env.DATABASE_URL
       database: process.env.DB_NAME || 'sopdrop',
       password: process.env.DB_PASSWORD,
       port: parseInt(process.env.DB_PORT) || 5432,
+      ssl: sslConfig,
       max: 10,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 5000,

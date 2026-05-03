@@ -4189,9 +4189,11 @@ def get_user_teams() -> List[Dict[str, Any]]:
         List of team objects with id, slug, name, role, etc.
     """
     from .api import SopdropClient
-    from .config import get_token
+    from .config import get_token, use_lan_trust_auth
 
-    if not get_token():
+    # Identity comes from a Bearer token OR from trust-LAN's X-Sopdrop-User
+    # header. Both bail-quickly if neither is configured.
+    if not get_token() and not use_lan_trust_auth():
         return []
 
     try:
