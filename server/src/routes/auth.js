@@ -7,7 +7,7 @@ import crypto from 'crypto';
 // bcrypt removed — no more password auth
 import { OAuth2Client } from 'google-auth-library';
 import { query, getClient } from '../models/db.js';
-import { authenticate, signJWT, generateToken, hashToken } from '../middleware/auth.js';
+import { authenticate, signJWT, generateToken, hashToken, promoteIfFirstUser } from '../middleware/auth.js';
 import { ValidationError, AuthError, ConflictError } from '../middleware/errorHandler.js';
 import {
   registerLimiter,
@@ -467,6 +467,15 @@ router.post('/oauth/google', oauthLimiter, async (req, res, next) => {
         user = insertResult.rows[0];
         isNewUser = true;
 
+        // First user on a fresh server becomes the owner/admin (no-op
+        // once any admin exists). Avoids the chicken-and-egg of needing
+        // to manually promote yourself before you can do anything
+        // gated on admin (e.g. preserve-authorship migration).
+        if (await promoteIfFirstUser(user.id)) {
+          user.is_admin = true;
+          user.role = 'owner';
+        }
+
         // Validate and consume invite code
         if (BETA_MODE && inviteCode) {
           try {
@@ -640,6 +649,13 @@ router.post('/oauth/discord', oauthLimiter, async (req, res, next) => {
 
         user = insertResult.rows[0];
         isNewUser = true;
+
+        // First user on a fresh server becomes the owner/admin (no-op
+        // once any admin exists). Mirrors the Google branch above.
+        if (await promoteIfFirstUser(user.id)) {
+          user.is_admin = true;
+          user.role = 'owner';
+        }
 
         // Validate and consume invite code
         if (BETA_MODE && inviteCode) {

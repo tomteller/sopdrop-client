@@ -164,7 +164,13 @@ export async function findOrCreateUserByUsername(username) {
       VALUES ($1, $2, '__lan_trust_no_password__', 'user', 'active', true)
       RETURNING id, username, email, is_admin, role, status, suspended_until
     `, [username, fakeEmail]);
-    return created.rows[0];
+    const user = created.rows[0];
+    const promoted = await promoteIfFirstUser(user.id);
+    if (promoted) {
+      user.is_admin = true;
+      user.role = 'owner';
+    }
+    return user;
   } catch (e) {
     // Race: another concurrent request just created the same user. Re-fetch.
     if (e.code === '23505') {
@@ -176,6 +182,36 @@ export async function findOrCreateUserByUsername(username) {
     }
     throw e;
   }
+}
+
+/**
+ * "First user is the superuser" pattern. Promotes the given user to
+ * owner+admin iff no other owner/admin exists yet — so the first artist
+ * who logs into a fresh on-prem server gets the admin bit automatically
+ * and can run the migration script (or do anything else gated on admin)
+ * without manually editing the users table.
+ *
+ * Idempotent and safe to call after every user creation (no-op once any
+ * admin exists). Race-acceptable: in the unlikely event two first-time
+ * users hit a brand-new server simultaneously, both might be promoted —
+ * which is fine on a fresh server. Returns true if a promotion happened.
+ */
+export async function promoteIfFirstUser(userId) {
+  const result = await query(`
+    UPDATE users
+    SET is_admin = true, role = 'owner'
+    WHERE id = $1
+      AND NOT EXISTS (
+        SELECT 1 FROM users
+        WHERE id != $1 AND (is_admin = true OR role = 'owner')
+      )
+    RETURNING id
+  `, [userId]);
+  if (result.rowCount > 0) {
+    console.log(`[auth] First-user promotion: user_id=${userId} → role=owner, is_admin=true`);
+    return true;
+  }
+  return false;
 }
 
 /**

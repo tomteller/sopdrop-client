@@ -179,12 +179,21 @@ untouched in either mode.
 
 Use `scripts/migrate-nas-to-server.py` from a workstation that can read both
 the NAS share and reach the on-prem server. See the script header for usage;
-short version:
+short version.
+
+> **Admin token required for `--preserve-authorship`.** The override that
+> sets each asset's original `owner_id` and `created_at` is gated on the
+> token user having `role='owner'` or `role='admin'`. On a fresh server
+> the **first user to log in** (or the first trust-LAN request) is
+> auto-promoted to `owner`, so if you log in once before running the
+> migration you'll already have the right role. If not, see the
+> promotion SQL at the bottom of this section.
 
 ```sh
 # 1. Get an API token from the on-prem server (Settings → API tokens).
-#    For --preserve-authorship the token user must be admin or owner —
-#    promote with: UPDATE users SET role='admin', is_admin=true WHERE username='you';
+#    On a fresh server the first user to log in is auto-promoted to owner,
+#    so just log in once first and you're set. Otherwise see the promote
+#    snippet at the end of this section.
 export SOPDROP_TOKEN=sdrop_...
 
 # 2. Dry run — lists what would be uploaded
@@ -211,6 +220,17 @@ auto-created with the same shape as trust-LAN auto-create (`<name>@lan.local`,
 no password). Without the flag, every asset is owned by the token user
 with `created_at = now()` — fine for a single-author library, but
 collapses studio authorship history.
+
+### Manual admin promotion (only if first-user auto-promote didn't catch you)
+
+The first user on a fresh server is auto-promoted to `owner`, so this is
+usually a no-op. If you onboarded several artists before running the
+migration and need to promote yourself after the fact:
+
+```sh
+docker compose exec postgres psql -U sopdrop -d sopdrop -c \
+  "UPDATE users SET role='admin', is_admin=true WHERE username='YOUR_USERNAME';"
+```
 
 ## Backups
 

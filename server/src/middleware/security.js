@@ -88,6 +88,19 @@ const rateLimitHandler = (req, res, options) => {
   res.status(429).json(rateLimitMessage);
 };
 
+// Bypass rate limiting for owner/admin tokens. Bulk operations like
+// the NAS migration script (--preserve-authorship) legitimately need
+// to push hundreds of uploads in a row, and throttling them at user
+// limits turns a 5-minute job into hours. Admins are already trusted
+// by definition; if an admin token is compromised, rate limiting is
+// not the layer that saves you.
+//
+// For pre-auth limiters (login/register/oauth) req.user is undefined
+// so this is a no-op there — those still throttle by IP. A skip
+// returning true means the limiter does NOT count or block this req.
+const skipForAdmins = (req) =>
+  req.user?.isAdmin === true || req.user?.role === 'owner' || req.user?.role === 'admin';
+
 // Login: Strict limit to prevent brute force
 export const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -97,6 +110,7 @@ export const loginLimiter = rateLimit({
   legacyHeaders: false,
   handler: rateLimitHandler,
   keyGenerator: (req) => req.ip, // Rate limit by IP
+  skip: skipForAdmins,
   validate: false,
 });
 
@@ -109,6 +123,7 @@ export const registerLimiter = rateLimit({
   legacyHeaders: false,
   handler: rateLimitHandler,
   keyGenerator: (req) => req.ip,
+  skip: skipForAdmins,
   validate: false,
 });
 
@@ -121,6 +136,7 @@ export const oauthLimiter = rateLimit({
   legacyHeaders: false,
   handler: rateLimitHandler,
   keyGenerator: (req) => req.ip,
+  skip: skipForAdmins,
   validate: false,
 });
 
@@ -133,6 +149,7 @@ export const tokenLimiter = rateLimit({
   legacyHeaders: false,
   handler: rateLimitHandler,
   keyGenerator: (req) => req.user?.id || req.ip,
+  skip: skipForAdmins,
   validate: false,
 });
 
@@ -145,6 +162,7 @@ export const uploadLimiter = rateLimit({
   legacyHeaders: false,
   handler: rateLimitHandler,
   keyGenerator: (req) => req.user?.id || req.ip,
+  skip: skipForAdmins,
   validate: false,
 });
 
@@ -157,6 +175,7 @@ export const versionLimiter = rateLimit({
   legacyHeaders: false,
   handler: rateLimitHandler,
   keyGenerator: (req) => req.user?.id || req.ip,
+  skip: skipForAdmins,
   validate: false,
 });
 
@@ -169,6 +188,7 @@ export const downloadLimiter = rateLimit({
   legacyHeaders: false,
   handler: rateLimitHandler,
   keyGenerator: (req) => req.ip,
+  skip: skipForAdmins,
   validate: false,
 });
 
@@ -181,6 +201,7 @@ export const shareLimiter = rateLimit({
   legacyHeaders: false,
   handler: rateLimitHandler,
   keyGenerator: (req) => req.user?.id || req.ip,
+  skip: skipForAdmins,
   validate: false,
 });
 
@@ -193,6 +214,7 @@ export const passwordChangeLimiter = rateLimit({
   legacyHeaders: false,
   handler: rateLimitHandler,
   keyGenerator: (req) => req.user?.id || req.ip,
+  skip: skipForAdmins,
   validate: false,
 });
 
@@ -205,6 +227,7 @@ export const generalLimiter = rateLimit({
   legacyHeaders: false,
   handler: rateLimitHandler,
   keyGenerator: (req) => req.ip,
+  skip: skipForAdmins,
   validate: false,
 });
 

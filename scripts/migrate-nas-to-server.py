@@ -227,16 +227,35 @@ def upload_one(server: str, token: str, asset: dict, assets_dir: Path,
     files = {"file": (file_name, open(file_path, "rb"))}
     thumb_name = asset.get("thumbnail_path")
     thumb_handle = None
+    thumb_full_path = None
     if thumb_name:
-        thumb_path = thumbs_dir / thumb_name
-        if thumb_path.is_file():
-            thumb_handle = open(thumb_path, "rb")
-            files["thumbnail"] = (thumb_name, thumb_handle)
+        thumb_full_path = thumbs_dir / thumb_name
+        if thumb_full_path.is_file():
+            # Server requires Content-Type to start with "image/". Sniff
+            # the file's magic bytes — NAS thumbnails often have no
+            # extension or use ones the standard mimetypes table doesn't
+            # know. If the file isn't actually an image, drop the
+            # thumbnail rather than fail the whole asset.
+            thumb_mime = _detect_image_mime(thumb_full_path)
+            if thumb_mime:
+                thumb_handle = open(thumb_full_path, "rb")
+                files["thumbnail"] = (thumb_name, thumb_handle, thumb_mime)
+            else:
+                print(f"  thumbnail '{thumb_name}' doesn't look like an image, skipping",
+                      file=sys.stderr)
+                thumb_full_path = None  # don't try to send on retry either
 
+    # Per-route limiters (uploadLimiter etc.) are bypassed for admin
+    # tokens server-side, but the global IP-based generalLimiter runs
+    # pre-auth and still applies. Honor 429 with exponential backoff
+    # rather than failing the asset.
     try:
-        r = requests.post(f"{server}/api/v1/assets/upload",
-                          headers={"Authorization": f"Bearer {token}"},
-                          data=fields, files=files, timeout=120)
+        r = _post_with_429_backoff(
+            f"{server}/api/v1/assets/upload",
+            headers={"Authorization": f"Bearer {token}"},
+            data=fields, files=files, file_path=file_path, file_name=file_name,
+            thumb_path=thumb_full_path,
+        )
     finally:
         files["file"][1].close()
         if thumb_handle:
@@ -249,6 +268,73 @@ def upload_one(server: str, token: str, asset: dict, assets_dir: Path,
         return False, f"HTTP {r.status_code}: {text}", False
     body = r.json()
     return True, body.get("asset", {}).get("slug") or body.get("slug") or "ok", False
+
+
+def _detect_image_mime(path: Path) -> str | None:
+    """Return an image/* MIME type for `path`, or None if it doesn't
+    look like an image at all.
+
+    Sniffs the file's magic bytes first (the only fully reliable
+    signal — NAS thumbnails often have no extension or a misleading
+    one). Falls back to the standard mimetypes module on the
+    filename if the bytes don't match a known image header.
+    """
+    import mimetypes
+    try:
+        with open(path, "rb") as f:
+            head = f.read(16)
+    except OSError:
+        return None
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith(b"GIF87a") or head.startswith(b"GIF89a"):
+        return "image/gif"
+    if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+        return "image/webp"
+    if head.startswith(b"BM"):
+        return "image/bmp"
+    if head.startswith(b"<?xml") or head.lstrip().startswith(b"<svg"):
+        return "image/svg+xml"
+    guessed, _ = mimetypes.guess_type(path.name)
+    if guessed and guessed.startswith("image/"):
+        return guessed
+    return None
+
+
+def _post_with_429_backoff(url, *, headers, data, files, file_path, file_name,
+                           thumb_path, max_retries: int = 5):
+    """POST that retries on 429 with exponential backoff.
+
+    requests' file handles are consumed by the first send, so on retry
+    we have to re-open them. Caller still owns the `files` dict for
+    cleanup of the initial handles.
+    """
+    delay = 2.0
+    for attempt in range(max_retries + 1):
+        if attempt > 0:
+            # Re-open handles for this retry.
+            files = {"file": (file_name, open(file_path, "rb"))}
+            if thumb_path and thumb_path.is_file():
+                thumb_mime = _detect_image_mime(thumb_path) or "image/png"
+                files["thumbnail"] = (thumb_path.name, open(thumb_path, "rb"), thumb_mime)
+        r = requests.post(url, headers=headers, data=data, files=files, timeout=120)
+        if r.status_code != 429:
+            return r
+        if attempt >= max_retries:
+            return r
+        # Honor Retry-After if the server set one, else exponential backoff.
+        retry_after = r.headers.get("Retry-After")
+        try:
+            wait = float(retry_after) if retry_after else delay
+        except (TypeError, ValueError):
+            wait = delay
+        print(f"  rate limited (429), waiting {wait:.1f}s and retrying ({attempt + 1}/{max_retries})",
+              file=sys.stderr)
+        time.sleep(wait)
+        delay = min(delay * 2, 30.0)
+    return r
 
 
 def main() -> int:
@@ -282,9 +368,13 @@ def main() -> int:
             is_admin = token_user.get("is_admin") or token_user.get("isAdmin")
             if not is_admin and role not in ("admin", "owner"):
                 sys.exit(
-                    "error: --preserve-authorship requires an admin or owner token. "
-                    f"Token user '{token_username}' has role '{role}'. Promote with:\n"
-                    f"  UPDATE users SET role='admin', is_admin=true WHERE username='{token_username}';"
+                    "error: --preserve-authorship requires an admin or owner token.\n"
+                    f"Token user '{token_username}' has role '{role}'.\n\n"
+                    "On a fresh server the first user to log in is auto-promoted to owner.\n"
+                    "If that's not you, ask the first user to mint an API token and run\n"
+                    "the migration as them, OR promote yourself manually:\n"
+                    f"  docker compose exec postgres psql -U sopdrop -d sopdrop -c \\\n"
+                    f"    \"UPDATE users SET role='admin', is_admin=true WHERE username='{token_username}';\""
                 )
 
     # Idempotency: per-owner cache of existing slugs. Keyed by username

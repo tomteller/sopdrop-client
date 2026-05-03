@@ -32,6 +32,8 @@ The Postgres server replaces the SQLite-on-NAS pattern. There's no shared file a
 
 ## Auth modes
 
+**First-user auto-promote.** The first user created on a fresh server (whether via OAuth registration or trust-LAN auto-create) is automatically promoted to `role='owner'` + `is_admin=true`. Standard "first user is the superuser" pattern — avoids the chicken-and-egg of needing to manually edit the `users` table before you can do anything gated on admin (e.g. `--preserve-authorship` migration). Idempotent: once any admin/owner exists, the promotion is a no-op for subsequent users.
+
 Two ways the server can identify the caller. Choose at deploy time via the `TRUST_LAN_AUTH` env var:
 
 ### Trust-LAN (recommended for trusted internal LAN)
