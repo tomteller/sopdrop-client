@@ -50,12 +50,78 @@ export function signJWT(payload, expiresIn = '30d') {
 // this on a server reachable from the public internet.
 const TRUST_LAN_AUTH = process.env.TRUST_LAN_AUTH === 'true';
 
+// Optional default team for trust-LAN auth. When set, every trust-LAN
+// request also ensures membership in this team (idempotent upsert).
+// Avoids the per-artist manual `INSERT INTO team_members` chore on a
+// trusted internal LAN where everyone belongs to the same team.
+// Use the team's slug, e.g. TRUST_LAN_DEFAULT_TEAM=frame48.
+const TRUST_LAN_DEFAULT_TEAM = (process.env.TRUST_LAN_DEFAULT_TEAM || '').trim().toLowerCase() || null;
+
+// Cache the team's id so we don't re-resolve the slug on every request.
+// Invalidated by process restart, which is fine — TRUST_LAN_DEFAULT_TEAM
+// is set in env, so the team had better exist when the server starts.
+let _trustLanDefaultTeamId = undefined;
+let _trustLanDefaultTeamWarned = false;
+
+async function getTrustLanDefaultTeamId() {
+  if (!TRUST_LAN_DEFAULT_TEAM) return null;
+  if (_trustLanDefaultTeamId !== undefined) return _trustLanDefaultTeamId;
+  try {
+    const result = await query(
+      'SELECT id FROM teams WHERE slug = $1',
+      [TRUST_LAN_DEFAULT_TEAM]
+    );
+    if (result.rows.length === 0) {
+      if (!_trustLanDefaultTeamWarned) {
+        console.warn(
+          `[auth] TRUST_LAN_DEFAULT_TEAM='${TRUST_LAN_DEFAULT_TEAM}' but no team with that slug exists. ` +
+          `Create it (e.g. via deploy/onprem/scripts/create-team.sh) and restart the server.`
+        );
+        _trustLanDefaultTeamWarned = true;
+      }
+      _trustLanDefaultTeamId = null;
+      return null;
+    }
+    _trustLanDefaultTeamId = result.rows[0].id;
+    return _trustLanDefaultTeamId;
+  } catch (e) {
+    console.warn(`[auth] Failed to resolve TRUST_LAN_DEFAULT_TEAM: ${e.message}`);
+    return null;
+  }
+}
+
+async function ensureTrustLanDefaultMembership(userId) {
+  const teamId = await getTrustLanDefaultTeamId();
+  if (!teamId) return;
+  try {
+    // ON CONFLICT DO NOTHING — idempotent for repeat requests AND covers
+    // existing users who pre-date this feature (no manual backfill needed).
+    // Updates teams.member_count only when a new row was actually inserted.
+    const result = await query(`
+      INSERT INTO team_members (team_id, user_id, role)
+      VALUES ($1, $2, 'member')
+      ON CONFLICT (team_id, user_id) DO NOTHING
+      RETURNING id
+    `, [teamId, userId]);
+    if (result.rowCount > 0) {
+      await query(
+        'UPDATE teams SET member_count = member_count + 1 WHERE id = $1',
+        [teamId]
+      );
+    }
+  } catch (e) {
+    // Non-fatal: log and continue. Auth shouldn't fail because team
+    // bookkeeping had a hiccup.
+    console.warn(`[auth] Failed to ensure trust-LAN default team membership for user ${userId}: ${e.message}`);
+  }
+}
+
 /**
  * Sanitize a workstation-supplied username. Lowercase, alphanumeric +
  * dash + underscore + dot, max 32 chars. Returns null if the input is
  * unusable (empty, all symbols, reserved name).
  */
-function sanitizeLanUsername(raw) {
+export function sanitizeLanUsername(raw) {
   if (!raw || typeof raw !== 'string') return null;
   const cleaned = raw
     .toLowerCase()
@@ -72,16 +138,25 @@ function sanitizeLanUsername(raw) {
  * Used only when TRUST_LAN_AUTH is on and no Bearer token was provided.
  */
 async function findOrCreateLanUser(username) {
-  // Fast path: existing user
+  return findOrCreateUserByUsername(username);
+}
+
+/**
+ * Look up a user by username, creating a placeholder record if missing.
+ * Used by trust-LAN auth and by admin-only migration flows that need to
+ * preserve original authorship from a legacy library. Same shape as the
+ * trust-LAN auto-create: synthesized `<name>@lan.local` email, sentinel
+ * password hash, role='user', email_verified=true. Username is expected
+ * to already be sanitized by the caller.
+ */
+export async function findOrCreateUserByUsername(username) {
+  if (!username) throw new Error('username required');
   const existing = await query(
     'SELECT id, username, email, is_admin, role, status, suspended_until FROM users WHERE username = $1',
     [username]
   );
   if (existing.rows.length > 0) return existing.rows[0];
 
-  // Create. Email is synthesized from username + a marker domain so it
-  // can never collide with a real address. password_hash is set to a
-  // sentinel that fails any password check.
   const fakeEmail = `${username}@lan.local`;
   try {
     const created = await query(`
@@ -126,6 +201,10 @@ export async function authenticate(req, res, next) {
       if (user.status === 'banned') {
         return next(new ForbiddenError('Account has been banned'));
       }
+      // Auto-add to the configured default team (no-op if env unset or
+      // user is already a member). Covers both new users on first sight
+      // and pre-existing users who haven't been added yet.
+      await ensureTrustLanDefaultMembership(user.id);
       req.user = {
         id: user.id,
         username: user.username,

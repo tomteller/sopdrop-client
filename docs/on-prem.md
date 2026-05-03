@@ -45,6 +45,8 @@ Two ways the server can identify the caller. Choose at deploy time via the `TRUS
 
 **Tradeoff:** anyone on your LAN can claim any unused username by setting their own `X-Sopdrop-User` header. In a 12-person trusted studio that's a non-issue. **Never enable on a server reachable from the public internet.**
 
+**Auto-team membership:** set `TRUST_LAN_DEFAULT_TEAM=<slug>` to have every trust-LAN request idempotently ensure the user is a member of that team. Avoids the per-artist `INSERT INTO team_members` chore on a single-team studio. Works for both newly auto-created users and existing users who pre-date the setting (`INSERT ... ON CONFLICT DO NOTHING` runs on every request).
+
 ### Token-based (default for sopdrop.com; opt-in for paranoid on-prem)
 
 `TRUST_LAN_AUTH=false` (the default). Standard OAuth-style flow:

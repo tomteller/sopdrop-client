@@ -10,7 +10,13 @@ import path from 'path';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { query, getClient } from '../models/db.js';
-import { authenticate, optionalAuth, requireScope } from '../middleware/auth.js';
+import {
+  authenticate,
+  optionalAuth,
+  requireScope,
+  sanitizeLanUsername,
+  findOrCreateUserByUsername,
+} from '../middleware/auth.js';
 import { ValidationError, NotFoundError, ForbiddenError } from '../middleware/errorHandler.js';
 import { canReadAsset, canWriteAsset, resolveTeamIdBySlug } from '../middleware/teamAccess.js';
 import { validateChopPackage, extractAssetMetadata } from '../services/validation.js';
@@ -970,7 +976,46 @@ router.post('/upload', authenticate, requireScope('write'), requireVerifiedEmail
       visibility = 'draft',
       folderSlug,
       teamSlug,
+      asUser,
+      createdAt: rawCreatedAt,
     } = req.body;
+
+    // Authorship overrides — only admins / site owners may override
+    // owner_id and created_at, e.g. when migrating a legacy library
+    // and we want to preserve the original artist + timestamp from
+    // the source DB. Username is auto-created if it doesn't exist
+    // (same shape as trust-LAN auto-create: <name>@lan.local email,
+    // sentinel password hash). createdAt is parsed as ISO 8601.
+    let effectiveOwnerId = req.user.id;
+    let effectiveOwnerUsername = req.user.username;
+    let effectiveCreatedAt = null;
+    if (asUser || rawCreatedAt) {
+      const isOverrideAllowed = req.user.isAdmin || req.user.role === 'owner';
+      if (!isOverrideAllowed) {
+        throw new ForbiddenError('asUser/createdAt overrides require admin or owner role');
+      }
+    }
+    if (asUser) {
+      const sanitized = sanitizeLanUsername(asUser);
+      if (!sanitized) {
+        throw new ValidationError(`asUser '${asUser}' is not a valid username`);
+      }
+      const targetUser = await findOrCreateUserByUsername(sanitized);
+      effectiveOwnerId = targetUser.id;
+      effectiveOwnerUsername = targetUser.username;
+    }
+    if (rawCreatedAt) {
+      const parsed = new Date(rawCreatedAt);
+      if (Number.isNaN(parsed.getTime())) {
+        throw new ValidationError(`createdAt '${rawCreatedAt}' is not a valid ISO timestamp`);
+      }
+      // Sanity bound — reject far-future and pre-Houdini timestamps.
+      const year = parsed.getUTCFullYear();
+      if (year < 2000 || year > 2100) {
+        throw new ValidationError(`createdAt year ${year} out of range`);
+      }
+      effectiveCreatedAt = parsed.toISOString();
+    }
 
     // Sanitize text inputs
     const name = sanitizePlainText(rawName, 100);
@@ -1020,13 +1065,16 @@ router.post('/upload', authenticate, requireScope('write'), requireVerifiedEmail
     // Create slug
     const slug = slugify(name);
 
-    // Check for slug conflicts
+    // Check for slug conflicts. Scope to the effective owner — when
+    // preserving authorship during migration, two different artists
+    // can each own a "scatter" asset.
     const existingSlug = await client.query(`
       SELECT id FROM assets WHERE owner_id = $1 AND slug = $2
-    `, [req.user.id, slug]);
+    `, [effectiveOwnerId, slug]);
 
     if (existingSlug.rows.length > 0) {
-      throw new ValidationError('You already have an asset with this name');
+      const who = effectiveOwnerId === req.user.id ? 'You' : effectiveOwnerUsername;
+      throw new ValidationError(`${who} already has an asset with this name`);
     }
 
     // Resolve team if uploading into a team library. The user must be a
@@ -1078,33 +1126,64 @@ router.post('/upload', authenticate, requireScope('write'), requireVerifiedEmail
 
     const assetFilePath = storage.keyToPath(assetFileKey);
 
-    // Create asset
-    const assetResult = await client.query(`
-      INSERT INTO assets (
-        name, slug, owner_id, team_id, asset_type, houdini_context,
-        description, readme, license,
-        min_houdini_version, max_houdini_version,
-        tags, is_public, visibility, folder_id, latest_version
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, '1.0.0')
-      RETURNING *
-    `, [
-      name,
-      slug,
-      req.user.id,
-      teamId,
-      assetType,
-      houdiniContext?.toLowerCase() || 'sop',
-      description,
-      readme,
-      license,
-      minHoudiniVersion,
-      maxHoudiniVersion,
-      tags,
-      isPublic,
-      finalVisibility,
-      folderId,
-    ]);
+    // Create asset. created_at/updated_at are overridden when the
+    // caller passed an explicit createdAt (migration preserving
+    // original timestamps); otherwise the column defaults apply.
+    const assetResult = effectiveCreatedAt
+      ? await client.query(`
+          INSERT INTO assets (
+            name, slug, owner_id, team_id, asset_type, houdini_context,
+            description, readme, license,
+            min_houdini_version, max_houdini_version,
+            tags, is_public, visibility, folder_id, latest_version,
+            created_at, updated_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, '1.0.0', $16, $16)
+          RETURNING *
+        `, [
+          name,
+          slug,
+          effectiveOwnerId,
+          teamId,
+          assetType,
+          houdiniContext?.toLowerCase() || 'sop',
+          description,
+          readme,
+          license,
+          minHoudiniVersion,
+          maxHoudiniVersion,
+          tags,
+          isPublic,
+          finalVisibility,
+          folderId,
+          effectiveCreatedAt,
+        ])
+      : await client.query(`
+          INSERT INTO assets (
+            name, slug, owner_id, team_id, asset_type, houdini_context,
+            description, readme, license,
+            min_houdini_version, max_houdini_version,
+            tags, is_public, visibility, folder_id, latest_version
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, '1.0.0')
+          RETURNING *
+        `, [
+          name,
+          slug,
+          effectiveOwnerId,
+          teamId,
+          assetType,
+          houdiniContext?.toLowerCase() || 'sop',
+          description,
+          readme,
+          license,
+          minHoudiniVersion,
+          maxHoudiniVersion,
+          tags,
+          isPublic,
+          finalVisibility,
+          folderId,
+        ]);
 
     const asset = assetResult.rows[0];
 
@@ -1119,25 +1198,37 @@ router.post('/upload', authenticate, requireScope('write'), requireVerifiedEmail
       thumbnailUrl = storage.keyToPath(thumbKey);
     }
 
-    // Create initial version
-    const versionResult = await client.query(`
-      INSERT INTO versions (
-        asset_id, version, file_path, file_hash, file_size,
-        min_houdini_version, max_houdini_version, published_by,
-        thumbnail_url
-      )
-      VALUES ($1, '1.0.0', $2, $3, $4, $5, $6, $7, $8)
-      RETURNING *
-    `, [
-      asset.id,
-      assetFilePath,
-      fileHash,
-      fileSize,
-      minHoudiniVersion,
-      maxHoudiniVersion,
-      req.user.id,
-      thumbnailUrl,
-    ]);
+    // Create initial version. published_by tracks the original author
+    // (effectiveOwnerId) so attribution is preserved through migration.
+    // published_at uses effectiveCreatedAt when supplied, so the
+    // migrated version's timestamp matches the source DB.
+    const versionResult = effectiveCreatedAt
+      ? await client.query(`
+          INSERT INTO versions (
+            asset_id, version, file_path, file_hash, file_size,
+            min_houdini_version, max_houdini_version, published_by,
+            thumbnail_url, published_at
+          )
+          VALUES ($1, '1.0.0', $2, $3, $4, $5, $6, $7, $8, $9)
+          RETURNING *
+        `, [
+          asset.id, assetFilePath, fileHash, fileSize,
+          minHoudiniVersion, maxHoudiniVersion, effectiveOwnerId,
+          thumbnailUrl, effectiveCreatedAt,
+        ])
+      : await client.query(`
+          INSERT INTO versions (
+            asset_id, version, file_path, file_hash, file_size,
+            min_houdini_version, max_houdini_version, published_by,
+            thumbnail_url
+          )
+          VALUES ($1, '1.0.0', $2, $3, $4, $5, $6, $7, $8)
+          RETURNING *
+        `, [
+          asset.id, assetFilePath, fileHash, fileSize,
+          minHoudiniVersion, maxHoudiniVersion, effectiveOwnerId,
+          thumbnailUrl,
+        ]);
 
     const version = versionResult.rows[0];
 
@@ -1157,28 +1248,32 @@ router.post('/upload', authenticate, requireScope('write'), requireVerifiedEmail
     if (isPublic) {
       await client.query(`
         UPDATE users SET asset_count = asset_count + 1 WHERE id = $1
-      `, [req.user.id]);
+      `, [effectiveOwnerId]);
     }
 
-    // Auto-save to user's library
+    // Auto-save to the owning user's library (the asset's author, not
+    // necessarily the API caller — matters for migration).
     await client.query(`
       INSERT INTO saved_assets (user_id, asset_id, version_id, source)
       VALUES ($1, $2, $3, 'manual')
       ON CONFLICT (user_id, asset_id) DO UPDATE SET
         version_id = EXCLUDED.version_id,
         saved_at = NOW()
-    `, [req.user.id, asset.id, version.id]);
+    `, [effectiveOwnerId, asset.id, version.id]);
 
     await client.query('COMMIT');
 
-    // Log asset creation
+    // Log asset creation. targetId reflects the actual owner (matters
+    // for migration — the audit row would otherwise mis-attribute a
+    // migrated asset to the admin token holder).
     logAssetEvent('asset_created', req, {
       targetType: 'asset',
-      targetId: `${req.user.username}/${asset.slug}`,
+      targetId: `${effectiveOwnerUsername}/${asset.slug}`,
       assetType: assetType,
       visibility: finalVisibility,
       context: asset.houdini_context,
       fileSize: fileSize,
+      ...(effectiveOwnerId !== req.user.id ? { onBehalfOf: effectiveOwnerUsername } : {}),
     });
 
     res.status(201).json({

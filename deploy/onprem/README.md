@@ -69,6 +69,38 @@ PUBLIC_URL=http://sopdrop.lan:4800 \
     ./scripts/create-team.sh "My Team"        # against another host
 ```
 
+### Auto-add artists to a default team
+
+Once the team exists, set `TRUST_LAN_DEFAULT_TEAM=<slug>` in `.env` and
+restart the server. From then on, every trust-LAN request idempotently
+ensures the user is a member of that team — no per-artist
+`INSERT INTO team_members` step. The check runs on every request (it's
+a cheap `INSERT ... ON CONFLICT DO NOTHING`), which means both newly
+auto-created users AND existing users who pre-date this setting get
+added automatically.
+
+Leave the var blank if you want to manage memberships manually (e.g.
+multiple teams on one server, or contractors who shouldn't see the
+main library).
+
+If you've already onboarded artists before turning this on, the next
+request from each workstation will add them — no manual backfill
+needed. If you'd rather not wait, run a one-time SQL fix:
+
+```sh
+docker compose exec postgres psql -U sopdrop -d sopdrop -c \
+  "INSERT INTO team_members (team_id, user_id, role)
+     SELECT t.id, u.id, 'member' FROM teams t, users u
+     WHERE t.slug = 'my-team' AND u.username NOT IN (
+       SELECT u2.username FROM team_members tm
+       JOIN users u2 ON tm.user_id = u2.id WHERE tm.team_id = t.id
+     )
+   ON CONFLICT DO NOTHING;
+   UPDATE teams SET member_count = (
+     SELECT COUNT(*) FROM team_members WHERE team_id = teams.id
+   ) WHERE slug = 'my-team';"
+```
+
 ### Windows Server
 
 There's a one-shot installer that wraps the Linux flow above in WSL2:
@@ -150,7 +182,9 @@ the NAS share and reach the on-prem server. See the script header for usage;
 short version:
 
 ```sh
-# 1. Get an API token from the on-prem server (Settings → API tokens)
+# 1. Get an API token from the on-prem server (Settings → API tokens).
+#    For --preserve-authorship the token user must be admin or owner —
+#    promote with: UPDATE users SET role='admin', is_admin=true WHERE username='you';
 export SOPDROP_TOKEN=sdrop_...
 
 # 2. Dry run — lists what would be uploaded
@@ -159,15 +193,24 @@ python3 scripts/migrate-nas-to-server.py \
     --server http://sopdrop.lan:4800 \
     --dry-run
 
-# 3. Real run
+# 3. Real run, preserving each asset's original author + created_at
 python3 scripts/migrate-nas-to-server.py \
     --nas /Volumes/team/library \
     --server http://sopdrop.lan:4800 \
-    --visibility unlisted
+    --visibility unlisted \
+    --preserve-authorship
 ```
 
-The script is idempotent — re-running skips assets already on the server (by
-matching `name + owner`). Safe to interrupt and resume.
+The script is idempotent — re-running skips assets already on the server
+(matched per-owner: `(owner_username, slug)`). Safe to interrupt and resume.
+
+`--preserve-authorship` reads `created_by` (Windows OS username) and
+`created_at` from the NAS SQLite library and passes them through to the
+server's `asUser` / `createdAt` upload fields. Missing user accounts are
+auto-created with the same shape as trust-LAN auto-create (`<name>@lan.local`,
+no password). Without the flag, every asset is owned by the token user
+with `created_at = now()` — fine for a single-author library, but
+collapses studio authorship history.
 
 ## Backups
 
