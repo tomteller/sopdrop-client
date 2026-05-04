@@ -385,11 +385,36 @@ def _import_v2(
                 try:
                     container_node = target_node.createNode(type_name)
                     if container_node and container_node.isSubNetwork():
-                        # Remove any default children the container creates
-                        for child in list(container_node.children()):
-                            child.destroy()
-                        load_target = container_node
-                        print(f"[Sopdrop] Created container '{type_name}', loading children into it")
+                        # Custom HDAs (SOP Create LOP, custom subnet HDAs, etc.)
+                        # come back from createNode locked — their authored
+                        # children are part of the asset definition and can't
+                        # be destroyed or modified until we explicitly allow
+                        # editing of contents. Plain subnets aren't locked,
+                        # so we only do this for HDAs.
+                        is_hda = container_node.type().definition() is not None
+                        if is_hda:
+                            try:
+                                container_node.allowEditingOfContents()
+                            except hou.OperationFailed as e:
+                                print(f"[Sopdrop] Could not unlock HDA '{type_name}' for "
+                                      f"editing ({e}); loading flat into parent")
+                                container_node.destroy()
+                                container_node = None
+                        if container_node is not None:
+                            # Remove any default children the container brought
+                            # along so the saved package's items become the
+                            # canonical interior.
+                            for child in list(container_node.children()):
+                                try:
+                                    child.destroy()
+                                except hou.PermissionError:
+                                    # Should not happen after allowEditingOfContents,
+                                    # but a stubborn locked descendant shouldn't
+                                    # take the whole import down — skip it and
+                                    # let the saved items land alongside.
+                                    pass
+                            load_target = container_node
+                            print(f"[Sopdrop] Created container '{type_name}', loading children into it")
                     else:
                         # Not a subnet — can't load children into it, fall back
                         if container_node:
@@ -780,10 +805,26 @@ def _import_v1(
             try:
                 container_node = target_node.createNode(type_name)
                 if container_node and container_node.isSubNetwork():
-                    for child in list(container_node.children()):
-                        child.destroy()
-                    target_node = container_node
-                    print(f"[Sopdrop] Created container '{type_name}', loading children into it")
+                    # Custom HDAs are locked at creation; unlock before
+                    # touching authored children. See _import_v2 for the
+                    # canonical version of this logic.
+                    is_hda = container_node.type().definition() is not None
+                    if is_hda:
+                        try:
+                            container_node.allowEditingOfContents()
+                        except hou.OperationFailed as e:
+                            print(f"[Sopdrop] Could not unlock HDA '{type_name}' for "
+                                  f"editing ({e}); loading flat into parent")
+                            container_node.destroy()
+                            container_node = None
+                    if container_node is not None:
+                        for child in list(container_node.children()):
+                            try:
+                                child.destroy()
+                            except hou.PermissionError:
+                                pass
+                        target_node = container_node
+                        print(f"[Sopdrop] Created container '{type_name}', loading children into it")
                 else:
                     if container_node:
                         container_node.destroy()

@@ -55,9 +55,17 @@ export const securityHeaders = helmet({
 
 export function httpsRedirect(req, res, next) {
   if (process.env.NODE_ENV === 'production') {
+    // On-prem trust-LAN deployments terminate plain HTTP on the LAN box
+    // and have no TLS in front of them. Redirecting to https:// breaks
+    // the panel (and especially thumbnail GETs from /library/...).
+    if (process.env.TRUST_LAN_AUTH === 'true') return next();
     // Skip redirect for API routes — they come via Vercel proxy or direct HTTPS
-    // Redirecting API POSTs (especially file uploads) breaks them
+    // Redirecting API POSTs (especially file uploads) breaks them.
     if (req.url.startsWith('/api/')) return next();
+    // Static asset paths (thumbnails, asset blobs) served from local
+    // storage. These are GETs the panel hits directly; redirecting to
+    // https:// silently breaks rendering on plain-HTTP deployments.
+    if (req.url.startsWith('/library/')) return next();
     if (req.headers['x-forwarded-proto'] !== 'https') {
       return res.redirect(301, `https://${req.headers.host}${req.url}`);
     }
@@ -105,16 +113,22 @@ const skipForAdmins = (req) =>
 // for traffic coming from authenticated workstations on the trusted
 // LAN. The presence of X-Sopdrop-User is the signal: in trust-LAN mode
 // the Houdini panel sets it on every request, and the server's auth
-// middleware uses it to identify the caller. Skipping the global
-// limiter here lets a busy team (5+ active artists browsing/pasting
-// from the team library) work normally instead of hitting 429s on
-// reads. Public-internet traffic (no header) is still throttled.
+// middleware uses it to identify the caller.
 //
-// Per-route limiters (uploadLimiter etc.) still apply via skipForAdmins
-// — write paths get tighter scrutiny than reads.
+// Skips apply to BOTH read and write limiters: the LAN is the security
+// boundary on these deployments, per-user write caps add no protection
+// (a compromised workstation already has the network) and only break
+// legitimate bulk operations like NAS migration and bursty publishing.
+// Public-internet traffic (no header) is still throttled.
 const TRUST_LAN_AUTH = process.env.TRUST_LAN_AUTH === 'true';
 const skipForTrustLan = (req) =>
   TRUST_LAN_AUTH && Boolean(req.headers['x-sopdrop-user']);
+
+// Combined skip used by every per-route limiter. Admins skip everywhere
+// (matches the cloud behavior); trust-LAN clients skip when the deploy
+// has opted into TRUST_LAN_AUTH.
+const skipForAdminsOrTrustLan = (req) =>
+  skipForAdmins(req) || skipForTrustLan(req);
 
 // All limit values are env-configurable so on-prem operators can tune
 // for team size without forking. Defaults match the previous hard-coded
@@ -197,7 +211,7 @@ export const tokenLimiter = buildLimiter({
   windowMs: RATE_TOKEN_WINDOW_MS,
   max: RATE_TOKEN_MAX,
   keyGenerator: (req) => req.user?.id || req.ip,
-  skip: skipForAdmins,
+  skip: skipForAdminsOrTrustLan,
 });
 
 // Asset upload: Prevent storage abuse
@@ -205,7 +219,7 @@ export const uploadLimiter = buildLimiter({
   windowMs: RATE_UPLOAD_WINDOW_MS,
   max: RATE_UPLOAD_MAX,
   keyGenerator: (req) => req.user?.id || req.ip,
-  skip: skipForAdmins,
+  skip: skipForAdminsOrTrustLan,
 });
 
 // Version publish: Allow more than new assets
@@ -213,7 +227,7 @@ export const versionLimiter = buildLimiter({
   windowMs: RATE_VERSION_WINDOW_MS,
   max: RATE_VERSION_MAX,
   keyGenerator: (req) => req.user?.id || req.ip,
-  skip: skipForAdmins,
+  skip: skipForAdminsOrTrustLan,
 });
 
 // Downloads: Prevent scraping. Trust-LAN clients (Houdini panel
@@ -223,7 +237,7 @@ export const downloadLimiter = buildLimiter({
   windowMs: RATE_DOWNLOAD_WINDOW_MS,
   max: RATE_DOWNLOAD_MAX,
   keyGenerator: (req) => req.ip,
-  skip: (req) => skipForAdmins(req) || skipForTrustLan(req),
+  skip: skipForAdminsOrTrustLan,
 });
 
 // Temporary shares: Prevent abuse
@@ -231,7 +245,7 @@ export const shareLimiter = buildLimiter({
   windowMs: RATE_SHARE_WINDOW_MS,
   max: RATE_SHARE_MAX,
   keyGenerator: (req) => req.user?.id || req.ip,
-  skip: skipForAdmins,
+  skip: skipForAdminsOrTrustLan,
 });
 
 // Password change: Prevent abuse after account compromise
@@ -249,7 +263,7 @@ export const generalLimiter = buildLimiter({
   windowMs: RATE_GENERAL_WINDOW_MS,
   max: RATE_GENERAL_MAX,
   keyGenerator: (req) => req.ip,
-  skip: (req) => skipForAdmins(req) || skipForTrustLan(req),
+  skip: skipForAdminsOrTrustLan,
 });
 
 // ============================================

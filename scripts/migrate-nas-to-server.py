@@ -301,6 +301,28 @@ def fetch_team_folders(server: str, token: str, team_slug: str) -> list[dict]:
     return body.get("collections") or []
 
 
+def update_team_folder_parent(server: str, token: str, team_slug: str,
+                              folder_id: str, parent_slug: str | None) -> bool:
+    """PATCH a team folder's parent. parent_slug=None clears it (root).
+    Returns True on success."""
+    payload = {"parentSlug": parent_slug}
+    try:
+        r = requests.put(
+            f"{server}/api/v1/teams/{quote(team_slug, safe='')}/library/collections/"
+            f"{quote(folder_id, safe='')}",
+            headers={"Authorization": f"Bearer {token}"},
+            json=payload, timeout=30,
+        )
+    except requests.RequestException as e:
+        print(f"  folder parent fix failed (network): {e}", file=sys.stderr)
+        return False
+    if r.status_code >= 400:
+        print(f"  folder parent fix failed: HTTP {r.status_code}: {r.text[:200]}",
+              file=sys.stderr)
+        return False
+    return True
+
+
 def create_team_folder(server: str, token: str, team_slug: str,
                        name: str, description: str | None,
                        color: str | None, icon: str | None,
@@ -337,23 +359,27 @@ def create_team_folder(server: str, token: str, team_slug: str,
 def migrate_collections_to_team_folders(
     server: str, token: str, team_slug: str,
     nas_collections: list[dict], dry_run: bool,
-) -> tuple[dict[str, str], int, int]:
+) -> tuple[dict[str, str], int, int, int]:
     """Create team folders for each NAS collection (parents first).
 
-    Returns (mapping, created, reused). `mapping` is nas_collection_id →
-    server folder slug. Existing folders matching by slugified name are
-    reused rather than re-created.
+    Returns (mapping, created, reused, repaired). `mapping` is
+    nas_collection_id → server folder slug. Existing folders matching by
+    slugified name are reused; if their parent_id doesn't match what the
+    NAS hierarchy says it should be (e.g. a prior migration created them
+    flat) we PATCH the parent via the team-folder PUT endpoint.
     """
     if not nas_collections:
-        return {}, 0, 0
+        return {}, 0, 0, 0
 
     # Index existing server folders by slug. Slug uses the same
     # normalization as the server-side slugify.
     existing = {} if dry_run else {f["slug"]: f for f in fetch_team_folders(server, token, team_slug)}
 
     nas_to_slug: dict[str, str] = {}
+    nas_to_db_id: dict[str, int] = {}  # for parent-mismatch checks on reuse
     created = 0
     reused = 0
+    repaired = 0
     ordered = topo_sort_collections(nas_collections)
 
     for coll in ordered:
@@ -363,15 +389,33 @@ def migrate_collections_to_team_folders(
             continue
         target_slug = slugify(name)
 
-        # Resolve parent slug if any.
+        # Resolve parent slug + dbId if any.
         parent_slug = None
+        expected_parent_db_id = None
         parent_id = coll.get("parent_id")
         if parent_id and parent_id in nas_to_slug:
             parent_slug = nas_to_slug[parent_id]
+            expected_parent_db_id = nas_to_db_id.get(parent_id)
 
         if target_slug in existing:
             nas_to_slug[cid] = target_slug
+            existing_folder = existing[target_slug]
+            db_id = existing_folder.get("dbId")
+            if db_id is not None:
+                nas_to_db_id[cid] = db_id
             reused += 1
+            # Hierarchy repair: prior run may have created this folder
+            # as a root (or under the wrong parent). PATCH if mismatched.
+            current_parent = existing_folder.get("parentId")
+            if not dry_run and current_parent != expected_parent_db_id:
+                folder_uuid = existing_folder.get("id")
+                if folder_uuid and update_team_folder_parent(
+                    server, token, team_slug, folder_uuid, parent_slug,
+                ):
+                    existing_folder["parentId"] = expected_parent_db_id
+                    repaired += 1
+                    where = f"under '{parent_slug}'" if parent_slug else "as a root"
+                    print(f"  fixed parent of existing folder '{target_slug}' → {where}")
             continue
 
         if dry_run:
@@ -389,6 +433,8 @@ def migrate_collections_to_team_folders(
         )
         if new_folder:
             nas_to_slug[cid] = new_folder.get("slug") or target_slug
+            if new_folder.get("dbId") is not None:
+                nas_to_db_id[cid] = new_folder["dbId"]
             existing[nas_to_slug[cid]] = new_folder
             created += 1
         else:
@@ -397,11 +443,13 @@ def migrate_collections_to_team_folders(
             for f in fetch_team_folders(server, token, team_slug):
                 if f["slug"] == target_slug:
                     nas_to_slug[cid] = target_slug
+                    if f.get("dbId") is not None:
+                        nas_to_db_id[cid] = f["dbId"]
                     existing[target_slug] = f
                     reused += 1
                     break
 
-    return nas_to_slug, created, reused
+    return nas_to_slug, created, reused, repaired
 
 
 def primary_folder_slug_for_asset(
@@ -729,13 +777,14 @@ def main() -> int:
     coll_to_folder: dict[str, str] = {}
     if args.team and not args.no_collections and nas_collections:
         print(f"\nMigrating {len(nas_collections)} collection(s) → team folders...")
-        coll_to_folder, created, reused = migrate_collections_to_team_folders(
+        coll_to_folder, created, reused, repaired = migrate_collections_to_team_folders(
             server, args.token, args.team, nas_collections, args.dry_run,
         )
         if args.dry_run:
             print(f"  would create {created} folder(s), reuse {reused}")
         else:
-            print(f"  created {created} folder(s), reused {reused}")
+            tail = f", repaired {repaired} parent link(s)" if repaired else ""
+            print(f"  created {created} folder(s), reused {reused}{tail}")
     elif nas_collections and (args.no_collections or not args.team):
         reason = "--no-collections" if args.no_collections else "no --team set"
         print(f"  skipping collection migration ({reason})")

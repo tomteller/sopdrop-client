@@ -523,6 +523,30 @@ router.put('/:slug/library/collections/:folderId', authenticate, requireTeamMemb
     if (req.body.position !== undefined) {
       updates.push(`position = $${p++}`); params.push(parseInt(req.body.position) || 0);
     }
+    // Optional parent move. parentSlug=null clears the parent (folder
+    // becomes a root); a slug looks up the matching team folder. Used
+    // by the NAS-migration script to repair hierarchy when folders were
+    // created flat by an earlier run.
+    if (req.body.parentSlug !== undefined) {
+      let nextParentId = null;
+      if (req.body.parentSlug !== null && req.body.parentSlug !== '') {
+        const lookup = await query(
+          'SELECT id FROM user_folders WHERE team_id = $1 AND slug = $2',
+          [req.team.id, req.body.parentSlug]
+        );
+        if (lookup.rows.length === 0) throw new NotFoundError('Parent folder not found');
+        nextParentId = lookup.rows[0].id;
+        // Reject self-parenting.
+        const self = await query(
+          'SELECT id FROM user_folders WHERE team_id = $1 AND folder_id = $2',
+          [req.team.id, req.params.folderId]
+        );
+        if (self.rows.length > 0 && self.rows[0].id === nextParentId) {
+          throw new ValidationError('A folder cannot be its own parent');
+        }
+      }
+      updates.push(`parent_id = $${p++}`); params.push(nextParentId);
+    }
     if (updates.length === 0) throw new ValidationError('No fields to update');
     updates.push(`updated_at = NOW()`);
 
