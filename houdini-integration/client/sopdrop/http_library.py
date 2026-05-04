@@ -248,17 +248,23 @@ class HttpLibraryClient:
         every row matching the filters. Use this for the initial library
         load when total count is small. For large libraries the panel
         should paginate explicitly (Phase 2).
+
+        Also stashes the first page's ETag under `_firstPageEtag` so callers
+        can populate their conditional-GET cache without an extra round-trip.
         """
         all_assets: list[dict] = []
         merged_map: dict[str, list[int]] = {}
         offset = 0
         total = 0
         last_updated = None
+        first_page_etag: str | None = None
         while True:
             result = self.list_assets(limit=page_size, offset=offset, **filters)
             if not result.body:
                 break
             body = result.body
+            if offset == 0:
+                first_page_etag = result.etag
             page = body.get("assets", [])
             all_assets.extend(page)
             for k, v in (body.get("collectionMap") or {}).items():
@@ -275,6 +281,7 @@ class HttpLibraryClient:
             "limit": page_size,
             "offset": 0,
             "lastUpdated": last_updated,
+            "_firstPageEtag": first_page_etag,
         }
 
     def list_collections(self, *, if_none_match: str | None = None) -> HttpResult:

@@ -11,9 +11,24 @@ Usage:
     python3 scripts/migrate-nas-to-server.py \\
         --nas /Volumes/team/library \\
         --server http://sopdrop.lan:4800 \\
-        --visibility unlisted
+        --team frame48 \\
+        --preserve-authorship
 
 Run with --dry-run first to see what would be uploaded.
+
+What it migrates:
+  - Active library_assets rows (file + thumbnail + tags + metadata)
+  - Collections → team user_folders (when --team is set; parents first,
+    idempotent; uses POST /teams/:slug/library/collections)
+  - Asset → folder membership (picks the primary/first collection; the
+    server stores one folder_id per asset, so multi-collection membership
+    is lossy by design)
+  - README and license (if present in source metadata JSON)
+
+What it does NOT migrate:
+  - Asset version history (only the latest file is uploaded as the
+    initial version on the server)
+  - Per-user state: is_favorite, use_count, last_used_at, sync_status
 
 Use --preserve-authorship to carry over the original `created_by`
 (Windows OS username) and `created_at` from the NAS DB. The token user
@@ -23,7 +38,10 @@ same shape as trust-LAN auto-create (`<name>@lan.local`, no password).
 
 Use --team <slug> to associate uploaded assets with a team library so
 they show up in the panel's team view. Without it, uploads land in the
-authoring user's personal library.
+authoring user's personal library and folders are not migrated.
+
+Use --no-collections to skip folder migration (default is on when
+--team is set).
 
 Use --repair-thumbnails to re-upload thumbnails for assets that already
 exist on the server. Useful for fixing migrations that ran before the
@@ -86,6 +104,11 @@ def parse_args() -> argparse.Namespace:
                    help="When an asset already exists on the server (idempotent re-run), still "
                         "try to upload its thumbnail via the /thumbnail endpoint. Useful for "
                         "migrations that ran before the thumbnail-MIME fix landed.")
+    p.add_argument("--no-collections", action="store_true",
+                   help="Skip migrating collections → team user_folders. By default, when --team "
+                        "is set, the script copies each NAS collection (and its parent chain) into "
+                        "the team's folder list and assigns each uploaded asset to its primary "
+                        "collection's folder.")
     return p.parse_args()
 
 
@@ -191,14 +214,210 @@ def load_assets(db_path: Path, include_deleted: bool) -> list[dict]:
     where = "" if include_deleted else "WHERE deleted_at IS NULL"
     rows = conn.execute(f"""
         SELECT id, name, description, context, asset_type, file_path, thumbnail_path,
-               tags, houdini_version, hda_type_name, metadata,
-               created_by, created_at
+               tags, houdini_version, hda_type_name, hda_type_label, hda_version,
+               hda_category, metadata, created_by, created_at
         FROM library_assets
         {where}
         ORDER BY created_at
     """).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def load_collections(db_path: Path) -> list[dict]:
+    """Return all collection rows from the NAS DB."""
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("""
+            SELECT id, name, description, color, icon, parent_id, sort_order
+            FROM collections
+            ORDER BY sort_order, name
+        """).fetchall()
+    except sqlite3.OperationalError:
+        # Older NAS libraries may not have a collections table.
+        rows = []
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def load_collection_memberships(db_path: Path) -> dict[str, list[tuple[str, int]]]:
+    """Return asset_id → ordered list of (collection_id, sort_order)."""
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10)
+    try:
+        rows = conn.execute("""
+            SELECT asset_id, collection_id, sort_order
+            FROM collection_assets
+            ORDER BY sort_order, added_at
+        """).fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    conn.close()
+    out: dict[str, list[tuple[str, int]]] = {}
+    for asset_id, coll_id, sort_order in rows:
+        out.setdefault(asset_id, []).append((coll_id, sort_order or 0))
+    return out
+
+
+def topo_sort_collections(collections: list[dict]) -> list[dict]:
+    """Return collections ordered so that every parent comes before its children."""
+    by_id = {c["id"]: c for c in collections}
+    visited: set[str] = set()
+    out: list[dict] = []
+
+    def visit(cid: str, stack: set[str]):
+        if cid in visited or cid not in by_id:
+            return
+        if cid in stack:
+            # Cycle — skip to avoid infinite recursion. NAS DB shouldn't
+            # have these but better safe than sorry.
+            return
+        stack.add(cid)
+        parent = by_id[cid].get("parent_id")
+        if parent:
+            visit(parent, stack)
+        stack.discard(cid)
+        visited.add(cid)
+        out.append(by_id[cid])
+
+    for c in collections:
+        visit(c["id"], set())
+    return out
+
+
+def fetch_team_folders(server: str, token: str, team_slug: str) -> list[dict]:
+    """List existing team folders. Returns empty list on any error so
+    the caller can fall through to create-on-demand."""
+    try:
+        r = requests.get(
+            f"{server}/api/v1/teams/{quote(team_slug, safe='')}/library/collections",
+            headers={"Authorization": f"Bearer {token}"}, timeout=30,
+        )
+    except requests.RequestException:
+        return []
+    if r.status_code >= 400:
+        return []
+    body = r.json()
+    return body.get("collections") or []
+
+
+def create_team_folder(server: str, token: str, team_slug: str,
+                       name: str, description: str | None,
+                       color: str | None, icon: str | None,
+                       parent_slug: str | None) -> dict | None:
+    """POST a new team folder. Returns the folder dict, or None on failure
+    (already-exists is treated as a soft success — caller should re-fetch)."""
+    payload = {"name": name}
+    if description:
+        payload["description"] = description
+    if color:
+        payload["color"] = color
+    if icon:
+        payload["icon"] = icon
+    if parent_slug:
+        payload["parentSlug"] = parent_slug
+    try:
+        r = requests.post(
+            f"{server}/api/v1/teams/{quote(team_slug, safe='')}/library/collections",
+            headers={"Authorization": f"Bearer {token}"},
+            json=payload, timeout=30,
+        )
+    except requests.RequestException as e:
+        print(f"  folder '{name}' create failed: {e}", file=sys.stderr)
+        return None
+    if r.status_code == 409 or (r.status_code == 400 and "already exists" in r.text):
+        return None  # caller handles via re-fetch
+    if r.status_code >= 400:
+        print(f"  folder '{name}' create failed: HTTP {r.status_code}: {r.text[:200]}",
+              file=sys.stderr)
+        return None
+    return r.json()
+
+
+def migrate_collections_to_team_folders(
+    server: str, token: str, team_slug: str,
+    nas_collections: list[dict], dry_run: bool,
+) -> tuple[dict[str, str], int, int]:
+    """Create team folders for each NAS collection (parents first).
+
+    Returns (mapping, created, reused). `mapping` is nas_collection_id →
+    server folder slug. Existing folders matching by slugified name are
+    reused rather than re-created.
+    """
+    if not nas_collections:
+        return {}, 0, 0
+
+    # Index existing server folders by slug. Slug uses the same
+    # normalization as the server-side slugify.
+    existing = {} if dry_run else {f["slug"]: f for f in fetch_team_folders(server, token, team_slug)}
+
+    nas_to_slug: dict[str, str] = {}
+    created = 0
+    reused = 0
+    ordered = topo_sort_collections(nas_collections)
+
+    for coll in ordered:
+        cid = coll["id"]
+        name = (coll.get("name") or "").strip()
+        if not name:
+            continue
+        target_slug = slugify(name)
+
+        # Resolve parent slug if any.
+        parent_slug = None
+        parent_id = coll.get("parent_id")
+        if parent_id and parent_id in nas_to_slug:
+            parent_slug = nas_to_slug[parent_id]
+
+        if target_slug in existing:
+            nas_to_slug[cid] = target_slug
+            reused += 1
+            continue
+
+        if dry_run:
+            nas_to_slug[cid] = target_slug
+            created += 1
+            continue
+
+        new_folder = create_team_folder(
+            server, token, team_slug,
+            name=name,
+            description=coll.get("description"),
+            color=coll.get("color"),
+            icon=coll.get("icon"),
+            parent_slug=parent_slug,
+        )
+        if new_folder:
+            nas_to_slug[cid] = new_folder.get("slug") or target_slug
+            existing[nas_to_slug[cid]] = new_folder
+            created += 1
+        else:
+            # Server may have raced us or rejected — re-fetch and try
+            # to find by slug.
+            for f in fetch_team_folders(server, token, team_slug):
+                if f["slug"] == target_slug:
+                    nas_to_slug[cid] = target_slug
+                    existing[target_slug] = f
+                    reused += 1
+                    break
+
+    return nas_to_slug, created, reused
+
+
+def primary_folder_slug_for_asset(
+    asset_id: str,
+    memberships: dict[str, list[tuple[str, int]]],
+    coll_to_folder: dict[str, str],
+) -> str | None:
+    """Pick the folder for an asset that lives in (potentially) multiple
+    NAS collections. Server allows one folder_id per asset, so we have
+    to choose: lowest sort_order, then first by membership order."""
+    entries = memberships.get(asset_id) or []
+    for coll_id, _sort in sorted(entries, key=lambda e: e[1]):
+        slug = coll_to_folder.get(coll_id)
+        if slug:
+            return slug
+    return None
 
 
 def parse_tags(raw: str | None) -> list[str]:
@@ -213,31 +432,64 @@ def parse_tags(raw: str | None) -> list[str]:
     return [t.strip() for t in str(raw).split(",") if t.strip()]
 
 
+def _extract_readme_and_license(metadata_raw: str | None) -> tuple[str | None, str | None, str | None]:
+    """Parse the source `library_assets.metadata` JSON for fields we want
+    to preserve on the server. Returns (readme, license, license_url).
+    Returns Nones for any field that's absent or unparseable."""
+    if not metadata_raw:
+        return None, None, None
+    try:
+        meta = json.loads(metadata_raw) if isinstance(metadata_raw, str) else metadata_raw
+    except (json.JSONDecodeError, TypeError):
+        return None, None, None
+    if not isinstance(meta, dict):
+        return None, None, None
+    readme = meta.get("readme") or meta.get("README") or None
+    lic = meta.get("license") or None
+    lic_url = meta.get("license_url") or meta.get("licenseUrl") or None
+    if readme and not isinstance(readme, str):
+        readme = None
+    if lic and not isinstance(lic, str):
+        lic = None
+    if lic_url and not isinstance(lic_url, str):
+        lic_url = None
+    return readme, lic, lic_url
+
+
 def upload_one(server: str, token: str, asset: dict, assets_dir: Path,
                thumbs_dir: Path, visibility: str,
                as_user: str | None, created_at: str | None,
-               team_slug: str | None) -> tuple[bool, str, bool]:
+               team_slug: str | None,
+               folder_slug: str | None) -> tuple[bool, str, bool, bool]:
     """Upload one asset.
 
-    Returns (ok, info, already_exists). already_exists=True means the
-    server rejected it as a duplicate of the same owner+slug — count as
-    skipped, not failed.
+    Returns (ok, info, already_exists, thumbnail_uploaded).
+    already_exists=True means the server rejected it as a duplicate of
+    the same owner+slug — count as skipped, not failed.
+    thumbnail_uploaded=False means either no thumb on NAS or the file
+    didn't sniff as an image (the asset still uploads).
     """
     file_name = asset.get("file_path")
     if not file_name:
-        return False, "no file_path in DB row", False
+        return False, "no file_path in DB row", False, False
     file_path = assets_dir / file_name
     if not file_path.is_file():
-        return False, f"file missing on NAS: {file_path}", False
+        return False, f"file missing on NAS: {file_path}", False, False
+
+    readme, lic, lic_url = _extract_readme_and_license(asset.get("metadata"))
 
     fields = {
         "name": asset["name"],
         "description": asset.get("description") or "",
-        "license": "MIT",
+        "license": lic or "MIT",
         "houdiniContext": (asset.get("context") or "sop").lower(),
         "tags": json.dumps(parse_tags(asset.get("tags"))),
         "visibility": visibility,
     }
+    if readme:
+        fields["readme"] = readme
+    if lic_url:
+        fields["licenseUrl"] = lic_url
     if asset.get("houdini_version"):
         fields["minHoudiniVersion"] = asset["houdini_version"]
     if as_user:
@@ -249,23 +501,30 @@ def upload_one(server: str, token: str, asset: dict, assets_dir: Path,
         # lands in the user's personal library and the team view in
         # the panel won't see it (Bug 13).
         fields["teamSlug"] = team_slug
+    if folder_slug:
+        # Server resolves folderSlug to a user_folder.id, scoped to
+        # team_id when teamSlug is also set. Without this, the asset
+        # is unfiled in the team library.
+        fields["folderSlug"] = folder_slug
 
     files = {"file": (file_name, open(file_path, "rb"))}
     thumb_name = asset.get("thumbnail_path")
     thumb_handle = None
     thumb_full_path = None
+    thumb_uploaded = False
     if thumb_name:
         thumb_full_path = thumbs_dir / thumb_name
         if thumb_full_path.is_file():
             # Server requires Content-Type to start with "image/". Sniff
-            # the file's magic bytes — NAS thumbnails often have no
-            # extension or use ones the standard mimetypes table doesn't
-            # know. If the file isn't actually an image, drop the
-            # thumbnail rather than fail the whole asset.
+            # the file's magic bytes first; fall back to extension; last
+            # resort, send as image/jpeg if the extension hints at an
+            # image. If we still can't classify, drop the thumbnail
+            # rather than fail the whole asset.
             thumb_mime = _detect_image_mime(thumb_full_path)
             if thumb_mime:
                 thumb_handle = open(thumb_full_path, "rb")
                 files["thumbnail"] = (thumb_name, thumb_handle, thumb_mime)
+                thumb_uploaded = True
             else:
                 print(f"  thumbnail '{thumb_name}' doesn't look like an image, skipping",
                       file=sys.stderr)
@@ -290,10 +549,11 @@ def upload_one(server: str, token: str, asset: dict, assets_dir: Path,
     if r.status_code >= 400:
         text = r.text[:300]
         if r.status_code == 400 and ALREADY_EXISTS_FRAGMENT in text:
-            return False, "duplicate (server reports already exists)", True
-        return False, f"HTTP {r.status_code}: {text}", False
+            return False, "duplicate (server reports already exists)", True, False
+        return False, f"HTTP {r.status_code}: {text}", False, False
     body = r.json()
-    return True, body.get("asset", {}).get("slug") or body.get("slug") or "ok", False
+    slug_out = body.get("asset", {}).get("slug") or body.get("slug") or "ok"
+    return True, slug_out, False, thumb_uploaded
 
 
 def _detect_image_mime(path: Path) -> str | None:
@@ -326,6 +586,20 @@ def _detect_image_mime(path: Path) -> str | None:
     guessed, _ = mimetypes.guess_type(path.name)
     if guessed and guessed.startswith("image/"):
         return guessed
+    # Last-resort: trust the filename extension for common image types
+    # even when the file's first 16 bytes don't match a known signature
+    # (some legacy NAS thumbnails have leading metadata or are just
+    # truncated). The server validates Content-Type only, so a best-
+    # effort label is better than dropping the thumbnail.
+    ext = path.suffix.lower()
+    ext_map = {
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".png": "image/png", ".gif": "image/gif",
+        ".webp": "image/webp", ".bmp": "image/bmp",
+        ".svg": "image/svg+xml",
+    }
+    if ext in ext_map:
+        return ext_map[ext]
     return None
 
 
@@ -422,6 +696,11 @@ def main() -> int:
     rows = load_assets(db_path, args.include_deleted)
     print(f"Found {len(rows)} active assets on NAS")
 
+    nas_collections = load_collections(db_path)
+    memberships = load_collection_memberships(db_path)
+    print(f"Found {len(nas_collections)} collections "
+          f"({sum(len(v) for v in memberships.values())} memberships)")
+
     token_user = None
     token_username = None
     if not args.dry_run:
@@ -442,6 +721,25 @@ def main() -> int:
                     f"    \"UPDATE users SET role='admin', is_admin=true WHERE username='{token_username}';\""
                 )
 
+    # Migrate collections → team folders (parents first, idempotent).
+    # Only meaningful when --team is set; without a team there's no
+    # shared folder space. The server-side personal user_folders are
+    # per-token-user and would dilute when --preserve-authorship maps
+    # uploads to many different owners.
+    coll_to_folder: dict[str, str] = {}
+    if args.team and not args.no_collections and nas_collections:
+        print(f"\nMigrating {len(nas_collections)} collection(s) → team folders...")
+        coll_to_folder, created, reused = migrate_collections_to_team_folders(
+            server, args.token, args.team, nas_collections, args.dry_run,
+        )
+        if args.dry_run:
+            print(f"  would create {created} folder(s), reuse {reused}")
+        else:
+            print(f"  created {created} folder(s), reused {reused}")
+    elif nas_collections and (args.no_collections or not args.team):
+        reason = "--no-collections" if args.no_collections else "no --team set"
+        print(f"  skipping collection migration ({reason})")
+
     # Idempotency: per-owner cache of existing slugs. Keyed by username
     # so re-runs don't double-upload the same (owner, slug). Lazily
     # populated as we encounter each owner.
@@ -458,7 +756,9 @@ def main() -> int:
         return existing_per_user[username]
 
     uploaded = skipped = failed = thumb_repaired = 0
+    thumb_uploaded_count = thumb_missing_count = thumb_unreadable_count = 0
     failures: list[tuple[str, str]] = []
+    missing_thumbs: list[str] = []
 
     def maybe_repair_thumb(asset: dict, owner: str, slug: str, log_prefix: str):
         """If --repair-thumbnails and the asset already exists, PATCH
@@ -513,6 +813,12 @@ def main() -> int:
             maybe_repair_thumb(asset, owner_for_check, slug, prefix)
             continue
 
+        # Resolve the folder slug for this asset (server stores one
+        # folder_id per asset; pick the primary collection if multi).
+        folder_slug = primary_folder_slug_for_asset(
+            asset["id"], memberships, coll_to_folder
+        ) if coll_to_folder else None
+
         if args.dry_run:
             file_name = asset.get("file_path") or "?"
             file_path = assets_dir / file_name
@@ -522,23 +828,38 @@ def main() -> int:
                 extra = f" [as={as_user or token_username}, at={created_at or 'now'}]"
             if args.team:
                 extra += f" [team={args.team}]"
+            if folder_slug:
+                extra += f" [folder={folder_slug}]"
             print(f"{prefix} — would upload ({file_name}, file: {present}){extra}")
             uploaded += 1
             continue
 
         try:
-            ok, info, already = upload_one(
+            ok, info, already, thumb_ok = upload_one(
                 server, args.token, asset, assets_dir, thumbs_dir,
                 args.visibility, as_user, created_at, args.team,
+                folder_slug,
             )
         except requests.RequestException as e:
-            ok, info, already = False, f"network: {e}", False
+            ok, info, already, thumb_ok = False, f"network: {e}", False, False
 
         if ok:
             uploaded += 1
             existing_for(owner_for_check).add(slug.lower())
             attribution = f" as {as_user}" if as_user else ""
-            print(f"{prefix} — uploaded ({info}){attribution}")
+            folder_note = f" → {folder_slug}" if folder_slug else ""
+            thumb_note = "" if thumb_ok else (
+                " [no-thumb-on-NAS]" if not asset.get("thumbnail_path")
+                else " [thumb-unreadable]"
+            )
+            print(f"{prefix} — uploaded ({info}){folder_note}{attribution}{thumb_note}")
+            if thumb_ok:
+                thumb_uploaded_count += 1
+            elif not asset.get("thumbnail_path"):
+                thumb_missing_count += 1
+            else:
+                thumb_unreadable_count += 1
+                missing_thumbs.append(name)
             if args.limit and uploaded >= args.limit:
                 print(f"\n--limit {args.limit} reached, stopping")
                 break
@@ -558,6 +879,17 @@ def main() -> int:
     if args.repair_thumbnails:
         summary += f", {thumb_repaired} thumbnails repaired"
     print(summary)
+    if not args.dry_run and uploaded:
+        print(f"Thumbnails: {thumb_uploaded_count} uploaded, "
+              f"{thumb_missing_count} not on NAS, "
+              f"{thumb_unreadable_count} unreadable")
+        if missing_thumbs:
+            print("  unreadable thumbnails (asset still uploaded; rerun with "
+                  "--repair-thumbnails after fixing the source files):")
+            for n in missing_thumbs[:20]:
+                print(f"    - {n}")
+            if len(missing_thumbs) > 20:
+                print(f"    … and {len(missing_thumbs) - 20} more")
     if failures:
         print("\nFailures:")
         for n, why in failures:

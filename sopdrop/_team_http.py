@@ -266,14 +266,12 @@ def get_all_assets_cached() -> tuple[list[dict], dict]:
     for asset in assets:
         asset["collections"] = asset_to_colls.get(asset["id"], [])
 
-    # Stash result + ETag (from the first-page response, refetched once
-    # for revalidation); next call short-circuits if unchanged.
-    try:
-        first_page = _client().list_assets(limit=1, offset=0)
-        if first_page.etag:
-            _cache_put(cache_key, first_page.etag, (assets, coll_map))
-    except Exception:
-        pass  # cache is best-effort
+    # Stash result + ETag for next-call short-circuit. The first-page
+    # ETag is captured by list_all_assets and forwarded under
+    # _firstPageEtag, so we don't need a separate revalidation round-trip.
+    first_etag = body.get("_firstPageEtag")
+    if first_etag:
+        _cache_put(cache_key, first_etag, (assets, coll_map))
 
     return assets, coll_map
 

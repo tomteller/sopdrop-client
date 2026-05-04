@@ -2131,7 +2131,10 @@ class _HttpThumbnailDispatcher(QtCore.QObject):
     def __init__(self):
         super().__init__()
         self._pool = QtCore.QThreadPool()
-        self._pool.setMaxThreadCount(4)  # bounded: don't flood the LAN
+        # 8 keeps a fast LAN server's queue full without overwhelming
+        # cloud-mode users on residential uplinks. Each fetch is one
+        # short GET to /library/thumbnails/<uuid>.png.
+        self._pool.setMaxThreadCount(8)
         self._inflight = set()  # asset_ids currently being fetched
         self._inflight_lock = QtCore.QMutex()
         self.loaded.connect(self._on_loaded)  # auto-queued (cross-thread)
@@ -6692,12 +6695,20 @@ class LibraryPanel(QtWidgets.QWidget):
             self.team_btn.setEnabled(False)
             return
 
-        from sopdrop.config import get_active_library, get_team_library_path, get_team_info
+        from sopdrop.config import (
+            get_active_library,
+            get_team_library_path,
+            get_team_info,
+            get_team_library_mode,
+            get_team_slug,
+        )
 
         active = get_active_library()
         team_path = get_team_library_path()
         team_info = get_team_info()
-        has_team = team_path is not None
+        team_mode = get_team_library_mode()
+        team_slug = get_team_slug()
+        has_team = (team_path is not None) or (team_mode == "http" and bool(team_slug))
 
         active_style = f"""
             QPushButton {{
@@ -6739,13 +6750,13 @@ class LibraryPanel(QtWidgets.QWidget):
         is_team = (active == "team")
         self.team_btn.setChecked(is_team)
         self.team_btn.setEnabled(has_team)
-        if has_team and team_info:
-            team_name = team_info.get("name", "Team")
-            if len(team_name) > 10:
-                team_name = team_name[:9] + "…"
-            self.team_btn.setText(team_name)
+        if has_team:
+            display_name = (team_info or {}).get("name") or team_slug or "Team"
+            label = display_name if len(display_name) <= 10 else display_name[:9] + "…"
+            self.team_btn.setText(label)
             self.team_btn.setStyleSheet(active_style if is_team else inactive_style)
-            self.team_btn.setToolTip(f"{team_info.get('name', 'Team')}\n{team_path}")
+            tooltip_detail = team_path if team_mode == "nas" else f"on-prem ({team_slug})"
+            self.team_btn.setToolTip(f"{display_name}\n{tooltip_detail}")
         else:
             self.team_btn.setText("Team")
             self.team_btn.setStyleSheet(disabled_style)
@@ -6756,7 +6767,13 @@ class LibraryPanel(QtWidgets.QWidget):
         if not SOPDROP_AVAILABLE:
             return
 
-        from sopdrop.config import get_active_library, get_team_library_path, set_active_library
+        from sopdrop.config import (
+            get_active_library,
+            get_team_library_path,
+            set_active_library,
+            get_team_library_mode,
+            get_team_slug,
+        )
         from sopdrop.library import close_db
 
         current = get_active_library()
@@ -6765,12 +6782,22 @@ class LibraryPanel(QtWidgets.QWidget):
 
         if library_type == "team":
             team_path = get_team_library_path()
-            if not team_path:
-                hou.ui.displayMessage(
-                    "Team library not configured.\n\n"
-                    "Open Settings and set a Team Library Path first.",
-                    title="Sopdrop"
-                )
+            team_mode = get_team_library_mode()
+            team_slug = get_team_slug()
+            configured = (team_path is not None) or (team_mode == "http" and bool(team_slug))
+            if not configured:
+                if team_mode == "http":
+                    msg = (
+                        "Team library not configured.\n\n"
+                        "Open Settings, fetch teams from the server, "
+                        "and select one."
+                    )
+                else:
+                    msg = (
+                        "Team library not configured.\n\n"
+                        "Open Settings and set a Team Library Path first."
+                    )
+                hou.ui.displayMessage(msg, title="Sopdrop")
                 self._update_library_toggle()  # Reset toggle state
                 return
 

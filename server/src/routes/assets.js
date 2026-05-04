@@ -37,7 +37,7 @@ const router = Router();
 /**
  * Safely parse JSON with size limit to prevent DoS
  */
-function safeJSONParse(content, maxSize = 10 * 1024 * 1024) {
+function safeJSONParse(content, maxSize = 100 * 1024 * 1024) {
   if (!content || content.length > maxSize) {
     throw new ValidationError(`Content too large (max ${Math.round(maxSize / 1024 / 1024)}MB)`);
   }
