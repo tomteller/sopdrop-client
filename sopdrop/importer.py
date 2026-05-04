@@ -384,43 +384,31 @@ def _import_v2(
             if type_name:
                 try:
                     container_node = target_node.createNode(type_name)
-                    if container_node and container_node.isSubNetwork():
-                        # Custom HDAs (SOP Create LOP, custom subnet HDAs, etc.)
-                        # come back from createNode locked — their authored
-                        # children are part of the asset definition and can't
-                        # be destroyed or modified until we explicitly allow
-                        # editing of contents. Plain subnets aren't locked,
-                        # so we only do this for HDAs.
-                        is_hda = container_node.type().definition() is not None
-                        if is_hda:
-                            try:
-                                container_node.allowEditingOfContents()
-                            except hou.OperationFailed as e:
-                                print(f"[Sopdrop] Could not unlock HDA '{type_name}' for "
-                                      f"editing ({e}); loading flat into parent")
-                                container_node.destroy()
-                                container_node = None
-                        if container_node is not None:
-                            # Remove any default children the container brought
-                            # along so the saved package's items become the
-                            # canonical interior.
-                            for child in list(container_node.children()):
-                                try:
-                                    child.destroy()
-                                except hou.PermissionError:
-                                    # Should not happen after allowEditingOfContents,
-                                    # but a stubborn locked descendant shouldn't
-                                    # take the whole import down — skip it and
-                                    # let the saved items land alongside.
-                                    pass
-                            load_target = container_node
-                            print(f"[Sopdrop] Created container '{type_name}', loading children into it")
+                    is_hda = (container_node is not None
+                              and container_node.type().definition() is not None)
+                    if container_node and container_node.isSubNetwork() and not is_hda:
+                        # Plain subnet container — its default children
+                        # (subinput/suboutput) aren't locked, so we wipe
+                        # them and load the saved items in their place.
+                        for child in list(container_node.children()):
+                            child.destroy()
+                        load_target = container_node
+                        print(f"[Sopdrop] Created container '{type_name}', loading children into it")
                     else:
-                        # Not a subnet — can't load children into it, fall back
+                        # Custom HDA (SOP Create LOP, custom subnet HDAs, etc.)
+                        # OR a non-subnet — we can't safely insert children
+                        # into a locked HDA without either unlocking it
+                        # (mutates the user's scene asset) or knowing the
+                        # HDA's editable interior path (HDA-specific). Drop
+                        # the wrapper and load the saved items flat into
+                        # the parent network. Lossy but non-destructive.
                         if container_node:
                             container_node.destroy()
                             container_node = None
-                        print(f"[Sopdrop] Container type '{type_name}' is not a subnet, loading flat")
+                        msg = ("HDA wrapper" if is_hda else
+                               f"container '{type_name}' is not a subnet")
+                        print(f"[Sopdrop] {msg} — loading children flat into parent. "
+                              f"To preserve the wrapper, distribute the HDA itself.")
                 except hou.OperationFailed:
                     container_node = None
                     print(f"[Sopdrop] Could not create container '{type_name}' (type not available), loading flat")
@@ -804,32 +792,25 @@ def _import_v1(
         if type_name:
             try:
                 container_node = target_node.createNode(type_name)
-                if container_node and container_node.isSubNetwork():
-                    # Custom HDAs are locked at creation; unlock before
-                    # touching authored children. See _import_v2 for the
-                    # canonical version of this logic.
-                    is_hda = container_node.type().definition() is not None
-                    if is_hda:
-                        try:
-                            container_node.allowEditingOfContents()
-                        except hou.OperationFailed as e:
-                            print(f"[Sopdrop] Could not unlock HDA '{type_name}' for "
-                                  f"editing ({e}); loading flat into parent")
-                            container_node.destroy()
-                            container_node = None
-                    if container_node is not None:
-                        for child in list(container_node.children()):
-                            try:
-                                child.destroy()
-                            except hou.PermissionError:
-                                pass
-                        target_node = container_node
-                        print(f"[Sopdrop] Created container '{type_name}', loading children into it")
+                is_hda = (container_node is not None
+                          and container_node.type().definition() is not None)
+                if container_node and container_node.isSubNetwork() and not is_hda:
+                    # Plain subnet — safe to clear defaults and load.
+                    for child in list(container_node.children()):
+                        child.destroy()
+                    target_node = container_node
+                    print(f"[Sopdrop] Created container '{type_name}', loading children into it")
                 else:
+                    # Custom HDA or non-subnet — never unlock; fall back
+                    # to loading flat in the parent. See _import_v2 for
+                    # the canonical version of this rationale.
                     if container_node:
                         container_node.destroy()
                         container_node = None
-                    print(f"[Sopdrop] Container type '{type_name}' is not a subnet, loading flat")
+                    msg = ("HDA wrapper" if is_hda else
+                           f"container '{type_name}' is not a subnet")
+                    print(f"[Sopdrop] {msg} — loading children flat into parent. "
+                          f"To preserve the wrapper, distribute the HDA itself.")
             except hou.OperationFailed:
                 container_node = None
                 print(f"[Sopdrop] Could not create container '{type_name}' (type not available), loading flat")
