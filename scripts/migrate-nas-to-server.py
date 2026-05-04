@@ -20,6 +20,15 @@ Use --preserve-authorship to carry over the original `created_by`
 must have admin or owner role on the target server (the override is
 guarded server-side). Missing user accounts are auto-created with the
 same shape as trust-LAN auto-create (`<name>@lan.local`, no password).
+
+Use --team <slug> to associate uploaded assets with a team library so
+they show up in the panel's team view. Without it, uploads land in the
+authoring user's personal library.
+
+Use --repair-thumbnails to re-upload thumbnails for assets that already
+exist on the server. Useful for fixing migrations that ran before the
+thumbnail-MIME validation fix landed and left version.thumbnail_url
+NULL on the server.
 """
 
 from __future__ import annotations
@@ -31,6 +40,7 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 try:
     import requests
@@ -54,8 +64,10 @@ def parse_args() -> argparse.Namespace:
                    help="On-prem server URL, e.g. http://sopdrop.lan:4800")
     p.add_argument("--token", default=os.environ.get("SOPDROP_TOKEN"),
                    help="API token (or set SOPDROP_TOKEN env var). With --preserve-authorship the token must belong to an admin or owner.")
-    p.add_argument("--visibility", default="unlisted", choices=VALID_VISIBILITIES,
-                   help="Visibility for migrated assets (default: unlisted)")
+    p.add_argument("--visibility", default=None, choices=VALID_VISIBILITIES,
+                   help="Visibility for migrated assets. Default: 'public' when --team is set "
+                        "(trust-LAN team libraries have no meaningful 'unlisted' semantics — "
+                        "the LAN itself is the access boundary), 'unlisted' otherwise.")
     p.add_argument("--dry-run", action="store_true",
                    help="List what would be migrated, upload nothing")
     p.add_argument("--limit", type=int, default=0,
@@ -66,6 +78,14 @@ def parse_args() -> argparse.Namespace:
                    help="Carry created_by (NAS OS username) and created_at from the source DB. "
                         "Missing user accounts are auto-created on the server. Requires an "
                         "admin/owner token on the target server.")
+    p.add_argument("--team", default=None,
+                   help="Team slug to associate uploaded assets with. Required to make assets "
+                        "show up in a team library — without it, uploads land in the user's "
+                        "personal library and won't appear in the panel's team view.")
+    p.add_argument("--repair-thumbnails", action="store_true",
+                   help="When an asset already exists on the server (idempotent re-run), still "
+                        "try to upload its thumbnail via the /thumbnail endpoint. Useful for "
+                        "migrations that ran before the thumbnail-MIME fix landed.")
     return p.parse_args()
 
 
@@ -195,7 +215,8 @@ def parse_tags(raw: str | None) -> list[str]:
 
 def upload_one(server: str, token: str, asset: dict, assets_dir: Path,
                thumbs_dir: Path, visibility: str,
-               as_user: str | None, created_at: str | None) -> tuple[bool, str, bool]:
+               as_user: str | None, created_at: str | None,
+               team_slug: str | None) -> tuple[bool, str, bool]:
     """Upload one asset.
 
     Returns (ok, info, already_exists). already_exists=True means the
@@ -223,6 +244,11 @@ def upload_one(server: str, token: str, asset: dict, assets_dir: Path,
         fields["asUser"] = as_user
     if created_at:
         fields["createdAt"] = created_at
+    if team_slug:
+        # Server resolves teamSlug → team_id. Without it, the asset
+        # lands in the user's personal library and the team view in
+        # the panel won't see it (Bug 13).
+        fields["teamSlug"] = team_slug
 
     files = {"file": (file_name, open(file_path, "rb"))}
     thumb_name = asset.get("thumbnail_path")
@@ -337,6 +363,31 @@ def _post_with_429_backoff(url, *, headers, data, files, file_path, file_name,
     return r
 
 
+def patch_thumbnail(server: str, token: str, owner_username: str,
+                    asset_slug: str, thumb_path: Path) -> tuple[bool, str]:
+    """Re-upload a thumbnail for an existing asset via /thumbnail.
+
+    Returns (ok, info). Used during idempotent re-runs (--repair-thumbnails)
+    to fix migrations that ran before the thumbnail-MIME fix landed and
+    left version.thumbnail_url NULL.
+    """
+    if not thumb_path.is_file():
+        return False, f"thumb file missing: {thumb_path}"
+    thumb_mime = _detect_image_mime(thumb_path)
+    if not thumb_mime:
+        return False, "not an image"
+    url = f"{server}/api/v1/assets/{quote(owner_username, safe='')}/{quote(asset_slug, safe='')}/thumbnail"
+    files = {"thumbnail": (thumb_path.name, open(thumb_path, "rb"), thumb_mime)}
+    try:
+        r = requests.post(url, headers={"Authorization": f"Bearer {token}"},
+                          files=files, timeout=60)
+    finally:
+        files["thumbnail"][1].close()
+    if r.status_code >= 400:
+        return False, f"HTTP {r.status_code}: {r.text[:200]}"
+    return True, "ok"
+
+
 def main() -> int:
     args = parse_args()
     if not args.dry_run and not args.token:
@@ -347,11 +398,25 @@ def main() -> int:
     assets_dir = resolve_assets_dir(db_path)
     thumbs_dir = resolve_thumbnails_dir(db_path)
 
+    # Visibility default: 'public' when migrating into a team (trust-LAN
+    # deployments treat the LAN as the access boundary, and unlisted/
+    # private assets are unreadable through the trust-LAN download path),
+    # 'unlisted' otherwise (cloud/personal-library migrations).
+    if args.visibility is None:
+        args.visibility = "public" if args.team else "unlisted"
+
     print(f"NAS:    {db_path}")
     print(f"Server: {server}")
     print(f"Mode:   {'DRY RUN' if args.dry_run else 'LIVE'}")
+    print(f"Visibility: {args.visibility}")
     if args.preserve_authorship:
         print(f"Authorship: PRESERVE (created_by + created_at from source DB)")
+    if args.team:
+        print(f"Team:   {args.team} (assets will be associated with this team)")
+    else:
+        print(f"Team:   (none — assets land in personal libraries; pass --team <slug> for team library)")
+    if args.repair_thumbnails:
+        print(f"Repair: thumbnails will be re-uploaded for already-existing assets")
     print()
 
     rows = load_assets(db_path, args.include_deleted)
@@ -392,8 +457,32 @@ def main() -> int:
                 )
         return existing_per_user[username]
 
-    uploaded = skipped = failed = 0
+    uploaded = skipped = failed = thumb_repaired = 0
     failures: list[tuple[str, str]] = []
+
+    def maybe_repair_thumb(asset: dict, owner: str, slug: str, log_prefix: str):
+        """If --repair-thumbnails and the asset already exists, PATCH
+        its thumbnail via the dedicated endpoint. Lets a re-run after
+        the MIME-validation fix (Bug 11) backfill thumbnails for assets
+        uploaded by an older script that left thumbnail_url NULL."""
+        nonlocal thumb_repaired
+        if not args.repair_thumbnails:
+            return
+        thumb_name = asset.get("thumbnail_path")
+        if not thumb_name:
+            return
+        thumb_full = thumbs_dir / thumb_name
+        if not thumb_full.is_file():
+            return
+        try:
+            ok, info = patch_thumbnail(server, args.token, owner, slug, thumb_full)
+        except requests.RequestException as e:
+            ok, info = False, f"network: {e}"
+        if ok:
+            thumb_repaired += 1
+            print(f"  thumbnail repaired for {owner}/{slug}")
+        else:
+            print(f"  thumbnail repair failed for {owner}/{slug}: {info}", file=sys.stderr)
 
     for i, asset in enumerate(rows, 1):
         name = asset["name"]
@@ -421,6 +510,7 @@ def main() -> int:
         if owner_for_check and slug.lower() in existing_for(owner_for_check):
             print(f"{prefix} — already on server for {owner_for_check}, skip")
             skipped += 1
+            maybe_repair_thumb(asset, owner_for_check, slug, prefix)
             continue
 
         if args.dry_run:
@@ -430,6 +520,8 @@ def main() -> int:
             extra = ""
             if as_user or created_at:
                 extra = f" [as={as_user or token_username}, at={created_at or 'now'}]"
+            if args.team:
+                extra += f" [team={args.team}]"
             print(f"{prefix} — would upload ({file_name}, file: {present}){extra}")
             uploaded += 1
             continue
@@ -437,7 +529,7 @@ def main() -> int:
         try:
             ok, info, already = upload_one(
                 server, args.token, asset, assets_dir, thumbs_dir,
-                args.visibility, as_user, created_at,
+                args.visibility, as_user, created_at, args.team,
             )
         except requests.RequestException as e:
             ok, info, already = False, f"network: {e}", False
@@ -455,13 +547,17 @@ def main() -> int:
             skipped += 1
             existing_for(owner_for_check).add(slug.lower())
             print(f"{prefix} — already exists for {owner_for_check}, skip")
+            maybe_repair_thumb(asset, owner_for_check, slug, prefix)
         else:
             failed += 1
             failures.append((name, info))
             print(f"{prefix} — FAILED: {info}", file=sys.stderr)
 
     print()
-    print(f"Summary: {uploaded} uploaded, {skipped} skipped, {failed} failed")
+    summary = f"Summary: {uploaded} uploaded, {skipped} skipped, {failed} failed"
+    if args.repair_thumbnails:
+        summary += f", {thumb_repaired} thumbnails repaired"
+    print(summary)
     if failures:
         print("\nFailures:")
         for n, why in failures:

@@ -101,134 +101,155 @@ const rateLimitHandler = (req, res, options) => {
 const skipForAdmins = (req) =>
   req.user?.isAdmin === true || req.user?.role === 'owner' || req.user?.role === 'admin';
 
+// On-prem deployments with TRUST_LAN_AUTH=true want zero rate limiting
+// for traffic coming from authenticated workstations on the trusted
+// LAN. The presence of X-Sopdrop-User is the signal: in trust-LAN mode
+// the Houdini panel sets it on every request, and the server's auth
+// middleware uses it to identify the caller. Skipping the global
+// limiter here lets a busy team (5+ active artists browsing/pasting
+// from the team library) work normally instead of hitting 429s on
+// reads. Public-internet traffic (no header) is still throttled.
+//
+// Per-route limiters (uploadLimiter etc.) still apply via skipForAdmins
+// — write paths get tighter scrutiny than reads.
+const TRUST_LAN_AUTH = process.env.TRUST_LAN_AUTH === 'true';
+const skipForTrustLan = (req) =>
+  TRUST_LAN_AUTH && Boolean(req.headers['x-sopdrop-user']);
+
+// All limit values are env-configurable so on-prem operators can tune
+// for team size without forking. Defaults match the previous hard-coded
+// values; setting MAX=0 disables the limiter entirely.
+const intEnv = (name, fallback) => {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+};
+const RATE_LOGIN_MAX = intEnv('RATE_LOGIN_MAX', 5);
+const RATE_LOGIN_WINDOW_MS = intEnv('RATE_LOGIN_WINDOW_MS', 15 * 60 * 1000);
+const RATE_REGISTER_MAX = intEnv('RATE_REGISTER_MAX', 3);
+const RATE_REGISTER_WINDOW_MS = intEnv('RATE_REGISTER_WINDOW_MS', 60 * 60 * 1000);
+const RATE_OAUTH_MAX = intEnv('RATE_OAUTH_MAX', 15);
+const RATE_OAUTH_WINDOW_MS = intEnv('RATE_OAUTH_WINDOW_MS', 15 * 60 * 1000);
+const RATE_TOKEN_MAX = intEnv('RATE_TOKEN_MAX', 5);
+const RATE_TOKEN_WINDOW_MS = intEnv('RATE_TOKEN_WINDOW_MS', 60 * 60 * 1000);
+const RATE_UPLOAD_MAX = intEnv('RATE_UPLOAD_MAX', 10);
+const RATE_UPLOAD_WINDOW_MS = intEnv('RATE_UPLOAD_WINDOW_MS', 60 * 60 * 1000);
+const RATE_VERSION_MAX = intEnv('RATE_VERSION_MAX', 20);
+const RATE_VERSION_WINDOW_MS = intEnv('RATE_VERSION_WINDOW_MS', 60 * 60 * 1000);
+const RATE_DOWNLOAD_MAX = intEnv('RATE_DOWNLOAD_MAX', 60);
+const RATE_DOWNLOAD_WINDOW_MS = intEnv('RATE_DOWNLOAD_WINDOW_MS', 60 * 1000);
+const RATE_SHARE_MAX = intEnv('RATE_SHARE_MAX', 10);
+const RATE_SHARE_WINDOW_MS = intEnv('RATE_SHARE_WINDOW_MS', 60 * 60 * 1000);
+const RATE_PASSWORD_CHANGE_MAX = intEnv('RATE_PASSWORD_CHANGE_MAX', 3);
+const RATE_PASSWORD_CHANGE_WINDOW_MS = intEnv('RATE_PASSWORD_CHANGE_WINDOW_MS', 60 * 60 * 1000);
+const RATE_GENERAL_MAX = intEnv('RATE_GENERAL_MAX', 100);
+const RATE_GENERAL_WINDOW_MS = intEnv('RATE_GENERAL_WINDOW_MS', 60 * 1000);
+
+// Pass-through middleware for limiters configured to MAX=0 (disabled).
+// rateLimit({ max: 0 }) blocks all requests; we want the opposite —
+// "0 means don't limit at all" — so we substitute a no-op middleware.
+const noopMiddleware = (_req, _res, next) => next();
+
+// Helper that builds a rateLimit middleware OR returns a no-op when
+// the configured max is 0 (disabled by the operator).
+const buildLimiter = ({ windowMs, max, keyGenerator, skip }) =>
+  max === 0
+    ? noopMiddleware
+    : rateLimit({
+        windowMs,
+        max,
+        message: rateLimitMessage,
+        standardHeaders: true,
+        legacyHeaders: false,
+        handler: rateLimitHandler,
+        keyGenerator,
+        skip,
+        validate: false,
+      });
+
 // Login: Strict limit to prevent brute force
-export const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // 5 attempts
-  message: rateLimitMessage,
-  standardHeaders: true,
-  legacyHeaders: false,
-  handler: rateLimitHandler,
-  keyGenerator: (req) => req.ip, // Rate limit by IP
+export const loginLimiter = buildLimiter({
+  windowMs: RATE_LOGIN_WINDOW_MS,
+  max: RATE_LOGIN_MAX,
+  keyGenerator: (req) => req.ip,
   skip: skipForAdmins,
-  validate: false,
 });
 
 // Registration: Prevent mass account creation
-export const registerLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 3, // 3 accounts
-  message: rateLimitMessage,
-  standardHeaders: true,
-  legacyHeaders: false,
-  handler: rateLimitHandler,
+export const registerLimiter = buildLimiter({
+  windowMs: RATE_REGISTER_WINDOW_MS,
+  max: RATE_REGISTER_MAX,
   keyGenerator: (req) => req.ip,
   skip: skipForAdmins,
-  validate: false,
 });
 
 // OAuth: Handles both login and registration in one endpoint
-export const oauthLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 15, // 15 attempts (generous — OAuth callbacks are automated)
-  message: rateLimitMessage,
-  standardHeaders: true,
-  legacyHeaders: false,
-  handler: rateLimitHandler,
+export const oauthLimiter = buildLimiter({
+  windowMs: RATE_OAUTH_WINDOW_MS,
+  max: RATE_OAUTH_MAX,
   keyGenerator: (req) => req.ip,
   skip: skipForAdmins,
-  validate: false,
 });
 
 // Token generation: Prevent token farming
-export const tokenLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 5, // 5 tokens per hour
-  message: rateLimitMessage,
-  standardHeaders: true,
-  legacyHeaders: false,
-  handler: rateLimitHandler,
+export const tokenLimiter = buildLimiter({
+  windowMs: RATE_TOKEN_WINDOW_MS,
+  max: RATE_TOKEN_MAX,
   keyGenerator: (req) => req.user?.id || req.ip,
   skip: skipForAdmins,
-  validate: false,
 });
 
 // Asset upload: Prevent storage abuse
-export const uploadLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 10, // 10 uploads
-  message: rateLimitMessage,
-  standardHeaders: true,
-  legacyHeaders: false,
-  handler: rateLimitHandler,
+export const uploadLimiter = buildLimiter({
+  windowMs: RATE_UPLOAD_WINDOW_MS,
+  max: RATE_UPLOAD_MAX,
   keyGenerator: (req) => req.user?.id || req.ip,
   skip: skipForAdmins,
-  validate: false,
 });
 
 // Version publish: Allow more than new assets
-export const versionLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 20, // 20 versions
-  message: rateLimitMessage,
-  standardHeaders: true,
-  legacyHeaders: false,
-  handler: rateLimitHandler,
+export const versionLimiter = buildLimiter({
+  windowMs: RATE_VERSION_WINDOW_MS,
+  max: RATE_VERSION_MAX,
   keyGenerator: (req) => req.user?.id || req.ip,
   skip: skipForAdmins,
-  validate: false,
 });
 
-// Downloads: Prevent scraping
-export const downloadLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 60, // 60 downloads per minute
-  message: rateLimitMessage,
-  standardHeaders: true,
-  legacyHeaders: false,
-  handler: rateLimitHandler,
+// Downloads: Prevent scraping. Trust-LAN clients (Houdini panel
+// browsing/pasting from the team library) skip this entirely —
+// reads aren't an abuse vector on a trusted internal LAN.
+export const downloadLimiter = buildLimiter({
+  windowMs: RATE_DOWNLOAD_WINDOW_MS,
+  max: RATE_DOWNLOAD_MAX,
   keyGenerator: (req) => req.ip,
-  skip: skipForAdmins,
-  validate: false,
+  skip: (req) => skipForAdmins(req) || skipForTrustLan(req),
 });
 
 // Temporary shares: Prevent abuse
-export const shareLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 10, // 10 shares
-  message: rateLimitMessage,
-  standardHeaders: true,
-  legacyHeaders: false,
-  handler: rateLimitHandler,
+export const shareLimiter = buildLimiter({
+  windowMs: RATE_SHARE_WINDOW_MS,
+  max: RATE_SHARE_MAX,
   keyGenerator: (req) => req.user?.id || req.ip,
   skip: skipForAdmins,
-  validate: false,
 });
 
 // Password change: Prevent abuse after account compromise
-export const passwordChangeLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 3, // 3 changes per hour
-  message: rateLimitMessage,
-  standardHeaders: true,
-  legacyHeaders: false,
-  handler: rateLimitHandler,
+export const passwordChangeLimiter = buildLimiter({
+  windowMs: RATE_PASSWORD_CHANGE_WINDOW_MS,
+  max: RATE_PASSWORD_CHANGE_MAX,
   keyGenerator: (req) => req.user?.id || req.ip,
   skip: skipForAdmins,
-  validate: false,
 });
 
-// General API: Fallback limit
-export const generalLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 100, // 100 requests
-  message: rateLimitMessage,
-  standardHeaders: true,
-  legacyHeaders: false,
-  handler: rateLimitHandler,
+// General API: Fallback limit applied app-wide. Skipped for trust-LAN
+// requests so a busy team (5+ artists pasting from the team library)
+// doesn't hit 429s on reads. Public-internet traffic still throttled.
+export const generalLimiter = buildLimiter({
+  windowMs: RATE_GENERAL_WINDOW_MS,
+  max: RATE_GENERAL_MAX,
   keyGenerator: (req) => req.ip,
-  skip: skipForAdmins,
-  validate: false,
+  skip: (req) => skipForAdmins(req) || skipForTrustLan(req),
 });
 
 // ============================================

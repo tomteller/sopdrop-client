@@ -200,18 +200,28 @@ export SOPDROP_TOKEN=sdrop_...
 python3 scripts/migrate-nas-to-server.py \
     --nas /Volumes/team/library \
     --server http://sopdrop.lan:4800 \
+    --team my-team \
     --dry-run
 
-# 3. Real run, preserving each asset's original author + created_at
+# 3. Real run, into your team library, preserving each asset's
+#    original author + created_at. Defaults to --visibility public —
+#    on a trust-LAN deployment the LAN itself is the access boundary,
+#    and the trust-LAN download path can't read unlisted/private
+#    assets, so 'public' is the only working visibility for team
+#    library content here.
 python3 scripts/migrate-nas-to-server.py \
     --nas /Volumes/team/library \
     --server http://sopdrop.lan:4800 \
-    --visibility unlisted \
+    --team my-team \
     --preserve-authorship
 ```
 
 The script is idempotent — re-running skips assets already on the server
 (matched per-owner: `(owner_username, slug)`). Safe to interrupt and resume.
+
+`--team <slug>` sets `team_id` on every uploaded asset so the panel's
+team library view actually shows them. Without it, assets land in the
+authoring user's personal library only.
 
 `--preserve-authorship` reads `created_by` (Windows OS username) and
 `created_at` from the NAS SQLite library and passes them through to the
@@ -220,6 +230,12 @@ auto-created with the same shape as trust-LAN auto-create (`<name>@lan.local`,
 no password). Without the flag, every asset is owned by the token user
 with `created_at = now()` — fine for a single-author library, but
 collapses studio authorship history.
+
+`--repair-thumbnails` re-uploads thumbnails for already-existing assets
+via the dedicated `/thumbnail` endpoint. Use this on a re-run after
+upgrading to a server build that includes the thumbnail-MIME validation
+fix, to backfill `versions.thumbnail_url` for assets that uploaded
+without thumbnails before.
 
 ### Manual admin promotion (only if first-user auto-promote didn't catch you)
 

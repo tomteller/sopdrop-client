@@ -215,6 +215,55 @@ export async function promoteIfFirstUser(userId) {
 }
 
 /**
+ * Best-effort trust-LAN auth from the request's X-Sopdrop-User header.
+ *
+ * Returns one of:
+ *   { user: <reqUser> }              — authenticated as a trust-LAN user
+ *   { error: <AuthError|Forbidden> } — header was provided but invalid/banned
+ *   null                              — trust-LAN doesn't apply (off, or no header)
+ *
+ * Used by both authenticate() (where missing/invalid is a hard error)
+ * and optionalAuth() (where it's a soft fallback). Without this, a
+ * trust-LAN client downloading an unlisted/private asset gets dropped
+ * to anonymous by optionalAuth and the read fails as if the asset
+ * didn't exist.
+ */
+export async function tryTrustLanAuth(req) {
+  if (!TRUST_LAN_AUTH) return null;
+  const raw = req.headers['x-sopdrop-user'];
+  if (!raw) return null;
+  const username = sanitizeLanUsername(raw);
+  if (!username) {
+    return {
+      error: new AuthError(
+        'Trust-LAN mode is on but X-Sopdrop-User header is invalid'
+      ),
+    };
+  }
+  try {
+    const user = await findOrCreateLanUser(username);
+    if (user.status === 'banned') {
+      return { error: new ForbiddenError('Account has been banned') };
+    }
+    await ensureTrustLanDefaultMembership(user.id);
+    return {
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        isAdmin: user.is_admin,
+        role: user.role || 'user',
+        status: user.status || 'active',
+        scopes: ['read', 'write'],
+        authType: 'lan_trust',
+      },
+    };
+  } catch (err) {
+    return { error: new AuthError(`Trust-LAN auth failed: ${err.message}`) };
+  }
+}
+
+/**
  * Authentication middleware
  *
  * Supports both JWT tokens and API tokens (sdrop_xxx format).
@@ -226,35 +275,17 @@ export async function authenticate(req, res, next) {
 
   // Trust-LAN fallback when no Bearer token is present.
   if (!authHeader && TRUST_LAN_AUTH) {
-    const username = sanitizeLanUsername(req.headers['x-sopdrop-user']);
-    if (!username) {
+    const result = await tryTrustLanAuth(req);
+    if (!result) {
+      // TRUST_LAN_AUTH is on but no X-Sopdrop-User header — surface
+      // the same actionable error the previous implementation did.
       return next(new AuthError(
         'Trust-LAN mode is on but X-Sopdrop-User header is missing or invalid'
       ));
     }
-    try {
-      const user = await findOrCreateLanUser(username);
-      if (user.status === 'banned') {
-        return next(new ForbiddenError('Account has been banned'));
-      }
-      // Auto-add to the configured default team (no-op if env unset or
-      // user is already a member). Covers both new users on first sight
-      // and pre-existing users who haven't been added yet.
-      await ensureTrustLanDefaultMembership(user.id);
-      req.user = {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        isAdmin: user.is_admin,
-        role: user.role || 'user',
-        status: user.status || 'active',
-        scopes: ['read', 'write'],
-        authType: 'lan_trust',
-      };
-      return next();
-    } catch (err) {
-      return next(new AuthError(`Trust-LAN auth failed: ${err.message}`));
-    }
+    if (result.error) return next(result.error);
+    req.user = result.user;
+    return next();
   }
 
   if (!authHeader) {
@@ -380,20 +411,38 @@ export async function authenticate(req, res, next) {
 }
 
 /**
- * Optional authentication - sets req.user if token provided, continues otherwise
+ * Optional authentication — sets req.user if a token (or trust-LAN
+ * identity) is provided, continues anonymous otherwise.
+ *
+ * Honors trust-LAN: when TRUST_LAN_AUTH=true and the request carries
+ * X-Sopdrop-User, attempt the same auto-create lookup that authenticate
+ * does. Without this, trust-LAN clients hitting routes that use
+ * optionalAuth (asset detail, download) get dropped to anonymous and
+ * any non-public asset returns 404 Not Found from canReadAsset.
  */
 export async function optionalAuth(req, res, next) {
   const authHeader = req.headers.authorization;
 
   if (!authHeader) {
-    req.user = null;
+    // No Bearer token. Try trust-LAN before giving up.
+    const lan = await tryTrustLanAuth(req);
+    if (lan && lan.user) {
+      req.user = lan.user;
+    } else {
+      // Either trust-LAN is off, no header was supplied, or the header
+      // was invalid. In all cases optionalAuth's contract is "stay
+      // anonymous on failure" — log invalid headers for visibility.
+      if (lan && lan.error) {
+        console.warn(`[optionalAuth] Trust-LAN auth failed: ${lan.error.message} (IP: ${req.ip}, path: ${req.originalUrl})`);
+      }
+      req.user = null;
+    }
     return next();
   }
 
-  // Use the regular authenticate, but catch errors
+  // Bearer token present — defer to authenticate, treat errors as anonymous.
   authenticate(req, res, (err) => {
     if (err) {
-      // If auth fails, just continue without user — but log for monitoring
       console.warn(`[optionalAuth] Token validation failed: ${err.message} (IP: ${req.ip}, path: ${req.originalUrl})`);
       req.user = null;
     }
