@@ -7343,30 +7343,30 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         self._screenshots = []  # List of QImage objects
         self._selected_icon = None  # Houdini icon name
 
-        # Check if this is an HDA
+        # Check if this is an HDA. We have two save modes:
+        #   - "binary HDA" (.hda file): for asset-style HDAs the user
+        #     wants to redistribute as a standalone definition.
+        #   - "node package" (CPIO via V2 export): the standard path.
+        #     A custom HDA selected as a node — even a container like
+        #     SOP Create LOP with authored children inside — is just a
+        #     node, and CPIO captures it cleanly (the HDA's interior is
+        #     part of its type definition, not the package). Import
+        #     recreates the same locked HDA via loadItemsFromFile().
+        #
+        # We used to unwrap container HDAs into their children at save
+        # time and recreate the wrapper at import. That hack predates V2
+        # and broke for locked HDAs. With CPIO, no unwrap is needed.
+        # Container_hda metadata is no longer written by new saves;
+        # the importer keeps a back-compat fallback for old packages.
         self.hda_info = None
         self.is_hda = False
-        self.container_hda = None  # Set when saving contents of a container HDA
+        self.container_hda = None
         if SOPDROP_AVAILABLE and len(self.nodes) == 1:
             try:
                 from sopdrop.export import detect_publishable_hda
                 self.hda_info = detect_publishable_hda(self.nodes)
                 if self.hda_info is not None:
-                    node = self.nodes[0]
-                    # If the HDA is a container (subnet-like, e.g. SOP Create)
-                    # with children inside, save the children as a node package
-                    # but keep the HDA info as metadata so we know the container type.
-                    if node.isSubNetwork() and node.children():
-                        all_items = list(node.allItems())
-                        self.items = all_items
-                        self.nodes = [i for i in all_items if isinstance(i, hou.Node)]
-                        # Keep hda_info for metadata but don't treat as HDA binary save
-                        self.container_hda = self.hda_info
-                        self.hda_info = None
-                        self.is_hda = False
-                        print(f"[Sopdrop] Container HDA '{self.container_hda.get('type_name', '?')}' with {len(self.nodes)} child nodes — saving contents")
-                    else:
-                        self.is_hda = True
+                    self.is_hda = True
             except Exception as e:
                 print(f"[Sopdrop] HDA detection error: {e}")
 

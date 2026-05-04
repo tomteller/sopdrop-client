@@ -291,6 +291,13 @@ router.get('/:slug/library/collections', authenticate, requireTeamMember, async 
       [req.team.id]
     );
 
+    // The panel renders the folder tree by matching child.parentId
+    // against parent.id (UUID). The DB stores parent_id as the integer
+    // FK to user_folders.id, so we translate to the parent's UUID
+    // before sending. Integer kept as parentDbId for back-compat.
+    const idToUuid = new Map();
+    for (const row of result.rows) idToUuid.set(row.id, row.folder_id);
+
     res.json({
       collections: result.rows.map(c => ({
         id: c.folder_id,
@@ -300,7 +307,8 @@ router.get('/:slug/library/collections', authenticate, requireTeamMember, async 
         description: c.description,
         color: c.color,
         icon: c.icon,
-        parentId: c.parent_id,
+        parentId: c.parent_id == null ? null : (idToUuid.get(c.parent_id) || null),
+        parentDbId: c.parent_id,
         position: c.position,
         assetCount: c.asset_count,
         createdAt: c.created_at,
@@ -457,13 +465,15 @@ router.post('/:slug/library/collections', authenticate, requireTeamMember, async
     const folderSlug = slugifyName(name);
 
     let parentId = null;
+    let parentUuid = null;
     if (parentSlug) {
       const p = await query(
-        'SELECT id FROM user_folders WHERE team_id = $1 AND slug = $2',
+        'SELECT id, folder_id FROM user_folders WHERE team_id = $1 AND slug = $2',
         [req.team.id, parentSlug]
       );
       if (p.rows.length === 0) throw new NotFoundError('Parent folder not found');
       parentId = p.rows[0].id;
+      parentUuid = p.rows[0].folder_id;
     }
 
     let result;
@@ -487,7 +497,8 @@ router.post('/:slug/library/collections', authenticate, requireTeamMember, async
       description: f.description,
       color: f.color,
       icon: f.icon,
-      parentId: f.parent_id,
+      parentId: parentUuid,
+      parentDbId: f.parent_id,
       position: f.position,
       assetCount: 0,
       createdAt: f.created_at,
@@ -558,10 +569,24 @@ router.put('/:slug/library/collections/:folderId', authenticate, requireTeamMemb
     );
     if (result.rows.length === 0) throw new NotFoundError('Folder not found');
     const f = result.rows[0];
+
+    // Translate the updated parent_id (integer FK) → parent's UUID so
+    // the panel's tree-building (which matches child.parentId against
+    // parent.id) sees a usable value.
+    let parentUuid = null;
+    if (f.parent_id != null) {
+      const pp = await query(
+        'SELECT folder_id FROM user_folders WHERE id = $1',
+        [f.parent_id]
+      );
+      if (pp.rows.length > 0) parentUuid = pp.rows[0].folder_id;
+    }
+
     res.json({
       id: f.folder_id, dbId: f.id, name: f.name, slug: f.slug,
       description: f.description, color: f.color, icon: f.icon,
-      parentId: f.parent_id, position: f.position,
+      parentId: parentUuid, parentDbId: f.parent_id,
+      position: f.position,
       assetCount: f.asset_count,
       createdAt: f.created_at, updatedAt: f.updated_at,
     });

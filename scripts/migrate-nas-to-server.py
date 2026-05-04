@@ -376,7 +376,7 @@ def migrate_collections_to_team_folders(
     existing = {} if dry_run else {f["slug"]: f for f in fetch_team_folders(server, token, team_slug)}
 
     nas_to_slug: dict[str, str] = {}
-    nas_to_db_id: dict[str, int] = {}  # for parent-mismatch checks on reuse
+    nas_to_uuid: dict[str, str] = {}  # NAS coll id → server folder UUID (for parent compare)
     created = 0
     reused = 0
     repaired = 0
@@ -389,30 +389,30 @@ def migrate_collections_to_team_folders(
             continue
         target_slug = slugify(name)
 
-        # Resolve parent slug + dbId if any.
+        # Resolve parent slug + UUID if any. The server returns parentId
+        # as the parent's UUID (`id` field), so we compare in UUID space.
         parent_slug = None
-        expected_parent_db_id = None
+        expected_parent_uuid = None
         parent_id = coll.get("parent_id")
         if parent_id and parent_id in nas_to_slug:
             parent_slug = nas_to_slug[parent_id]
-            expected_parent_db_id = nas_to_db_id.get(parent_id)
+            expected_parent_uuid = nas_to_uuid.get(parent_id)
 
         if target_slug in existing:
             nas_to_slug[cid] = target_slug
             existing_folder = existing[target_slug]
-            db_id = existing_folder.get("dbId")
-            if db_id is not None:
-                nas_to_db_id[cid] = db_id
+            folder_uuid = existing_folder.get("id")
+            if folder_uuid:
+                nas_to_uuid[cid] = folder_uuid
             reused += 1
             # Hierarchy repair: prior run may have created this folder
             # as a root (or under the wrong parent). PATCH if mismatched.
-            current_parent = existing_folder.get("parentId")
-            if not dry_run and current_parent != expected_parent_db_id:
-                folder_uuid = existing_folder.get("id")
+            current_parent = existing_folder.get("parentId")  # UUID or None
+            if not dry_run and current_parent != expected_parent_uuid:
                 if folder_uuid and update_team_folder_parent(
                     server, token, team_slug, folder_uuid, parent_slug,
                 ):
-                    existing_folder["parentId"] = expected_parent_db_id
+                    existing_folder["parentId"] = expected_parent_uuid
                     repaired += 1
                     where = f"under '{parent_slug}'" if parent_slug else "as a root"
                     print(f"  fixed parent of existing folder '{target_slug}' → {where}")
@@ -433,8 +433,8 @@ def migrate_collections_to_team_folders(
         )
         if new_folder:
             nas_to_slug[cid] = new_folder.get("slug") or target_slug
-            if new_folder.get("dbId") is not None:
-                nas_to_db_id[cid] = new_folder["dbId"]
+            if new_folder.get("id"):
+                nas_to_uuid[cid] = new_folder["id"]
             existing[nas_to_slug[cid]] = new_folder
             created += 1
         else:
@@ -443,8 +443,8 @@ def migrate_collections_to_team_folders(
             for f in fetch_team_folders(server, token, team_slug):
                 if f["slug"] == target_slug:
                     nas_to_slug[cid] = target_slug
-                    if f.get("dbId") is not None:
-                        nas_to_db_id[cid] = f["dbId"]
+                    if f.get("id"):
+                        nas_to_uuid[cid] = f["id"]
                     existing[target_slug] = f
                     reused += 1
                     break
