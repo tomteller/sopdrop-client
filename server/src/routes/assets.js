@@ -1096,7 +1096,11 @@ router.post('/upload', authenticate, requireScope('write'), requireVerifiedEmail
     }
 
     // Get folder ID if provided. Folders can be either user-scoped or
-    // team-scoped — match accordingly.
+    // team-scoped — match accordingly. We used to silently null this
+    // out when the lookup missed, which let a typo in folderSlug land
+    // assets in the root with no error surfaced to the caller (caused
+    // migration to look like it succeeded but assets weren't placed).
+    // Now: a provided-but-unresolvable folderSlug is a hard error.
     let folderId = null;
     if (folderSlug) {
       const folderResult = teamId
@@ -1108,9 +1112,13 @@ router.post('/upload', authenticate, requireScope('write'), requireVerifiedEmail
             'SELECT id FROM user_folders WHERE user_id = $1 AND slug = $2',
             [req.user.id, folderSlug]
           );
-      if (folderResult.rows.length > 0) {
-        folderId = folderResult.rows[0].id;
+      if (folderResult.rows.length === 0) {
+        const scope = teamId ? `team '${teamSlug}'` : 'this user';
+        throw new NotFoundError(
+          `Folder '${folderSlug}' not found in ${scope}`
+        );
       }
+      folderId = folderResult.rows[0].id;
     }
 
     // Determine is_public from visibility for backwards compat. Team

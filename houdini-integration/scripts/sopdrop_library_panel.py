@@ -3665,8 +3665,15 @@ class AssetGridWidget(QtWidgets.QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        # Trigger initial lazy load after layout is computed
+        # Trigger initial lazy load after layout is computed. The
+        # singleShot(0) catches the case where layout completed in this
+        # same event-loop tick; the 100ms follow-up catches the more
+        # common case where the grid's first geometry pass hasn't run
+        # yet (cards still report (0,0)/zero-size, so the visibility
+        # check would skip every card and no thumbnails would load
+        # until the user typed a filter character or refreshed).
         QtCore.QTimer.singleShot(0, self._lazy_load_visible)
+        QtCore.QTimer.singleShot(100, self._lazy_load_visible)
 
     def set_loading(self, loading):
         """Show or hide the loading indicator."""
@@ -3806,8 +3813,10 @@ class AssetGridWidget(QtWidgets.QWidget):
         # Re-enable painting — single
         self.grid_widget.setUpdatesEnabled(True)
 
-        # Trigger lazy loading for visible cards
+        # Trigger lazy loading for visible cards. See showEvent() for
+        # why we fire twice (initial layout pass timing).
         QtCore.QTimer.singleShot(0, self._lazy_load_visible)
+        QtCore.QTimer.singleShot(100, self._lazy_load_visible)
 
     def _clear_grid(self):
         """Remove all widgets from the grid layout."""
@@ -3965,8 +3974,10 @@ class AssetGridWidget(QtWidgets.QWidget):
         # Re-enable painting
         self.grid_widget.setUpdatesEnabled(True)
 
-        # Trigger lazy loading for initially visible cards
+        # Trigger lazy loading for initially visible cards. See showEvent()
+        # for why we fire twice (initial layout pass timing).
         QtCore.QTimer.singleShot(0, self._lazy_load_visible)
+        QtCore.QTimer.singleShot(100, self._lazy_load_visible)
 
     def _on_card_clicked(self, asset):
         """Handle card click - emit asset_selected signal with multi-select support."""

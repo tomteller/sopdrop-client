@@ -382,9 +382,14 @@ def get_collection_tree() -> list[dict]:
 
 
 def get_collection(collection_id: str) -> dict | None:
-    for c in (list_collections() or []):
-        if c["id"] == collection_id:
-            return c
+    # list_collections() defaults to parent_id=None which filters to
+    # ROOT folders only; nested folders need the unfiltered set so we
+    # can resolve any UUID, not just top-level ones. This is what the
+    # filter-chip / breadcrumb paths in the panel rely on for naming.
+    body = _list_collections_body()
+    for c in body.get("collections", []):
+        if c.get("id") == collection_id:
+            return _collection_from_http(c)
     return None
 
 
