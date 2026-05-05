@@ -2195,7 +2195,10 @@ class _HttpThumbnailDispatcher(QtCore.QObject):
                     panel.objectName()  # liveness check
                 except RuntimeError:
                     continue
-                grid = getattr(panel, 'grid', None)
+                # Panel attribute is asset_grid (not 'grid' — that was a
+                # silent typo that made every cold-load thumbnail fetch
+                # succeed, cache the bytes, then never repaint the card).
+                grid = getattr(panel, 'asset_grid', None) or getattr(panel, 'grid', None)
                 if not grid:
                     continue
                 for card in grid.findChildren(AssetCardWidget):
@@ -11174,6 +11177,26 @@ class AssetDetailDialog(QtWidgets.QDialog):
         layout.addLayout(btn_bar)
 
     def _load_thumbnail(self):
+        # HTTP team mode: thumbnail comes from a URL. Reuse the disk-LRU
+        # cache the panel grid uses so we render the same preview the
+        # user just saw on the card.
+        thumb_url = self.asset.get('_thumbnail_url')
+        if thumb_url:
+            try:
+                from sopdrop.thumbnail_cache import get_default_cache
+                data = get_default_cache().fetch(thumb_url)
+                if data:
+                    pixmap = QtGui.QPixmap()
+                    if pixmap.loadFromData(data) and not pixmap.isNull():
+                        scaled = pixmap.scaled(
+                            400, 190, QtCore.Qt.KeepAspectRatio,
+                            QtCore.Qt.SmoothTransformation
+                        )
+                        self.thumb_label.setPixmap(scaled)
+                        return
+            except Exception:
+                pass
+
         thumb_path_str = self.asset.get('thumbnail_path')
         if thumb_path_str and SOPDROP_AVAILABLE:
             try:
