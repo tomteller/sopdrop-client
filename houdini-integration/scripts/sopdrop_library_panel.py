@@ -2185,9 +2185,15 @@ class _HttpThumbnailDispatcher(QtCore.QObject):
         except Exception:
             return
         # Reset _thumb_loaded on every live card with this id and re-trigger
-        # its display path. Cards are tracked weakly via the active panel.
+        # its display path. _active_panels is a MODULE-level global (see
+        # the try/NameError block at the bottom of this file) — it lives
+        # on the module, not on the LibraryPanel class. The previous
+        # `LibraryPanel._active_panels` lookup raised AttributeError on
+        # every fetch, which the outer except swallowed, leaving cached
+        # bytes that the cards on screen never knew to repaint.
         try:
-            for panel_ref in list(LibraryPanel._active_panels):
+            panel_refs = list(globals().get('_active_panels', []) or [])
+            for panel_ref in panel_refs:
                 panel = panel_ref()
                 if panel is None:
                     continue
@@ -2195,9 +2201,6 @@ class _HttpThumbnailDispatcher(QtCore.QObject):
                     panel.objectName()  # liveness check
                 except RuntimeError:
                     continue
-                # Panel attribute is asset_grid (not 'grid' — that was a
-                # silent typo that made every cold-load thumbnail fetch
-                # succeed, cache the bytes, then never repaint the card).
                 grid = getattr(panel, 'asset_grid', None) or getattr(panel, 'grid', None)
                 if not grid:
                     continue
@@ -2209,8 +2212,8 @@ class _HttpThumbnailDispatcher(QtCore.QObject):
                     if card.asset.get('id') == asset_id:
                         card._thumb_loaded = False
                         card.lazy_load_thumbnail()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[Sopdrop] thumbnail repaint dispatch failed: {e}")
 
 
 class _HttpThumbnailRunnable(QtCore.QRunnable):
