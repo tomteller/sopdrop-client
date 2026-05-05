@@ -164,8 +164,10 @@ def _asset_from_http(a: dict) -> dict:
         "hda_type_label": metadata.get("hdaTypeLabel"),
         "hda_version": metadata.get("hdaVersion"),
         "hda_category": metadata.get("hdaCategory"),
-        # Icon: server doesn't expose it directly; pull from metadata
-        "icon": metadata.get("icon"),
+        # Houdini icon name (e.g. 'SOP_scatter'). Server returns it as
+        # a top-level field on the asset; legacy packages may have it
+        # tucked inside metadata, so fall back there.
+        "icon": a.get("icon") or metadata.get("icon"),
         # Timestamps + use tracking
         "created_at": a.get("createdAt"),
         "updated_at": a.get("updatedAt"),
@@ -491,6 +493,29 @@ def update_collection(collection_id: str, **fields) -> dict | None:
             server_fields[k] = fields[k]
     if "sort_order" in fields:
         server_fields["position"] = fields["sort_order"]
+    # Reparent (drag-drop in the panel sidebar). The panel passes
+    # parent_id as the new parent's UUID (or None to make it a root);
+    # the server PUT endpoint expects parentSlug, so resolve UUID→slug
+    # via the cached collection list. parent_id explicitly None clears
+    # the parent.
+    if "parent_id" in fields:
+        new_parent_uuid = fields["parent_id"]
+        if new_parent_uuid in (None, ""):
+            server_fields["parentSlug"] = None
+        else:
+            body = _list_collections_body()
+            parent_slug = None
+            for c in body.get("collections", []):
+                if c.get("id") == new_parent_uuid:
+                    parent_slug = c.get("slug")
+                    break
+            if parent_slug is None:
+                # Unknown parent UUID — surface rather than silently
+                # leaving the folder where it was.
+                raise SopdropError(
+                    f"Cannot move collection: parent '{new_parent_uuid}' not found"
+                )
+            server_fields["parentSlug"] = parent_slug
     if not server_fields:
         return get_collection(collection_id)
     f = _client().update_collection(collection_id, **server_fields)

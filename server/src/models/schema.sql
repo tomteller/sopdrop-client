@@ -1261,3 +1261,17 @@ END $$;
 
 CREATE INDEX IF NOT EXISTS idx_assets_team ON assets(team_id) WHERE team_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_user_folders_team ON user_folders(team_id) WHERE team_id IS NOT NULL;
+
+-- Houdini icon name (e.g. 'SOP_scatter') for display in the panel and
+-- TAB menu. Per-asset, set at publish time. NAS migrations carry it
+-- over from the legacy library_assets.icon column; non-migrated
+-- packages can leave it null.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'assets' AND column_name = 'icon'
+  ) THEN
+    ALTER TABLE assets ADD COLUMN icon VARCHAR(64);
+  END IF;
+END $$;

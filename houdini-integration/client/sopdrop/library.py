@@ -1869,6 +1869,12 @@ def _increment_version(version_str: str) -> str:
 
 def get_asset_versions(asset_id: str) -> List[Dict[str, Any]]:
     """Get version history for an asset."""
+    if _http_mode():
+        # HTTP team mode has no local SQLite; the server doesn't track
+        # per-asset version history yet (single latest_version_id only).
+        # Return an empty list rather than crashing in get_db() — the
+        # AssetDetailDialog handles an empty version list cleanly.
+        return []
     db = get_db()
     rows = db.execute(
         "SELECT * FROM asset_versions WHERE asset_id = ? ORDER BY created_at DESC",
@@ -1879,6 +1885,12 @@ def get_asset_versions(asset_id: str) -> List[Dict[str, Any]]:
 
 def load_version_package(version_id: str) -> Optional[Dict[str, Any]]:
     """Load the package data for a specific version."""
+    if _http_mode():
+        # HTTP team mode keeps no per-version archive client-side.
+        # AssetDetailDialog only calls this when the user picks a
+        # historical version; with empty version history (above) this
+        # path won't be reached.
+        return None
     db = get_db()
     row = db.execute("SELECT * FROM asset_versions WHERE id = ?", (version_id,)).fetchone()
     if not row:

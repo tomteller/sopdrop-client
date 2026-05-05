@@ -978,7 +978,13 @@ router.post('/upload', authenticate, requireScope('write'), requireVerifiedEmail
       teamSlug,
       asUser,
       createdAt: rawCreatedAt,
+      icon: rawIcon,
     } = req.body;
+
+    // Houdini icon name (e.g. 'SOP_scatter'). Length-bound to the
+    // schema column; characters left as-is (HOM accepts the same set
+    // panel-side, no need to over-sanitize).
+    const icon = rawIcon ? String(rawIcon).slice(0, 64) : null;
 
     // Authorship overrides — only admins / site owners may override
     // owner_id and created_at, e.g. when migrating a legacy library
@@ -1143,10 +1149,10 @@ router.post('/upload', authenticate, requireScope('write'), requireVerifiedEmail
             name, slug, owner_id, team_id, asset_type, houdini_context,
             description, readme, license,
             min_houdini_version, max_houdini_version,
-            tags, is_public, visibility, folder_id, latest_version,
+            tags, is_public, visibility, folder_id, icon, latest_version,
             created_at, updated_at
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, '1.0.0', $16, $16)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '1.0.0', $17, $17)
           RETURNING *
         `, [
           name,
@@ -1164,6 +1170,7 @@ router.post('/upload', authenticate, requireScope('write'), requireVerifiedEmail
           isPublic,
           finalVisibility,
           folderId,
+          icon,
           effectiveCreatedAt,
         ])
       : await client.query(`
@@ -1171,9 +1178,9 @@ router.post('/upload', authenticate, requireScope('write'), requireVerifiedEmail
             name, slug, owner_id, team_id, asset_type, houdini_context,
             description, readme, license,
             min_houdini_version, max_houdini_version,
-            tags, is_public, visibility, folder_id, latest_version
+            tags, is_public, visibility, folder_id, icon, latest_version
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, '1.0.0')
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '1.0.0')
           RETURNING *
         `, [
           name,
@@ -1191,6 +1198,7 @@ router.post('/upload', authenticate, requireScope('write'), requireVerifiedEmail
           isPublic,
           finalVisibility,
           folderId,
+          icon,
         ]);
 
     const asset = assetResult.rows[0];
@@ -1560,6 +1568,11 @@ router.put('/:slug(*)', authenticate, async (req, res, next) => {
     if (rawDeprecatedMessage !== undefined) {
       updates.push(`deprecated_message = $${paramIndex++}`);
       values.push(sanitizePlainText(rawDeprecatedMessage, 500));
+    }
+
+    if (req.body.icon !== undefined) {
+      updates.push(`icon = $${paramIndex++}`);
+      values.push(req.body.icon ? String(req.body.icon).slice(0, 64) : null);
     }
 
     if (updates.length === 0) {

@@ -2119,6 +2119,7 @@ class _HttpThumbnailDispatcher(QtCore.QObject):
     """
 
     loaded = QtCore.Signal(str, object)  # (asset_id, bytes_or_none)
+    progress = QtCore.Signal(int)        # current in-flight count
 
     _instance = None
 
@@ -2139,6 +2140,13 @@ class _HttpThumbnailDispatcher(QtCore.QObject):
         self._inflight_lock = QtCore.QMutex()
         self.loaded.connect(self._on_loaded)  # auto-queued (cross-thread)
 
+    def pending_count(self) -> int:
+        self._inflight_lock.lock()
+        try:
+            return len(self._inflight)
+        finally:
+            self._inflight_lock.unlock()
+
     def request(self, asset_id, url):
         """Kick off a background fetch. No-op if already in flight or
         already cached. Safe to call from the main thread only."""
@@ -2151,8 +2159,10 @@ class _HttpThumbnailDispatcher(QtCore.QObject):
             if asset_id in self._inflight:
                 return
             self._inflight.add(asset_id)
+            current = len(self._inflight)
         finally:
             self._inflight_lock.unlock()
+        self.progress.emit(current)
         self._pool.start(_HttpThumbnailRunnable(asset_id, url, self))
 
     def _on_loaded(self, asset_id, data):
@@ -2161,8 +2171,10 @@ class _HttpThumbnailDispatcher(QtCore.QObject):
         self._inflight_lock.lock()
         try:
             self._inflight.discard(asset_id)
+            remaining = len(self._inflight)
         finally:
             self._inflight_lock.unlock()
+        self.progress.emit(remaining)
         if not data:
             return
         try:
@@ -3641,13 +3653,17 @@ class AssetGridWidget(QtWidgets.QWidget):
         layout.addWidget(self.loading_widget)
 
     def _lazy_load_visible(self):
-        """Load thumbnails for cards currently visible in the scroll viewport."""
-        viewport = self.scroll.viewport()
-        vp_rect = viewport.rect()
-        # Add a buffer zone to pre-load cards just outside the viewport
-        buffer = vp_rect.height()
-        vp_rect.adjust(0, -buffer, 0, buffer)
+        """Kick off thumbnail loads for every unloaded card.
 
+        Originally we did a viewport-intersect check to defer off-screen
+        loads, but that made cold-open libraries appear thumbless until
+        the user navigated (cards reported zero geometry before the
+        first layout pass). The dispatcher rate-limits to 8 concurrent
+        and the disk LRU makes repeats free, so just queueing every
+        card up front is simpler and faster in practice — at most a
+        few hundred ms over LAN for ~100 assets, then thumbnails stream
+        in as bytes arrive. AssetCardWidget._thumb_loaded gates dedup.
+        """
         for i in range(self.grid_layout.count()):
             item = self.grid_layout.itemAt(i)
             if not item:
@@ -3657,21 +3673,13 @@ class AssetGridWidget(QtWidgets.QWidget):
                 continue
             if getattr(card, '_thumb_loaded', True):
                 continue
-            # Check if card is in or near the visible area
-            card_pos = card.mapTo(viewport, QtCore.QPoint(0, 0))
-            card_rect = QtCore.QRect(card_pos, card.size())
-            if vp_rect.intersects(card_rect):
-                card.lazy_load_thumbnail()
+            card.lazy_load_thumbnail()
 
     def showEvent(self, event):
         super().showEvent(event)
-        # Trigger initial lazy load after layout is computed. The
-        # singleShot(0) catches the case where layout completed in this
-        # same event-loop tick; the 100ms follow-up catches the more
-        # common case where the grid's first geometry pass hasn't run
-        # yet (cards still report (0,0)/zero-size, so the visibility
-        # check would skip every card and no thumbnails would load
-        # until the user typed a filter character or refreshed).
+        # Kick off thumbnail loading right away. singleShot(0) handles
+        # the case where assets are already populated; the 100 ms tick
+        # catches cards that were just added but haven't been laid out.
         QtCore.QTimer.singleShot(0, self._lazy_load_visible)
         QtCore.QTimer.singleShot(100, self._lazy_load_visible)
 
@@ -5012,6 +5020,14 @@ class LibraryPanel(QtWidgets.QWidget):
         self.stats_label.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(9)} background: transparent;")
         info_footer_layout.addWidget(self.stats_label)
 
+        # Track pending thumbnail fetches so the user can see progress
+        # while a fresh team library streams in. Hidden when idle.
+        self._thumb_pending = 0
+        try:
+            _HttpThumbnailDispatcher.instance().progress.connect(self._on_thumb_progress)
+        except Exception:
+            pass
+
         main_layout.addWidget(self.info_footer, 0)  # No stretch
 
         # Toast notification (overlay)
@@ -5466,7 +5482,24 @@ class LibraryPanel(QtWidgets.QWidget):
     def _update_stats(self):
         if SOPDROP_AVAILABLE:
             stats = library.get_library_stats()
-            self.stats_label.setText(f"{stats['asset_count']} assets \u2022 {stats['collection_count']} collections \u2022 {stats['total_size_mb']} MB")
+            base = (
+                f"{stats['asset_count']} assets \u2022 "
+                f"{stats['collection_count']} collections \u2022 "
+                f"{stats['total_size_mb']} MB"
+            )
+            pending = getattr(self, '_thumb_pending', 0) or 0
+            suffix = f"  \u2022 loading thumbnails ({pending})" if pending else ""
+            self.stats_label.setText(base + suffix)
+
+    def _on_thumb_progress(self, count: int):
+        """Slot fired by the HTTP thumbnail dispatcher whenever the
+        in-flight set changes. Repaint the stats footer to surface the
+        ongoing work; the suffix disappears when count hits 0."""
+        try:
+            self._thumb_pending = int(count)
+        except (TypeError, ValueError):
+            self._thumb_pending = 0
+        self._update_stats()
 
     def _on_asset_selected(self, asset):
         """Update the info footer when an asset is clicked/selected."""
@@ -11493,6 +11526,26 @@ class EditAssetDialog(QtWidgets.QDialog):
         layout.addLayout(btns)
 
     def _load_current_thumbnail(self):
+        # HTTP team mode: thumbnail comes over the network. Reuse the
+        # disk-LRU cache the panel grid uses so we don't re-fetch a
+        # thumbnail the user has already seen.
+        thumb_url = self.asset.get('_thumbnail_url')
+        if thumb_url:
+            try:
+                from sopdrop.thumbnail_cache import get_default_cache
+                data = get_default_cache().fetch(thumb_url)
+                if data:
+                    pixmap = QtGui.QPixmap()
+                    if pixmap.loadFromData(data) and not pixmap.isNull():
+                        scaled = pixmap.scaled(
+                            96, 71, QtCore.Qt.KeepAspectRatio,
+                            QtCore.Qt.SmoothTransformation
+                        )
+                        self.thumb_preview.setPixmap(scaled)
+                        return
+            except Exception:
+                pass
+
         thumb_path_str = self.asset.get('thumbnail_path')
         if thumb_path_str and SOPDROP_AVAILABLE:
             try:

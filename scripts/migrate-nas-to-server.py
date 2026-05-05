@@ -104,6 +104,10 @@ def parse_args() -> argparse.Namespace:
                    help="When an asset already exists on the server (idempotent re-run), still "
                         "try to upload its thumbnail via the /thumbnail endpoint. Useful for "
                         "migrations that ran before the thumbnail-MIME fix landed.")
+    p.add_argument("--repair-icons", action="store_true",
+                   help="When an asset already exists on the server (idempotent re-run), PATCH "
+                        "its Houdini icon (e.g. 'SOP_scatter') via PUT /assets/:slug. Useful for "
+                        "migrations that ran before the server gained an icon column.")
     p.add_argument("--no-collections", action="store_true",
                    help="Skip migrating collections → team user_folders. By default, when --team "
                         "is set, the script copies each NAS collection (and its parent chain) into "
@@ -214,7 +218,7 @@ def load_assets(db_path: Path, include_deleted: bool) -> list[dict]:
     where = "" if include_deleted else "WHERE deleted_at IS NULL"
     rows = conn.execute(f"""
         SELECT id, name, description, context, asset_type, file_path, thumbnail_path,
-               tags, houdini_version, hda_type_name, hda_type_label, hda_version,
+               icon, tags, houdini_version, hda_type_name, hda_type_label, hda_version,
                hda_category, metadata, created_by, created_at
         FROM library_assets
         {where}
@@ -554,6 +558,11 @@ def upload_one(server: str, token: str, asset: dict, assets_dir: Path,
         # team_id when teamSlug is also set. Without this, the asset
         # is unfiled in the team library.
         fields["folderSlug"] = folder_slug
+    icon = asset.get("icon")
+    if icon:
+        # NAS stores Houdini icon names (e.g. 'SOP_scatter'). Server
+        # column is VARCHAR(64); send as-is, server truncates if needed.
+        fields["icon"] = str(icon)[:64]
 
     files = {"file": (file_name, open(file_path, "rb"))}
     thumb_name = asset.get("thumbnail_path")
@@ -685,6 +694,21 @@ def _post_with_429_backoff(url, *, headers, data, files, file_path, file_name,
     return r
 
 
+def patch_asset_icon(server: str, token: str, owner_username: str,
+                     asset_slug: str, icon: str) -> tuple[bool, str]:
+    """PUT /assets/:owner/:slug to set the Houdini icon on an existing
+    asset. Used by --repair-icons after the server gained an icon column."""
+    url = f"{server}/api/v1/assets/{quote(owner_username, safe='')}/{quote(asset_slug, safe='')}"
+    try:
+        r = requests.put(url, headers={"Authorization": f"Bearer {token}"},
+                         json={"icon": icon}, timeout=30)
+    except requests.RequestException as e:
+        return False, f"network: {e}"
+    if r.status_code >= 400:
+        return False, f"HTTP {r.status_code}: {r.text[:200]}"
+    return True, "ok"
+
+
 def patch_thumbnail(server: str, token: str, owner_username: str,
                     asset_slug: str, thumb_path: Path) -> tuple[bool, str]:
     """Re-upload a thumbnail for an existing asset via /thumbnail.
@@ -739,6 +763,8 @@ def main() -> int:
         print(f"Team:   (none — assets land in personal libraries; pass --team <slug> for team library)")
     if args.repair_thumbnails:
         print(f"Repair: thumbnails will be re-uploaded for already-existing assets")
+    if args.repair_icons:
+        print(f"Repair: Houdini icons will be backfilled for already-existing assets")
     print()
 
     rows = load_assets(db_path, args.include_deleted)
@@ -804,10 +830,30 @@ def main() -> int:
                 )
         return existing_per_user[username]
 
-    uploaded = skipped = failed = thumb_repaired = 0
+    uploaded = skipped = failed = thumb_repaired = icon_repaired = 0
     thumb_uploaded_count = thumb_missing_count = thumb_unreadable_count = 0
     failures: list[tuple[str, str]] = []
     missing_thumbs: list[str] = []
+
+    def maybe_repair_icon(asset: dict, owner: str, slug: str, log_prefix: str):
+        """If --repair-icons and the asset already exists, PUT its
+        Houdini icon name. For libraries migrated before the server
+        gained an icon column."""
+        nonlocal icon_repaired
+        if not args.repair_icons:
+            return
+        icon = asset.get("icon")
+        if not icon:
+            return
+        try:
+            ok, info = patch_asset_icon(server, args.token, owner, slug, str(icon))
+        except requests.RequestException as e:
+            ok, info = False, f"network: {e}"
+        if ok:
+            icon_repaired += 1
+            print(f"  icon backfilled for {owner}/{slug}: {icon}")
+        else:
+            print(f"  icon backfill failed for {owner}/{slug}: {info}", file=sys.stderr)
 
     def maybe_repair_thumb(asset: dict, owner: str, slug: str, log_prefix: str):
         """If --repair-thumbnails and the asset already exists, PATCH
@@ -860,6 +906,7 @@ def main() -> int:
             print(f"{prefix} — already on server for {owner_for_check}, skip")
             skipped += 1
             maybe_repair_thumb(asset, owner_for_check, slug, prefix)
+            maybe_repair_icon(asset, owner_for_check, slug, prefix)
             continue
 
         # Resolve the folder slug for this asset (server stores one
@@ -918,6 +965,7 @@ def main() -> int:
             existing_for(owner_for_check).add(slug.lower())
             print(f"{prefix} — already exists for {owner_for_check}, skip")
             maybe_repair_thumb(asset, owner_for_check, slug, prefix)
+            maybe_repair_icon(asset, owner_for_check, slug, prefix)
         else:
             failed += 1
             failures.append((name, info))
@@ -927,6 +975,8 @@ def main() -> int:
     summary = f"Summary: {uploaded} uploaded, {skipped} skipped, {failed} failed"
     if args.repair_thumbnails:
         summary += f", {thumb_repaired} thumbnails repaired"
+    if args.repair_icons:
+        summary += f", {icon_repaired} icons repaired"
     print(summary)
     if not args.dry_run and uploaded:
         print(f"Thumbnails: {thumb_uploaded_count} uploaded, "

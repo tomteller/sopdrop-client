@@ -192,7 +192,7 @@ router.get('/:slug/library', authenticate, requireTeamMember, async (req, res, n
          a.asset_type, a.houdini_context,
          a.description, a.readme, a.license, a.tags,
          a.latest_version, a.download_count,
-         a.metadata,
+         a.metadata, a.icon,
          a.created_at, a.updated_at,
          v.thumbnail_url, v.preview_url,
          v.node_count, v.node_names, v.file_hash, v.file_size, v.file_path
@@ -242,6 +242,7 @@ router.get('/:slug/library', authenticate, requireTeamMember, async (req, res, n
         latestVersion: a.latest_version,
         downloadCount: a.download_count,
         metadata: a.metadata || {},
+        icon: a.icon,
         nodeCount: a.node_count,
         nodeNames: a.node_names || [],
         fileHash: a.file_hash,
