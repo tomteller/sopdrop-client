@@ -251,8 +251,13 @@ def get_all_assets_cached() -> tuple[list[dict], dict]:
         if ids:
             coll_map[coll_uuid] = ids
 
-    # Populate per-asset 'collections' list (panel reads asset['collections'])
-    coll_lookup = {c["id"]: c for c in (list_collections() or [])}
+    # Populate per-asset 'collections' list (panel reads asset['collections']).
+    # Use the unfiltered cached body — list_collections() defaults to
+    # parent_id=None which returns ROOTS ONLY, so assets in nested
+    # folders never had their collections populated and showed up
+    # under "Uncategorized" when grouping was enabled.
+    coll_body = _list_collections_body()
+    coll_lookup = {c["id"]: _collection_from_http(c) for c in coll_body.get("collections", [])}
     asset_to_colls: dict[str, list] = {}
     for cid, asset_ids in coll_map.items():
         coll = coll_lookup.get(cid)
@@ -428,10 +433,21 @@ def get_frequent_assets(limit: int = 10) -> list[dict]:
 
 
 def get_asset_collections(asset_id: str) -> list[dict]:
-    """The asset row already carries 'collections' after _asset_from_http.
+    """Return the asset's folder memberships.
 
-    For ad-hoc lookups, fetch the asset and read its collections.
+    Single-asset GET /assets/:id returns no collections (server doesn't
+    join the per-asset folder lookup on that path), so we resolve via
+    the cached library list — which DOES carry collections after
+    get_all_assets_cached's post-processing. Falls back to the per-asset
+    fetch only if the asset isn't in the cached set (e.g. just-created).
     """
+    try:
+        assets, _ = get_all_assets_cached()
+        for a in assets:
+            if a.get("id") == asset_id:
+                return a.get("collections", [])
+    except Exception:
+        pass
     a = get_asset(asset_id)
     return a.get("collections", []) if a else []
 

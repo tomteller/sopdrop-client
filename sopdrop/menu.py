@@ -258,7 +258,10 @@ def regenerate_menu(quiet: bool = False, skip_reload: bool = False, skip_team: b
     """
     try:
         from .library import search_assets, get_asset_collections, close_db
-        from .config import get_team_library_path, get_active_library, set_active_library
+        from .config import (
+            get_team_library_path, get_active_library, set_active_library,
+            get_team_library_mode, get_team_slug,
+        )
 
         original_library = get_active_library()
 
@@ -270,10 +273,17 @@ def regenerate_menu(quiet: bool = False, skip_reload: bool = False, skip_team: b
         personal_assets = search_assets(limit=500)
         _enrich_with_collections(personal_assets)
 
-        # Get team library assets if available
+        # Team library is "configured" in either mode:
+        #   - NAS mode: team_library_path points at a shared SQLite
+        #   - HTTP mode: team_library_mode=='http' and team_slug is set
+        # In HTTP mode there's no local path; gating the load on team_path
+        # would silently drop the entire team library from the TAB menu.
+        team_configured = bool(get_team_library_path()) or (
+            get_team_library_mode() == 'http' and bool(get_team_slug())
+        )
+
         team_assets = []
-        team_path = get_team_library_path()
-        if team_path and not skip_team:
+        if team_configured and not skip_team:
             try:
                 close_db()
                 set_active_library('team')
@@ -286,7 +296,7 @@ def regenerate_menu(quiet: bool = False, skip_reload: bool = False, skip_team: b
                 close_db()
                 set_active_library(original_library)
         elif original_library != 'personal':
-            # Restore original library if no team path
+            # Restore original library if team isn't configured
             close_db()
             set_active_library(original_library)
 
