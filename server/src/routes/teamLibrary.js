@@ -374,7 +374,7 @@ router.get('/:slug/library/assets/:assetId', authenticate, requireTeamMember, as
          u.username AS owner, u.avatar_url AS owner_avatar,
          a.asset_type, a.houdini_context,
          a.description, a.readme, a.license, a.tags,
-         a.latest_version, a.download_count, a.metadata,
+         a.latest_version, a.download_count, a.metadata, a.icon,
          a.created_at, a.updated_at,
          v.thumbnail_url, v.preview_url,
          v.node_count, v.node_names, v.file_hash, v.file_size, v.file_path, v.code
@@ -405,6 +405,7 @@ router.get('/:slug/library/assets/:assetId', authenticate, requireTeamMember, as
       latestVersion: a.latest_version,
       downloadCount: a.download_count,
       metadata: a.metadata || {},
+      icon: a.icon,
       nodeCount: a.node_count,
       nodeNames: a.node_names || [],
       code: a.code,

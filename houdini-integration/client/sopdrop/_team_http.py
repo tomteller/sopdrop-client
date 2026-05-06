@@ -593,7 +593,7 @@ def update_asset(asset_id: str, **fields) -> dict | None:
     remote_slug = asset.get("_remote_slug")
     if not remote_slug:
         return None
-    # Map SQLite-style keys to server keys
+    # Map SQLite-style keys to server keys.
     server_fields = {}
     if "name" in fields:
         server_fields["name"] = fields["name"]
@@ -601,11 +601,72 @@ def update_asset(asset_id: str, **fields) -> dict | None:
         server_fields["description"] = fields["description"]
     if "tags" in fields:
         server_fields["tags"] = fields["tags"]
+    # Houdini icon name. Edit dialog may pass icon=None to clear.
+    if "icon" in fields:
+        server_fields["icon"] = fields["icon"]
     if not server_fields:
         return asset
     _http.update_asset_meta(remote_slug, fields=server_fields)
-    invalidate_cache()
-    return get_asset(asset_id)
+    # Refetch the freshly-edited asset and patch the local mirror in
+    # place instead of blowing away the whole snapshot. invalidate_cache
+    # would force a full GET + 100-card re-render on the next read for
+    # what's effectively a one-row change.
+    fresh = get_asset(asset_id)
+    if fresh is not None:
+        _patch_asset_in_caches(asset_id, fresh)
+    return fresh
+
+
+def _patch_asset_in_caches(asset_id: str, fresh: dict) -> None:
+    """Replace one asset in both the in-process ETag cache and the
+    persistent disk mirror, leaving everything else intact. Used after
+    targeted edits so the panel doesn't have to do a full reload."""
+    # In-process: walk every cached library payload and swap the row.
+    with _etag_cache_lock:
+        for key, (etag, body, ts) in list(_etag_cache.items()):
+            if not isinstance(body, tuple) or len(body) != 2:
+                continue
+            assets, coll_map = body
+            if not isinstance(assets, list):
+                continue
+            replaced = False
+            for i, a in enumerate(assets):
+                if a.get("id") == asset_id:
+                    # Preserve the per-asset 'collections' list — the
+                    # edit endpoint doesn't return folder membership,
+                    # so reusing the previous value avoids a flicker
+                    # back to "Uncategorized" on the next render.
+                    fresh = dict(fresh)
+                    fresh.setdefault("collections", a.get("collections", []))
+                    assets[i] = fresh
+                    replaced = True
+                    break
+            if replaced:
+                _etag_cache[key] = (etag, (assets, coll_map), ts)
+
+    # Disk mirror: read, patch, write.
+    team = get_team_slug()
+    if not team:
+        return
+    try:
+        m_assets, m_coll_map, m_etag, _ = _team_mirror.read_snapshot(team)
+        if not m_assets:
+            return
+        replaced = False
+        for i, a in enumerate(m_assets):
+            if a.get("id") == asset_id:
+                merged = dict(fresh)
+                merged.setdefault("collections", a.get("collections", []))
+                m_assets[i] = merged
+                replaced = True
+                break
+        if replaced:
+            _team_mirror.write_snapshot(team, assets=m_assets, coll_map=m_coll_map, etag=m_etag)
+    except Exception as e:
+        # Patch is best-effort; on failure fall back to full invalidation
+        # so the next read at least surfaces the canonical server state.
+        print(f"[Sopdrop] cache patch failed, invalidating: {e}")
+        invalidate_cache()
 
 
 def delete_asset(asset_id: str) -> None:

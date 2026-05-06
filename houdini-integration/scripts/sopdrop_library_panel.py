@@ -6585,7 +6585,40 @@ class LibraryPanel(QtWidgets.QWidget):
         if asset:
             dialog = EditAssetDialog(asset, self)
             if dialog.exec_() == QtWidgets.QDialog.Accepted:
+                # Patch the in-memory cache + re-render in place rather
+                # than invalidating + re-fetching the whole library. The
+                # underlying HTTP shim has already patched its own
+                # caches (RAM + disk mirror) inside update_asset, so we
+                # just need to surface the change in the panel's cache.
+                fresh = library.get_asset(asset_id)
+                if fresh and self._patch_asset_in_panel_cache(asset_id, fresh):
+                    return
+                # Fallback: cache wasn't usable (no cache yet, or asset
+                # not found in cache for some reason). Do a full reload.
                 self._refresh_assets_from_db()
+
+    def _patch_asset_in_panel_cache(self, asset_id, fresh):
+        """Replace the matching entry in self._asset_cache and re-render.
+
+        Returns True if the asset was found and replaced, False if the
+        cache isn't loaded or doesn't contain the asset (caller should
+        fall back to a full reload)."""
+        if not self._asset_cache:
+            return False
+        for i, a in enumerate(self._asset_cache):
+            if a.get('id') == asset_id:
+                # Preserve fields the edit endpoint doesn't return,
+                # most importantly the 'collections' list (folder
+                # membership) which would otherwise flicker to empty.
+                merged = dict(fresh)
+                merged.setdefault('collections', a.get('collections', []))
+                self._asset_cache[i] = merged
+                # Re-filter + re-render. set_assets recycles cards by
+                # id, so only the one changed card actually rebuilds.
+                assets, context_filter = self._filter_cached_assets()
+                self._apply_assets(assets, context_filter)
+                return True
+        return False
 
     def _delete_asset(self, asset_id):
         if not SOPDROP_AVAILABLE:
