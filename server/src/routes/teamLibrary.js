@@ -657,6 +657,33 @@ router.get('/:slug/library/trash', authenticate, requireTeamMember, async (req, 
 
 router.post('/:slug/library/assets/:assetId/restore', authenticate, requireTeamMember, async (req, res, next) => {
   try {
+    // If the user has published a NEW asset with the same owner+slug
+    // since this one was trashed, the partial unique index would
+    // reject the restore with a duplicate-key error. Detect that here
+    // so we can return a clean 409 instead of a 500.
+    const conflictCheck = await query(
+      `SELECT live.id AS live_id, trashed.name AS trashed_name
+         FROM assets trashed
+         LEFT JOIN assets live
+           ON live.owner_id = trashed.owner_id
+          AND live.slug = trashed.slug
+          AND live.id <> trashed.id
+          AND COALESCE(live.is_deprecated, false) = false
+        WHERE trashed.team_id = $1
+          AND trashed.asset_id = $2
+          AND trashed.is_deprecated = true`,
+      [req.team.id, req.params.assetId]
+    );
+    if (conflictCheck.rows.length === 0) {
+      throw new NotFoundError('Trashed asset not found');
+    }
+    if (conflictCheck.rows[0].live_id) {
+      throw new ConflictError(
+        `Cannot restore: an asset named "${conflictCheck.rows[0].trashed_name}" ` +
+        `already exists. Rename or delete it first.`
+      );
+    }
+
     const result = await query(
       `UPDATE assets
          SET is_deprecated = false,

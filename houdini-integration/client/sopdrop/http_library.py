@@ -494,6 +494,76 @@ def upload_asset(
     return json.loads(raw.decode("utf-8")) if raw else {}
 
 
+def publish_version(
+    asset_slug: str,
+    *,
+    version: str,
+    file_bytes: bytes,
+    file_name: str,
+    changelog: str = "",
+    min_houdini_version: str | None = None,
+    max_houdini_version: str | None = None,
+    timeout: float = 60,
+) -> dict:
+    """POST /api/v1/assets/:slug/versions — publish a new immutable version.
+
+    `asset_slug` is "owner/name"; semver in `version` must be greater
+    than the asset's current latest. Returns the server response body.
+    """
+    boundary = f"----sopdrop{_uuid.uuid4().hex}"
+    sep = f"--{boundary}\r\n".encode("utf-8")
+    parts: list[bytes] = []
+
+    def add_field(k: str, v: str | None):
+        if v is None or v == "":
+            return
+        parts.append(sep)
+        parts.append(_mp_field(k, v))
+
+    add_field("version", version)
+    add_field("changelog", changelog)
+    add_field("minHoudiniVersion", min_houdini_version)
+    add_field("maxHoudiniVersion", max_houdini_version)
+
+    file_ct = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+    parts.append(sep)
+    parts.append(_mp_file("file", file_name, file_ct, file_bytes))
+
+    parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+    body = b"".join(parts)
+
+    url = f"{get_api_url().rstrip('/')}/assets/{asset_slug}/versions"
+    headers = {
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "Content-Length": str(len(body)),
+        "User-Agent": "sopdrop-client/0.1.2",
+        "Accept": "application/json",
+    }
+    if not _have_auth():
+        raise AuthError("No identity available (no token and trust-LAN not configured).")
+    headers.update(_auth_headers())
+
+    req = Request(url, data=body, headers=headers, method="POST")
+    try:
+        response = _ssl_urlopen(req, timeout=timeout)
+    except HTTPError as e:
+        try:
+            err_body = e.read().decode("utf-8")
+            err = json.loads(err_body).get("error", err_body)
+        except Exception:
+            err = str(e)
+        if e.code == 401: raise AuthError(err)
+        if e.code == 403: raise ForbiddenError(err)
+        if e.code == 404: raise NotFoundError(err)
+        if e.code == 409: raise SopdropError(f"Version conflict: {err}")
+        if 500 <= e.code < 600: raise ServerError(f"Server error ({e.code}): {err}")
+        raise SopdropError(f"Version publish failed ({e.code}): {err}")
+    except (URLError, socket.timeout, ConnectionError, OSError) as e:
+        raise OfflineError(f"Cannot reach server: {e}") from e
+    raw = response.read()
+    return json.loads(raw.decode("utf-8")) if raw else {}
+
+
 def update_asset_meta(asset_slug: str, *, fields: dict, timeout: float = 30) -> dict:
     """PUT /api/v1/assets/:slug — update metadata (description, tags, etc).
 

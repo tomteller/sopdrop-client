@@ -1275,3 +1275,22 @@ BEGIN
     ALTER TABLE assets ADD COLUMN icon VARCHAR(64);
   END IF;
 END $$;
+
+-- Replace the strict UNIQUE(owner_id, slug) constraint with a partial
+-- unique index that only enforces uniqueness among LIVE assets. Without
+-- this, soft-deleted (is_deprecated=true) rows keep the slug locked,
+-- and a user who deletes an asset then tries to publish a new one with
+-- the same name hits a duplicate-key error from the DB.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'assets_owner_id_slug_key'
+  ) THEN
+    ALTER TABLE assets DROP CONSTRAINT assets_owner_id_slug_key;
+  END IF;
+END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_assets_owner_slug_live
+  ON assets(owner_id, slug)
+  WHERE COALESCE(is_deprecated, false) = false;

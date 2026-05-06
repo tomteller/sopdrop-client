@@ -1071,11 +1071,16 @@ router.post('/upload', authenticate, requireScope('write'), requireVerifiedEmail
     // Create slug
     const slug = slugify(name);
 
-    // Check for slug conflicts. Scope to the effective owner — when
-    // preserving authorship during migration, two different artists
-    // can each own a "scatter" asset.
+    // Check for slug conflicts among LIVE assets. Scope to the effective
+    // owner — when preserving authorship during migration, two different
+    // artists can each own a "scatter" asset. Soft-deleted (is_deprecated)
+    // rows keep the slug in the table, so without this filter a user
+    // who deletes an asset and tries to re-create one with the same
+    // name gets a confusing "already has an asset with this name" 400.
     const existingSlug = await client.query(`
-      SELECT id FROM assets WHERE owner_id = $1 AND slug = $2
+      SELECT id FROM assets
+      WHERE owner_id = $1 AND slug = $2
+        AND COALESCE(is_deprecated, false) = false
     `, [effectiveOwnerId, slug]);
 
     if (existingSlug.rows.length > 0) {
@@ -1505,6 +1510,7 @@ router.put('/:slug(*)', authenticate, async (req, res, next) => {
 
     // Update allowed fields
     const {
+      name: rawName,
       description: rawDescription,
       readme: rawReadme,
       tags: rawTags,
@@ -1519,6 +1525,31 @@ router.put('/:slug(*)', authenticate, async (req, res, next) => {
     const updates = [];
     const values = [];
     let paramIndex = 1;
+
+    if (rawName !== undefined) {
+      const cleanName = sanitizePlainText(rawName, 100);
+      if (!cleanName) throw new ValidationError('Name is required');
+      const newSlug = slugify(cleanName);
+      if (newSlug !== asset.slug) {
+        // Collision check among live rows for the same owner. Soft-
+        // deleted rows are ignored thanks to the partial unique index.
+        const conflict = await query(
+          `SELECT id FROM assets
+            WHERE owner_id = $1 AND slug = $2 AND id <> $3
+              AND COALESCE(is_deprecated, false) = false`,
+          [asset.owner_id, newSlug, asset.id]
+        );
+        if (conflict.rows.length > 0) {
+          throw new ValidationError(
+            `An asset named "${cleanName}" already exists`
+          );
+        }
+        updates.push(`slug = $${paramIndex++}`);
+        values.push(newSlug);
+      }
+      updates.push(`name = $${paramIndex++}`);
+      values.push(cleanName);
+    }
 
     if (rawDescription !== undefined) {
       updates.push(`description = $${paramIndex++}`);

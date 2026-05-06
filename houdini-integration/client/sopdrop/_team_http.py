@@ -24,6 +24,7 @@ import threading
 import time
 from typing import Any
 
+from . import _team_mirror
 from . import http_library as _http
 from .api import AuthError, NotFoundError, SopdropError
 from .config import (
@@ -91,10 +92,17 @@ def _cache_put(key: tuple, etag: str | None, body: Any) -> None:
 
 
 def invalidate_cache() -> None:
-    """Drop the in-process ETag cache. Called after writes so the next
-    read reflects the change rather than a stale 304."""
+    """Drop the in-process ETag cache AND the persistent disk mirror.
+    Called after writes (asset save/delete/move/folder change) so the
+    next read reflects the change rather than serving a stale 304."""
     with _etag_cache_lock:
         _etag_cache.clear()
+    team = get_team_slug()
+    if team:
+        try:
+            _team_mirror.clear(team)
+        except Exception as e:
+            print(f"[Sopdrop] team mirror clear failed: {e}")
 
 
 # ─── Activation ─────────────────────────────────────────────────────────
@@ -214,37 +222,53 @@ def get_all_assets_cached() -> tuple[list[dict], dict]:
     Returns (assets, collection_map) where collection_map maps
     collection-id → set(asset-id), matching the SQLite shape.
 
-    Uses an ETag cache to make repeat opens nearly free. The first call
-    fetches the full list; subsequent calls send If-None-Match and reuse
-    the cached body if the server returns 304.
+    Three-tier cache hierarchy:
+      1. In-process ETag cache (RAM, 5-min TTL). Free repeat-opens
+         within a single Houdini session.
+      2. Persistent SQLite mirror at
+         ~/.sopdrop/cache/team-libraries/<team>.db. Survives Houdini
+         restarts; primes the in-process cache on cold open and lets
+         the cold-open conditional GET return 304 → instant render.
+      3. Server. Hit only when neither cache has a usable ETag, or the
+         conditional GET comes back 200 (real change).
     """
+    team = get_team_slug() or ""
     cache_key = _cache_key("library", "all")
     etag, cached = _cache_get(cache_key)
 
-    # Only the first page carries an ETag; if we have one, try a
-    # conditional GET. On 304 we reuse the entire cached body — including
-    # collection_map — and skip the rest of the pagination loop entirely.
+    # Tier 2: warm the in-process cache from the disk mirror on cold
+    # open. Subsequent calls in this session use the RAM path directly.
+    if cached is None and team:
+        m_assets, m_coll_map, m_etag, _last_synced = _team_mirror.read_snapshot(team)
+        if m_assets and m_etag:
+            cached = (m_assets, m_coll_map)
+            etag = m_etag
+            _cache_put(cache_key, m_etag, cached)
+
+    # If we have any ETag (RAM or disk-warmed), try a conditional GET.
+    # On 304 we reuse the cached body and skip pagination entirely —
+    # this is the common case for repeat opens.
     if etag:
-        result = _client().list_assets(limit=100, offset=0, if_none_match=etag)
-        if result.not_modified:
-            return cached  # cached value is already (assets, coll_map)
+        try:
+            result = _client().list_assets(limit=100, offset=0, if_none_match=etag)
+            if result.not_modified:
+                return cached  # (assets, coll_map)
+        except (OfflineError, SopdropError):
+            # Network's down or server's unreachable — return what we
+            # have rather than failing the panel render. The user still
+            # sees the library; refresh-on-reconnect catches the rest.
+            if cached is not None:
+                return cached
+            raise
 
     body = _client().list_all_assets()
     assets = [_asset_from_http(a) for a in body.get("assets", [])]
-    by_id = {a["id"]: a for a in assets}
 
     raw_map = body.get("collectionMap") or {}
     coll_map: dict[str, set] = {}
-    # Server returns dbId-keyed in some cases; for Phase 0 we used folder_id (UUID)
-    # — match the panel's expectation of {collection_uuid: set(asset_uuids)}.
-    # Each value is a list of dbIds (numeric); we need to reverse-map dbId→assetId.
-    db_id_to_asset = {a.get("metadata", {}).get("__dbId__"): a for a in assets}
-    # Phase 0 server returns dbId in `collectionMap` values. But our asset rows
-    # carry it via `dbId` field too — we discarded it during conversion. Easier:
-    # query collection memberships separately if we need them. For now, build
-    # a name-based fallback: collections will populate via collection_map keys.
-    # The panel uses collection_map[coll_id] = set(asset_ids), so we need to
-    # cross-reference. Use a separate lookup keyed by server dbId.
+    # Server returns collectionMap as folder_uuid → list[asset_dbId].
+    # Translate to folder_uuid → set[asset_uuid] (the shape the panel
+    # expects, matching the SQLite path).
     db_to_asset_id: dict[int, str] = {}
     for a in body.get("assets", []):
         db_to_asset_id[a.get("dbId")] = a.get("id")
@@ -254,10 +278,7 @@ def get_all_assets_cached() -> tuple[list[dict], dict]:
             coll_map[coll_uuid] = ids
 
     # Populate per-asset 'collections' list (panel reads asset['collections']).
-    # Use the unfiltered cached body — list_collections() defaults to
-    # parent_id=None which returns ROOTS ONLY, so assets in nested
-    # folders never had their collections populated and showed up
-    # under "Uncategorized" when grouping was enabled.
+    # Use the unfiltered cached body so nested folders also resolve.
     coll_body = _list_collections_body()
     coll_lookup = {c["id"]: _collection_from_http(c) for c in coll_body.get("collections", [])}
     asset_to_colls: dict[str, list] = {}
@@ -273,12 +294,22 @@ def get_all_assets_cached() -> tuple[list[dict], dict]:
     for asset in assets:
         asset["collections"] = asset_to_colls.get(asset["id"], [])
 
-    # Stash result + ETag for next-call short-circuit. The first-page
-    # ETag is captured by list_all_assets and forwarded under
-    # _firstPageEtag, so we don't need a separate revalidation round-trip.
+    # Stash result + ETag in both tiers. The first-page ETag is captured
+    # by list_all_assets and forwarded under _firstPageEtag.
     first_etag = body.get("_firstPageEtag")
     if first_etag:
         _cache_put(cache_key, first_etag, (assets, coll_map))
+        if team:
+            try:
+                _team_mirror.write_snapshot(
+                    team, assets=assets, coll_map=coll_map, etag=first_etag,
+                )
+                _team_mirror.write_collections(team, coll_body.get("collections", []))
+            except Exception as e:
+                # Mirror is best-effort — failures here shouldn't break
+                # the panel render. Log so a misconfigured cache dir
+                # doesn't silently rot.
+                print(f"[Sopdrop] team mirror write failed: {e}")
 
     return assets, coll_map
 
@@ -353,17 +384,43 @@ def load_asset_package(asset_id: str) -> dict | None:
 
 def _list_collections_body() -> dict:
     """Fetch + cache the raw collections response. Used by both
-    list_collections and get_collection_tree to share a single GET."""
+    list_collections and get_collection_tree to share a single GET.
+
+    Two-tier cache: RAM ETag cache + disk mirror. Cold opens warm the
+    RAM cache from disk so the conditional GET can return 304.
+    """
     cache_key = _cache_key("library", "collections")
     etag, cached = _cache_get(cache_key)
-    if etag:
-        result = _client().list_collections(if_none_match=etag)
-        if result.not_modified:
+
+    # Disk warm-up — the snapshot stores the asset list's etag, which
+    # isn't the same as the collections etag, so we don't have one.
+    # But we can still warm `cached` so an offline open renders folders.
+    team = get_team_slug() or ""
+    if cached is None and team:
+        raw = _team_mirror.read_collections(team)
+        if raw is not None:
+            cached = {"collections": raw}
+
+    try:
+        if etag:
+            result = _client().list_collections(if_none_match=etag)
+            if result.not_modified:
+                return cached
+        result = _client().list_collections()
+    except (OfflineError, SopdropError):
+        # Offline / server unreachable — render from mirror if we have
+        # one, otherwise propagate so callers can display an error.
+        if cached is not None:
             return cached
-    result = _client().list_collections()
+        raise
     body = result.body or {}
     if result.etag:
         _cache_put(cache_key, result.etag, body)
+    if team and body.get("collections") is not None:
+        try:
+            _team_mirror.write_collections(team, body["collections"])
+        except Exception as e:
+            print(f"[Sopdrop] team mirror collections write failed: {e}")
     return body
 
 
@@ -797,27 +854,125 @@ def get_all_artists() -> list[dict]:
 # clear error or no-op with a log message.
 
 
-def save_asset_version(*args, **kwargs):
-    """Per-asset version snapshots aren't implemented for HTTP mode yet
-    (we agreed 'fresh start' for versions). Telling the user clearly."""
-    print("[Sopdrop] Versioning isn't supported on the team server yet — "
-          "edit the asset metadata in place, or save as a new asset.")
-    return None
+def _bump_patch_semver(current: str | None) -> str:
+    """Return the next patch version after `current`. '1.2.3' → '1.2.4'.
+    Falls back to '1.0.0' when current is missing or unparseable."""
+    if not current:
+        return "1.0.0"
+    # Strip pre-release / build metadata before bumping; we re-emit a
+    # clean release version (1.2.4-beta → 1.2.4 happens here, which is
+    # technically a downgrade — but pre-release version-up is rare and
+    # the user can always type a custom version in a future dialog).
+    core = str(current).split("-", 1)[0].split("+", 1)[0]
+    parts = core.split(".")
+    nums = []
+    for p in parts:
+        try:
+            nums.append(int(p))
+        except ValueError:
+            return "1.0.0"
+    while len(nums) < 3:
+        nums.append(0)
+    nums[2] += 1
+    return f"{nums[0]}.{nums[1]}.{nums[2]}"
+
+
+def save_asset_version(asset_id, package_data, *,
+                       description=None, tags=None,
+                       thumbnail_data=None) -> dict | None:
+    """Publish a new version of an existing team asset.
+
+    The panel calls this after "Update from selection" — re-export the
+    user's currently-selected nodes and POST as the next patch version
+    on the existing slug. Returns the server response (with the new
+    version dict) or None on failure.
+
+    description/tags/thumbnail_data are accepted for signature parity
+    with the SQLite path; the server's /versions endpoint stores the
+    new file + changelog and leaves asset-level metadata to PUT
+    /assets/:slug. We forward `description` to PUT after the version
+    publishes, so panel-side metadata edits during version-up land too.
+    """
+    asset = get_asset(asset_id)
+    if not asset:
+        print(f"[Sopdrop] save_asset_version: asset {asset_id} not found")
+        return None
+    remote_slug = asset.get("_remote_slug") or asset.get("remote_slug")
+    if not remote_slug:
+        print(f"[Sopdrop] save_asset_version: asset {asset_id} has no remote slug")
+        return None
+
+    next_version = _bump_patch_semver(asset.get("remote_version"))
+    package_json = json.dumps(package_data, indent=2).encode("utf-8")
+    file_name = f"{asset.get('name') or 'asset'}.sopdrop"
+
+    try:
+        body = _http.publish_version(
+            remote_slug,
+            version=next_version,
+            file_bytes=package_json,
+            file_name=file_name,
+            changelog=f"Updated to {next_version}",
+        )
+    except SopdropError as e:
+        # If we collide on version (e.g. two artists race a version-up),
+        # bump again and retry once. Beyond that, surface the error.
+        if "Version conflict" in str(e) or "already exists" in str(e):
+            try:
+                fresh = get_asset(asset_id)
+                next_version = _bump_patch_semver(
+                    (fresh or asset).get("remote_version") or next_version
+                )
+                body = _http.publish_version(
+                    remote_slug,
+                    version=next_version,
+                    file_bytes=package_json,
+                    file_name=file_name,
+                    changelog=f"Updated to {next_version}",
+                )
+            except SopdropError as e2:
+                print(f"[Sopdrop] save_asset_version retry failed: {e2}")
+                return None
+        else:
+            print(f"[Sopdrop] save_asset_version failed: {e}")
+            return None
+
+    # Forward editable metadata from the dialog so the user's edits to
+    # description / tags during version-up actually persist. Done after
+    # the version publishes so a partial failure leaves us with the new
+    # binary but old metadata, which is recoverable.
+    meta_fields: dict = {}
+    if description is not None:
+        meta_fields["description"] = description
+    if tags is not None:
+        meta_fields["tags"] = list(tags) if not isinstance(tags, list) else tags
+    if meta_fields:
+        try:
+            _http.update_asset_meta(remote_slug, fields=meta_fields)
+        except SopdropError as e:
+            print(f"[Sopdrop] version published but metadata update failed: {e}")
+
+    if thumbnail_data:
+        try:
+            update_asset_thumbnail(asset_id, thumbnail_data)
+        except Exception as e:
+            print(f"[Sopdrop] version published but thumbnail update failed: {e}")
+
+    invalidate_cache()
+    return body or {"version": next_version}
 
 
 def revert_to_version(*args, **kwargs):
-    print("[Sopdrop] Versioning isn't supported on the team server yet.")
+    print("[Sopdrop] Reverting to a previous version isn't supported on "
+          "the team server yet — version history is server-tracked but "
+          "the client can't re-download an arbitrary version into a slug.")
     return None
 
 
 def update_asset_package(asset_id: str, package_data) -> bool:
-    """Re-uploading the package means uploading it as a new asset (server
-    has no in-place package update for an existing slug). The panel's UX
-    around this is mostly used for the curve/path special-cases — left
-    unsupported here pending product call."""
-    print("[Sopdrop] update_asset_package is not yet supported in HTTP "
-          "team mode. Re-save the asset under a new name.")
-    return False
+    """Backed by save_asset_version — same shape, no separate endpoint."""
+    result = save_asset_version(asset_id, package_data)
+    return result is not None
 
 
 def empty_trash() -> int:

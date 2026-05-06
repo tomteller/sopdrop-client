@@ -13,6 +13,7 @@ import { ValidationError, NotFoundError, ForbiddenError, ConflictError } from '.
 import { versionLimiter, logAssetEvent, sanitizeMarkdown } from '../middleware/security.js';
 import storage from '../services/storage.js';
 import { validateUploads } from '../services/fileValidation.js';
+import { canWriteAsset } from '../middleware/teamAccess.js';
 
 const router = Router();
 
@@ -274,9 +275,13 @@ router.post('/:slug(*)/versions', authenticate, requireScope('write'), requireVe
 
     const asset = assetResult.rows[0];
 
-    // Verify ownership
-    if (asset.owner_id !== req.user.id && !req.user.isAdmin) {
-      throw new ForbiddenError('You can only publish versions to your own assets');
+    // Permission check. Owners and admins can always publish versions;
+    // team members can publish versions on team-owned assets (matches
+    // canWriteAsset semantics on the PUT route, so the panel's "version
+    // up with selection" works for any artist with write access to the
+    // team library).
+    if (!(await canWriteAsset(req, asset))) {
+      throw new ForbiddenError('You can only publish versions to your own assets (or your team\'s)');
     }
 
     // Validate version
