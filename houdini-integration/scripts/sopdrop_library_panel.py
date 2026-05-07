@@ -1491,6 +1491,11 @@ class CollectionListWidget(QtWidgets.QWidget):
     """Sidebar for browsing collections with subfolder support."""
 
     collection_selected = QtCore.Signal(object)
+    # Fired after a drag-drop or sidebar action mutates folder/asset
+    # membership. The panel listens and runs invalidate-cache + reload
+    # so the view reflects the new state instead of the stale local
+    # cache.
+    library_changed = QtCore.Signal()
 
     # Class-level reference so AssetCardWidget can find us during drag
     _active_instance = None
@@ -1594,6 +1599,11 @@ class CollectionListWidget(QtWidgets.QWidget):
         # Add to target collection
         for aid in asset_ids:
             library.add_asset_to_collection(aid, target_coll_id)
+        # Library state changed — tell the panel to drop its in-memory
+        # asset cache so the navigation below reads fresh folder
+        # membership instead of pre-drop state (otherwise the dropped-
+        # into collection appears empty).
+        self.library_changed.emit()
         self.collection_selected.emit(target_coll_id)
 
     def _drop_collection_to_collection(self, drag_coll_id, target_id):
@@ -5121,6 +5131,10 @@ class LibraryPanel(QtWidgets.QWidget):
         self.collections.setMinimumWidth(scale(100))
         self.collections.setMaximumWidth(scale(300))
         self.collections.collection_selected.connect(self._on_collection_selected)
+        # Drag-drop assets-into-collection (and other sidebar mutations)
+        # need the asset cache to reload so collection membership
+        # reflects the new state.
+        self.collections.library_changed.connect(self._invalidate_cache)
         splitter.addWidget(self.collections)
 
         self.asset_grid = AssetGridWidget()
@@ -11697,6 +11711,32 @@ class EditAssetDialog(QtWidgets.QDialog):
         self.tags_widget.set_tags(self.asset.get('tags', []))
         layout.addWidget(self.tags_widget)
 
+        # -- Collection --
+        # Mirror the dropdown the SaveToLibraryDialog has so the user
+        # can move an asset between collections (or out of all of them)
+        # without dragging cards. Server stores at most one folder per
+        # asset; the asset's current 'collections' list (server-truth)
+        # gives us the starting selection.
+        coll_label = QtWidgets.QLabel("Collection")
+        coll_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)}")
+        layout.addWidget(coll_label)
+        self.coll_combo = QtWidgets.QComboBox()
+        self.coll_combo.setFixedHeight(scale(24))
+        self.coll_combo.addItem("(none)", None)
+        try:
+            tree = library.get_collection_tree() or []
+            self._add_coll_tree_to_combo(tree, depth=0)
+        except Exception as e:
+            print(f"[Sopdrop] Could not load collection tree: {e}")
+        # Pre-select the asset's current folder (first if multi).
+        current_colls = self.asset.get('collections') or []
+        current_id = current_colls[0].get('id') if current_colls else None
+        self._initial_coll_id = current_id
+        idx = self.coll_combo.findData(current_id)
+        if idx >= 0:
+            self.coll_combo.setCurrentIndex(idx)
+        layout.addWidget(self.coll_combo)
+
         # -- Artist / Created By --
         artist_label = QtWidgets.QLabel("Artist")
         artist_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)}")
@@ -11708,6 +11748,19 @@ class EditAssetDialog(QtWidgets.QDialog):
         layout.addWidget(self.artist_input)
 
         layout.addStretch()
+
+    def _add_coll_tree_to_combo(self, items, depth=0):
+        """Recursively populate the collection dropdown with indentation."""
+        for coll in items:
+            if coll.get('source') == 'cloud':
+                continue
+            indent = "\u2003" * depth  # em-space for indentation
+            prefix = "\u25B8 " if depth > 0 else ""
+            self.coll_combo.addItem(
+                f"{indent}{prefix}{coll['name']}", coll['id']
+            )
+            if coll.get('children'):
+                self._add_coll_tree_to_combo(coll['children'], depth + 1)
 
         # -- Buttons --
         btns = QtWidgets.QHBoxLayout()
@@ -11891,6 +11944,23 @@ class EditAssetDialog(QtWidgets.QDialog):
             if self._new_thumbnail:
                 library.update_asset_thumbnail(self.asset['id'], self._new_thumbnail)
                 AssetCardWidget._thumb_cache.pop(self.asset['id'], None)
+
+            # Apply collection change if the user picked a different one.
+            # Server stores one folder per asset, so we replace rather
+            # than add. None / "(none)" clears the folder.
+            chosen = self.coll_combo.currentData()
+            if chosen != self._initial_coll_id:
+                try:
+                    if chosen is None:
+                        if self._initial_coll_id:
+                            library.remove_asset_from_collection(
+                                self.asset['id'], self._initial_coll_id
+                            )
+                    else:
+                        library.add_asset_to_collection(self.asset['id'], chosen)
+                except Exception as e:
+                    print(f"[Sopdrop] Collection update failed: {e}")
+
             self.accept()
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"Failed: {e}")
