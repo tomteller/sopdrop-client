@@ -8353,10 +8353,16 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
                         }
 
                     if self.existing_asset:
-                        # Update existing asset with new version
+                        # Update existing asset with new version. Pass
+                        # `name` so a rename in the dialog (the user
+                        # typed a different value than the existing
+                        # asset's name) actually applies — the version
+                        # publish endpoint by itself only touches the
+                        # binary + changelog, not asset-level metadata.
                         result = library.save_asset_version(
                             asset_id=self.existing_asset['id'],
                             package_data=package,
+                            name=name,
                             description=self.desc_input.toPlainText().strip(),
                             tags=tags,
                             thumbnail_data=thumb_data,
@@ -8465,6 +8471,7 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
                         result = library.save_asset_version(
                             asset_id=self.existing_asset['id'],
                             package_data=package,
+                            name=name,
                             description=self.desc_input.toPlainText().strip(),
                             tags=tags,
                             thumbnail_data=thumb_data,

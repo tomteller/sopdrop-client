@@ -986,7 +986,7 @@ def _bump_patch_semver(current: str | None) -> str:
 
 
 def save_asset_version(asset_id, package_data, *,
-                       description=None, tags=None,
+                       name=None, description=None, tags=None,
                        thumbnail_data=None) -> dict | None:
     """Publish a new version of an existing team asset.
 
@@ -995,11 +995,12 @@ def save_asset_version(asset_id, package_data, *,
     on the existing slug. Returns the server response (with the new
     version dict) or None on failure.
 
-    description/tags/thumbnail_data are accepted for signature parity
-    with the SQLite path; the server's /versions endpoint stores the
-    new file + changelog and leaves asset-level metadata to PUT
-    /assets/:slug. We forward `description` to PUT after the version
-    publishes, so panel-side metadata edits during version-up land too.
+    name/description/tags/thumbnail_data are accepted for signature
+    parity with the SQLite path; the server's /versions endpoint
+    stores the new file + changelog and leaves asset-level metadata
+    (name, description, tags, icon) to PUT /assets/:slug. We forward
+    those changes after the version publishes so renames + metadata
+    edits during version-up land alongside the binary update.
     """
     asset = get_asset(asset_id)
     if not asset:
@@ -1046,10 +1047,15 @@ def save_asset_version(asset_id, package_data, *,
             return None
 
     # Forward editable metadata from the dialog so the user's edits to
-    # description / tags during version-up actually persist. Done after
-    # the version publishes so a partial failure leaves us with the new
-    # binary but old metadata, which is recoverable.
+    # name / description / tags during version-up actually persist.
+    # Done after the version publishes so a partial failure leaves us
+    # with the new binary but old metadata, which is recoverable. Only
+    # send name when it actually changed — sending the same name still
+    # works server-side, but we'd hit a "no fields to update" error if
+    # name was the only field and it's unchanged.
     meta_fields: dict = {}
+    if name is not None and name != (asset.get("name") or ""):
+        meta_fields["name"] = name
     if description is not None:
         meta_fields["description"] = description
     if tags is not None:

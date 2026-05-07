@@ -324,13 +324,32 @@ router.post('/:slug(*)/versions', authenticate, requireScope('write'), requireVe
     storageKey = `nodes/${filename}`;
     await storage.upload(storageKey, req.file.buffer);
 
+    // Carry the thumbnail/preview from the previous latest version so
+    // a version-up that doesn't include a new screenshot keeps the old
+    // one. Without this, the new version row's NULL thumbnail_url
+    // becomes the asset's displayed thumbnail (since assets.latest_version_id
+    // gets pointed at it below) and the card flips to "no thumbnail."
+    let inheritedThumbnailUrl = null;
+    let inheritedPreviewUrl = null;
+    if (asset.latest_version_id) {
+      const prev = await client.query(
+        'SELECT thumbnail_url, preview_url FROM versions WHERE id = $1',
+        [asset.latest_version_id]
+      );
+      if (prev.rows.length) {
+        inheritedThumbnailUrl = prev.rows[0].thumbnail_url || null;
+        inheritedPreviewUrl = prev.rows[0].preview_url || null;
+      }
+    }
+
     // Create version
     const versionResult = await client.query(`
       INSERT INTO versions (
         asset_id, version, file_path, file_hash, file_size,
-        changelog, min_houdini_version, max_houdini_version, published_by
+        changelog, min_houdini_version, max_houdini_version, published_by,
+        thumbnail_url, preview_url
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       RETURNING *
     `, [
       asset.id,
@@ -342,6 +361,8 @@ router.post('/:slug(*)/versions', authenticate, requireScope('write'), requireVe
       minHoudiniVersion || asset.min_houdini_version,
       maxHoudiniVersion || asset.max_houdini_version,
       req.user.id,
+      inheritedThumbnailUrl,
+      inheritedPreviewUrl,
     ]);
 
     const newVersion = versionResult.rows[0];

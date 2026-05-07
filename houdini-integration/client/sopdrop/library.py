@@ -1687,13 +1687,17 @@ def save_asset_version(
     description: str = None,
     tags: List[str] = None,
     thumbnail_data: bytes = None,
+    name: str = None,
 ) -> Optional[Dict[str, Any]]:
     if _http_mode():
         return _team_http.save_asset_version(
             asset_id, package_data,
-            description=description, tags=tags, thumbnail_data=thumbnail_data,
+            name=name, description=description, tags=tags,
+            thumbnail_data=thumbnail_data,
         )
-    return _save_asset_version_sqlite(asset_id, package_data, description, tags, thumbnail_data)
+    return _save_asset_version_sqlite(
+        asset_id, package_data, description, tags, thumbnail_data, name=name,
+    )
 
 
 def _save_asset_version_sqlite(
@@ -1702,6 +1706,7 @@ def _save_asset_version_sqlite(
     description: str = None,
     tags: List[str] = None,
     thumbnail_data: bytes = None,
+    name: str = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Save a new version of an existing asset (updates the package data).
@@ -1712,6 +1717,7 @@ def _save_asset_version_sqlite(
         description: Optional new description (keeps existing if None)
         tags: Optional new tags (keeps existing if None)
         thumbnail_data: Optional new thumbnail (keeps existing if None)
+        name: Optional new name (keeps existing if None)
 
     Returns:
         The updated asset record
@@ -1792,6 +1798,9 @@ def _save_asset_version_sqlite(
 
     if thumbnail_path:
         updates['thumbnail_path'] = thumbnail_path
+
+    if name is not None and name != asset.get('name'):
+        updates['name'] = name
 
     if description is not None:
         updates['description'] = description
