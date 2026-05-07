@@ -1077,15 +1077,30 @@ router.post('/upload', authenticate, requireScope('write'), requireVerifiedEmail
     // rows keep the slug in the table, so without this filter a user
     // who deletes an asset and tries to re-create one with the same
     // name gets a confusing "already has an asset with this name" 400.
+    // Pull a few extra fields when there IS a hit so the error message
+    // and server log can name the offending row instead of a generic
+    // "already has an asset" — common cause is a panel filter hiding
+    // the asset locally while it's still live server-side.
     const existingSlug = await client.query(`
-      SELECT id FROM assets
-      WHERE owner_id = $1 AND slug = $2
-        AND COALESCE(is_deprecated, false) = false
+      SELECT id, name, team_id, asset_id
+        FROM assets
+       WHERE owner_id = $1 AND slug = $2
+         AND COALESCE(is_deprecated, false) = false
     `, [effectiveOwnerId, slug]);
 
     if (existingSlug.rows.length > 0) {
+      const hit = existingSlug.rows[0];
       const who = effectiveOwnerId === req.user.id ? 'You' : effectiveOwnerUsername;
-      throw new ValidationError(`${who} already has an asset with this name`);
+      const where = hit.team_id ? `team library` : `personal library`;
+      console.error(
+        `[upload] slug conflict: owner=${effectiveOwnerUsername} ` +
+        `slug=${slug} hit_id=${hit.id} hit_name='${hit.name}' ` +
+        `hit_asset_id=${hit.asset_id} hit_team_id=${hit.team_id || 'null'}`
+      );
+      throw new ValidationError(
+        `${who} already have a live asset "${hit.name}" with this slug ` +
+        `in your ${where}. Delete it (or rename it) before re-publishing.`
+      );
     }
 
     // Resolve team if uploading into a team library. The user must be a
