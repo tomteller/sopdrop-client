@@ -201,8 +201,21 @@ def _asset_from_http(a: dict) -> dict:
         "synced_at": a.get("updatedAt"),
         # Soft-delete
         "deleted_at": None,
-        # Collections — populated by caller from collectionMap
-        "collections": [],
+        # Collections. The list endpoint returns folder membership via
+        # collectionMap (post-processed by get_all_assets_cached); the
+        # single-asset endpoint instead returns a single `folder` object,
+        # which we lift into the same shape so the panel's edit dialog
+        # and grouping paths see consistent data.
+        "collections": (
+            [{
+                "id": a["folder"].get("id"),
+                "name": a["folder"].get("name") or "",
+                "color": None, "icon": None,
+                "parent_id": None, "sort_order": 0,
+            }]
+            if isinstance(a.get("folder"), dict) and a["folder"].get("id")
+            else []
+        ),
     }
 
 

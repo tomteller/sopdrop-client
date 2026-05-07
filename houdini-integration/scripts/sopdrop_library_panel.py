@@ -162,6 +162,90 @@ def _format_bytes(n):
 
 
 # ==============================================================================
+# Collection-path helpers
+# ==============================================================================
+#
+# Tooltips on asset cards show the full collection path (e.g.
+# "Houdini Setups / APEX / Rigs") so the user can see where an asset
+# lives without opening the edit dialog. Walking each card's
+# parent chain at hover time requires a name+parent lookup keyed by
+# collection id; AssetGridWidget caches it via _refresh_collection_lookup
+# on every set_assets / set_grouped_assets pass.
+
+_COLLECTION_LOOKUP: dict = {}  # id -> {"name": str, "parent_id": str|None}
+
+
+def _refresh_collection_lookup():
+    """Rebuild the global id→(name, parent_id) map from library state.
+
+    Called by AssetGridWidget right before populating cards. Cheap
+    enough to redo every time (one HTTP-cached call in HTTP mode, one
+    in-memory SQLite query in personal mode), and avoids stale data
+    when the user creates / renames / reparents collections."""
+    global _COLLECTION_LOOKUP
+    if not SOPDROP_AVAILABLE:
+        _COLLECTION_LOOKUP = {}
+        return
+    try:
+        # list_collections() in HTTP mode returns roots only; the
+        # cached body has the unfiltered set, so traverse the tree.
+        tree = library.get_collection_tree() or []
+    except Exception:
+        _COLLECTION_LOOKUP = {}
+        return
+
+    out: dict = {}
+
+    def walk(items, parent_id):
+        for c in items:
+            cid = c.get('id')
+            if not cid:
+                continue
+            out[cid] = {"name": c.get('name') or "", "parent_id": parent_id}
+            children = c.get('children') or []
+            if children:
+                walk(children, cid)
+
+    walk(tree, None)
+    _COLLECTION_LOOKUP = out
+
+
+def _format_collection_path(asset_collections):
+    """Build a 'Root / Child / Leaf' path string from the asset's
+    `collections` list. Returns '' when the asset isn't in any
+    collection or when the lookup hasn't been built yet."""
+    if not asset_collections:
+        return ""
+    # Server stores one folder per asset, but the dict shape is a list
+    # for SQLite compatibility. Use the first entry as the leaf.
+    leaf = asset_collections[0] if isinstance(asset_collections[0], dict) else None
+    if not leaf:
+        return ""
+    leaf_id = leaf.get('id')
+    if not leaf_id:
+        return leaf.get('name') or ""
+    # Walk up. Cap iteration in case of a malformed cycle.
+    names: list[str] = []
+    cid = leaf_id
+    seen: set = set()
+    while cid and cid not in seen and len(names) < 32:
+        seen.add(cid)
+        node = _COLLECTION_LOOKUP.get(cid)
+        if node:
+            name = node.get('name') or ""
+            if name:
+                names.append(name)
+            cid = node.get('parent_id')
+        else:
+            # Lookup miss — fall back to whatever the asset's leaf
+            # entry told us and stop walking.
+            if not names:
+                names.append(leaf.get('name') or "")
+            break
+    return " / ".join(reversed(names))
+
+
+# ==============================================================================
 # Theme Colors - Houdini-inspired Dark UI
 # ==============================================================================
 
@@ -2555,9 +2639,24 @@ class AssetCardWidget(QtWidgets.QFrame):
                 tags_layout.addStretch()
                 bottom_layout.addLayout(tags_layout)
 
-        # Always set tooltip even if name not shown
-        if not show_name:
-            self.setToolTip(name_text)
+        # Tooltip: name on top, collection path underneath when present.
+        # Lets the user see where an asset lives without opening the
+        # edit dialog. Single line on a card with no folder, two lines
+        # otherwise.
+        tip_lines = [name_text]
+        coll_path = _format_collection_path(self.asset.get('collections') or [])
+        if coll_path:
+            tip_lines.append(f"\u25A3 {coll_path}")  # filled square (matches sidebar/chip icon)
+        tooltip = "\n".join(tip_lines)
+        self.setToolTip(tooltip)
+        if show_name:
+            try:
+                # The name QLabel was already created with a tooltip
+                # set to the un-elided name; replace it with the same
+                # multi-line tooltip so the path shows everywhere.
+                name.setToolTip(tooltip)
+            except (NameError, RuntimeError):
+                pass
 
         self._thumb_height = s['total']
 
@@ -3842,6 +3941,10 @@ class AssetGridWidget(QtWidgets.QWidget):
         self._groups = None  # Clear groups — flat layout
         self.loading_widget.hide()
         self._cancel_deferred_cards()
+        # Card tooltips render the full collection path on hover; this
+        # rebuilds the id→(name,parent_id) lookup the format helper
+        # walks so the path stays current after renames / reparents.
+        _refresh_collection_lookup()
 
         if not assets:
             self._clear_grid()
@@ -4023,6 +4126,8 @@ class AssetGridWidget(QtWidgets.QWidget):
         """Display assets grouped by collection with section headers."""
         self.loading_widget.hide()
         self._cancel_deferred_cards()
+        # See set_assets — keep the path lookup fresh.
+        _refresh_collection_lookup()
         self._groups = groups  # Store for resize reflow
         # Flatten for _assets tracking
         self._assets = []

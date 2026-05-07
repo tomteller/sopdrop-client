@@ -376,11 +376,13 @@ router.get('/:slug/library/assets/:assetId', authenticate, requireTeamMember, as
          a.description, a.readme, a.license, a.tags,
          a.latest_version, a.download_count, a.metadata, a.icon,
          a.created_at, a.updated_at,
+         f.folder_id AS folder_uuid, f.slug AS folder_slug, f.name AS folder_name,
          v.thumbnail_url, v.preview_url,
          v.node_count, v.node_names, v.file_hash, v.file_size, v.file_path, v.code
        FROM assets a
        JOIN users u ON a.owner_id = u.id
        LEFT JOIN versions v ON a.latest_version_id = v.id
+       LEFT JOIN user_folders f ON a.folder_id = f.id
        WHERE a.team_id = $1 AND a.asset_id = $2`,
       [req.team.id, req.params.assetId]
     );
@@ -389,6 +391,13 @@ router.get('/:slug/library/assets/:assetId', authenticate, requireTeamMember, as
     }
     const a = result.rows[0];
     res.setHeader('Cache-Control', 'private, must-revalidate, max-age=0');
+    // Fold folder membership into the response. The list endpoint
+    // returns this via collectionMap; the single-asset endpoint hadn't,
+    // which is why the Edit Details collection picker showed "(none)"
+    // even on assets that lived in a folder.
+    const folder = a.folder_uuid
+      ? { id: a.folder_uuid, slug: a.folder_slug, name: a.folder_name }
+      : null;
     res.json({
       id: a.asset_id,
       dbId: a.id,
@@ -416,6 +425,7 @@ router.get('/:slug/library/assets/:assetId', authenticate, requireTeamMember, as
       downloadUrl: toPublicUrl(a.file_path),
       createdAt: a.created_at,
       updatedAt: a.updated_at,
+      folder,
     });
   } catch (err) {
     next(err);
