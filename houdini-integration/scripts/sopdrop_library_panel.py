@@ -3807,30 +3807,94 @@ class AssetGridWidget(QtWidgets.QWidget):
             elif w:
                 w.deleteLater()
 
-        # Place all cards at once — recycled cards are just repositioned (cheap),
-        # only genuinely new cards need full widget construction.
-        # Skip cache if display settings changed (cards bake settings into their layout).
+        # Place cards in two passes. First pass synchronously: recycle
+        # everything that can be recycled, and build only the FIRST
+        # BATCH of new cards so the user sees something quickly. Second
+        # pass: queue the remaining new cards via QTimer so the UI
+        # thread can repaint between batches. AssetCardWidget._setup_ui
+        # builds a multi-label, badge-stacked layout that costs ~20-30
+        # ms/card; for 100 fresh dicts that's 2-3 s of frozen UI if we
+        # build them all up front, which is the "Loading... for 3
+        # seconds" complaint.
+        #
+        # Identity check (`is` vs `==`) detects when the asset dict
+        # itself has been swapped in the cache (e.g. after edit-details
+        # patches a row in place). The card's _setup_ui bakes name/
+        # tags/icon into static QLabels at construction time, so reusing
+        # a card holding a stale dict keeps showing the old values until
+        # the next library switch forces a full rebuild — which is the
+        # "edit didn't take effect" symptom users hit.
+        BATCH_SIZE = 24  # roughly the visible portion at default zoom
+        deferred: list[tuple[int, dict]] = []  # (grid_index, asset)
+        new_built = 0
         for i, asset in enumerate(assets):
             card = cached.pop(asset['id'], None)
-            if card and card.display_settings == self._display_settings:
+            same_dict = card is not None and card.asset is asset
+            if (card and card.display_settings == self._display_settings
+                    and same_dict):
                 card.setFixedWidth(card_width)
                 self.grid_layout.addWidget(card, i // columns, i % columns)
             else:
                 if card:
                     card.deleteLater()
-                self._add_card(asset, i, columns, card_width)
+                if new_built < BATCH_SIZE:
+                    self._add_card(asset, i, columns, card_width)
+                    new_built += 1
+                else:
+                    deferred.append((i, asset))
 
         # Delete any leftover cached cards not placed
         for w in cached.values():
             w.deleteLater()
 
-        # Re-enable painting — single
+        # Re-enable painting so the first batch is visible immediately
         self.grid_widget.setUpdatesEnabled(True)
 
-        # Trigger lazy loading for visible cards. See showEvent() for
+        # Trigger lazy loading for the first batch. See showEvent() for
         # why we fire twice (initial layout pass timing).
         QtCore.QTimer.singleShot(0, self._lazy_load_visible)
         QtCore.QTimer.singleShot(100, self._lazy_load_visible)
+
+        # Schedule remaining cards in batches. Each tick yields the
+        # event loop so paint events + lazy thumbnail loads can run
+        # between chunks. The QTimer is parked on _deferred_timer so
+        # the next set_assets / set_grouped_assets call cancels it
+        # via _cancel_deferred_cards (e.g. when the user navigates
+        # mid-build).
+        if deferred:
+            self._start_deferred_build(deferred, columns, card_width)
+
+    def _start_deferred_build(self, queue, columns, card_width):
+        # Single QTimer that fires repeatedly until the queue drains.
+        timer = QtCore.QTimer(self)
+        timer.setInterval(10)  # ~one frame between batches
+        # Closure state — list mutated in place each tick.
+        state = {'queue': queue}
+
+        def tick():
+            try:
+                self.objectName()  # liveness
+            except RuntimeError:
+                timer.stop()
+                return
+            BATCH = 16
+            chunk = state['queue'][:BATCH]
+            state['queue'] = state['queue'][BATCH:]
+            if chunk:
+                self.grid_widget.setUpdatesEnabled(False)
+                for grid_index, asset in chunk:
+                    self._add_card(asset, grid_index, columns, card_width)
+                self.grid_widget.setUpdatesEnabled(True)
+                QtCore.QTimer.singleShot(0, self._lazy_load_visible)
+            if not state['queue']:
+                timer.stop()
+                timer.deleteLater()
+                if self._deferred_timer is timer:
+                    self._deferred_timer = None
+
+        timer.timeout.connect(tick)
+        self._deferred_timer = timer
+        timer.start()
 
     def _clear_grid(self):
         """Remove all widgets from the grid layout."""
@@ -3958,10 +4022,14 @@ class AssetGridWidget(QtWidgets.QWidget):
             self.grid_layout.addWidget(header_container, row, 0, 1, columns)
             row += 1
 
-            # Add asset cards — reuse cached where possible
+            # Add asset cards — reuse cached where possible. Identity
+            # check on `card.asset is asset` mirrors the flat-grid path:
+            # a recycled card whose dict was swapped in cache (after an
+            # edit) needs to be rebuilt or it'll keep showing stale text.
             for i, asset in enumerate(group['assets']):
                 card = cached.pop(asset['id'], None)
-                if card and card.display_settings != self._display_settings:
+                if card and (card.display_settings != self._display_settings
+                             or card.asset is not asset):
                     card.deleteLater()
                     card = None
                 if not card:
