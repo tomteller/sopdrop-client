@@ -1100,17 +1100,15 @@ router.post('/upload', authenticate, requireScope('write'), requireVerifiedEmail
     const fileHash = calculateHashFromBuffer(assetFile.buffer);
     const fileSize = assetFile.size;
 
-    // Create slug
-    const slug = slugify(name);
-
-    // Two artists can each own a "scatter" (different owner_id is fine);
-    // the same artist publishing two assets with the same display name
-    // is also fine — we just suffix the URL slug so it's unique. The
-    // user-facing `name` stays exactly what they typed. Soft-deleted
-    // rows are ignored thanks to the partial unique index, so a delete
-    // also reclaims the slug for the next publish.
-    const baseSlug = slug;
-    slug = await resolveUniqueSlug(client, effectiveOwnerId, baseSlug);
+    // Create slug. Two artists can each own a "scatter" (different
+    // owner_id is fine); the same artist publishing two assets with
+    // the same display name is also fine — we just suffix the URL
+    // slug so it's unique. The user-facing `name` stays exactly what
+    // they typed. Soft-deleted rows are ignored thanks to the partial
+    // unique index, so a delete also reclaims the slug for the next
+    // publish.
+    const baseSlug = slugify(name);
+    let slug = await resolveUniqueSlug(client, effectiveOwnerId, baseSlug);
     if (slug !== baseSlug) {
       console.log(
         `[upload] slug auto-bumped: owner=${effectiveOwnerUsername} ` +
