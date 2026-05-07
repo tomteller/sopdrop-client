@@ -2265,7 +2265,16 @@ class AssetCardWidget(QtWidgets.QFrame):
         self.asset = asset
         self.card_size = card_size
         self.library_type = library_type
-        self.display_settings = display_settings or {'name': True, 'context': True, 'tags': False, 'artist': False}
+        # Snapshot the display settings the panel passed in. The panel
+        # mutates its own _display_settings dict in place when the user
+        # toggles "Show Tags" / "Show Artist" / etc., so a reference
+        # would always compare equal — defeating the recycle invalidation
+        # check in set_assets and leaving the card displaying stale UI
+        # until something else forced a full rebuild.
+        if display_settings:
+            self.display_settings = dict(display_settings)
+        else:
+            self.display_settings = {'name': True, 'context': True, 'tags': False, 'artist': False}
         self._hovered = False
         self._selected = False
         self._original_pixmap = None  # Store original for resizing
@@ -3807,15 +3816,16 @@ class AssetGridWidget(QtWidgets.QWidget):
             elif w:
                 w.deleteLater()
 
-        # Place cards in two passes. First pass synchronously: recycle
-        # everything that can be recycled, and build only the FIRST
-        # BATCH of new cards so the user sees something quickly. Second
-        # pass: queue the remaining new cards via QTimer so the UI
-        # thread can repaint between batches. AssetCardWidget._setup_ui
-        # builds a multi-label, badge-stacked layout that costs ~20-30
-        # ms/card; for 100 fresh dicts that's 2-3 s of frozen UI if we
-        # build them all up front, which is the "Loading... for 3
-        # seconds" complaint.
+        # Two-pass layout for a stable grid that fills in cell-by-cell:
+        # 1. Place a real card for everything we can recycle (cheap), and
+        #    a lightweight placeholder QFrame everywhere else. After this
+        #    pass the grid has its FINAL row/column count, so no further
+        #    reflow happens — that's what eliminates the "slide down from
+        #    top in batches" jank.
+        # 2. Replace placeholders with real cards via a QTimer at ~16 ms
+        #    intervals, a few per tick, no setUpdatesEnabled toggling.
+        #    Each card appears in its already-allocated slot, which reads
+        #    as a smooth fill instead of a chunked reveal.
         #
         # Identity check (`is` vs `==`) detects when the asset dict
         # itself has been swapped in the cache (e.g. after edit-details
@@ -3824,51 +3834,66 @@ class AssetGridWidget(QtWidgets.QWidget):
         # a card holding a stale dict keeps showing the old values until
         # the next library switch forces a full rebuild — which is the
         # "edit didn't take effect" symptom users hit.
-        BATCH_SIZE = 24  # roughly the visible portion at default zoom
-        deferred: list[tuple[int, dict]] = []  # (grid_index, asset)
-        new_built = 0
+        deferred: list[tuple[int, dict, QtWidgets.QWidget]] = []
         for i, asset in enumerate(assets):
+            row, col = i // columns, i % columns
             card = cached.pop(asset['id'], None)
             same_dict = card is not None and card.asset is asset
+            same_size = card is not None and card.card_size == self._card_size
             if (card and card.display_settings == self._display_settings
-                    and same_dict):
+                    and same_dict and same_size):
                 card.setFixedWidth(card_width)
-                self.grid_layout.addWidget(card, i // columns, i % columns)
+                self.grid_layout.addWidget(card, row, col)
             else:
                 if card:
                     card.deleteLater()
-                if new_built < BATCH_SIZE:
-                    self._add_card(asset, i, columns, card_width)
-                    new_built += 1
-                else:
-                    deferred.append((i, asset))
+                placeholder = self._make_placeholder(card_width)
+                self.grid_layout.addWidget(placeholder, row, col)
+                deferred.append((i, asset, placeholder))
 
         # Delete any leftover cached cards not placed
         for w in cached.values():
             w.deleteLater()
 
-        # Re-enable painting so the first batch is visible immediately
+        # Re-enable painting so placeholders + recycled cards are visible
+        # immediately. The grid has its full extent already, no jumping.
         self.grid_widget.setUpdatesEnabled(True)
 
-        # Trigger lazy loading for the first batch. See showEvent() for
-        # why we fire twice (initial layout pass timing).
+        # Trigger lazy loading for visible recycled cards. See showEvent()
+        # for why we fire twice (initial layout pass timing).
         QtCore.QTimer.singleShot(0, self._lazy_load_visible)
         QtCore.QTimer.singleShot(100, self._lazy_load_visible)
 
-        # Schedule remaining cards in batches. Each tick yields the
-        # event loop so paint events + lazy thumbnail loads can run
-        # between chunks. The QTimer is parked on _deferred_timer so
-        # the next set_assets / set_grouped_assets call cancels it
-        # via _cancel_deferred_cards (e.g. when the user navigates
-        # mid-build).
+        # Replace placeholders with real cards over the next ~1-2 s.
         if deferred:
             self._start_deferred_build(deferred, columns, card_width)
 
+    def _make_placeholder(self, card_width):
+        """A lightweight QFrame that occupies one grid cell while we
+        defer building the real AssetCardWidget. Same height as a real
+        card so the grid layout is final on the first paint."""
+        sizes = {'tiny': 60, 'small': 80, 'medium': 100, 'large': 130, 'xlarge': 170}
+        h = scale(sizes.get(self._card_size, 100))
+        ph = QtWidgets.QFrame()
+        ph.setFixedSize(card_width, h)
+        ph.setStyleSheet(f"""
+            QFrame {{
+                background-color: {COLORS['bg_card']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 4px;
+            }}
+        """)
+        return ph
+
     def _start_deferred_build(self, queue, columns, card_width):
         # Single QTimer that fires repeatedly until the queue drains.
+        # Small batch + short interval gives a smooth cell-by-cell fill
+        # rather than chunky reveals. No setUpdatesEnabled toggling here
+        # — each card replacement is an in-place swap into a grid slot
+        # that's already allocated by its placeholder, so the layout
+        # doesn't reflow.
         timer = QtCore.QTimer(self)
-        timer.setInterval(10)  # ~one frame between batches
-        # Closure state — list mutated in place each tick.
+        timer.setInterval(16)  # ~60 fps cadence
         state = {'queue': queue}
 
         def tick():
@@ -3877,14 +3902,18 @@ class AssetGridWidget(QtWidgets.QWidget):
             except RuntimeError:
                 timer.stop()
                 return
-            BATCH = 16
+            BATCH = 4  # cards per tick
             chunk = state['queue'][:BATCH]
             state['queue'] = state['queue'][BATCH:]
+            for grid_index, asset, placeholder in chunk:
+                row, col = grid_index // columns, grid_index % columns
+                # Drop the placeholder, slot in the real card. The grid
+                # cell stays the same so no other widgets shift.
+                self.grid_layout.removeWidget(placeholder)
+                placeholder.deleteLater()
+                self._add_card(asset, grid_index, columns, card_width)
             if chunk:
-                self.grid_widget.setUpdatesEnabled(False)
-                for grid_index, asset in chunk:
-                    self._add_card(asset, grid_index, columns, card_width)
-                self.grid_widget.setUpdatesEnabled(True)
+                # Kick lazy thumbnail loading for the cards just placed.
                 QtCore.QTimer.singleShot(0, self._lazy_load_visible)
             if not state['queue']:
                 timer.stop()
@@ -4029,7 +4058,8 @@ class AssetGridWidget(QtWidgets.QWidget):
             for i, asset in enumerate(group['assets']):
                 card = cached.pop(asset['id'], None)
                 if card and (card.display_settings != self._display_settings
-                             or card.asset is not asset):
+                             or card.asset is not asset
+                             or card.card_size != self._card_size):
                     card.deleteLater()
                     card = None
                 if not card:
