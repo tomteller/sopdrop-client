@@ -108,6 +108,60 @@ def sfs(n):
 
 
 # ==============================================================================
+# Thumbnail encoding
+# ==============================================================================
+#
+# Clipboard screenshots from Houdini's UI come out as full-resolution PNGs —
+# typically 1-5 MB each, sometimes 10+ MB on retina displays. With a few
+# dozen of those in a team library the panel cold-load transfer dominates
+# the perceived load time. We resize + recompress before upload:
+#
+#   - JPG quality 85 for opaque images (visually indistinguishable from
+#     PNG on screenshots, ~10x smaller).
+#   - PNG fallback when the source has an alpha channel — node-icon-style
+#     thumbnails with transparency need to keep it.
+#   - Hard-cap longest edge to THUMB_MAX_DIM. Cards display ~220 px at
+#     XL zoom; the detail dialog goes up to ~400. 1024 leaves headroom
+#     for retina without ballooning bytes.
+
+THUMB_MAX_DIM = 1024
+THUMB_JPG_QUALITY = 85
+
+
+def _encode_thumbnail_bytes(image):
+    """Resize + compress a QImage to network-friendly bytes."""
+    if image is None or image.isNull():
+        return b""
+    # Resize if either edge exceeds the cap. Qt's KeepAspectRatio keeps
+    # both edges <= the target size when scaled to a square envelope.
+    w, h = image.width(), image.height()
+    if max(w, h) > THUMB_MAX_DIM:
+        image = image.scaled(
+            THUMB_MAX_DIM, THUMB_MAX_DIM,
+            QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation,
+        )
+    has_alpha = image.hasAlphaChannel()
+    ba = QtCore.QByteArray()
+    buf = QtCore.QBuffer(ba)
+    buf.open(QtCore.QIODevice.WriteOnly)
+    if has_alpha:
+        image.save(buf, "PNG")
+    else:
+        image.save(buf, "JPG", THUMB_JPG_QUALITY)
+    buf.close()
+    return bytes(ba)
+
+
+def _format_bytes(n):
+    """Human-readable byte count for status labels."""
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n // 1024} KB"
+    return f"{n / (1024 * 1024):.1f} MB"
+
+
+# ==============================================================================
 # Theme Colors - Houdini-inspired Dark UI
 # ==============================================================================
 
@@ -8222,12 +8276,7 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         if self._screenshots:
             image = self._screenshots[0]  # First image is thumbnail
             if not image.isNull():
-                ba = QtCore.QByteArray()
-                buf = QtCore.QBuffer(ba)
-                buf.open(QtCore.QIODevice.WriteOnly)
-                image.save(buf, "PNG")
-                buf.close()
-                return bytes(ba)
+                return _encode_thumbnail_bytes(image)
         return None
 
     def _get_additional_images_data(self):
@@ -8235,12 +8284,7 @@ class SaveToLibraryDialog(QtWidgets.QDialog):
         additional = []
         for img in self._screenshots[1:]:  # Skip first (thumbnail)
             if not img.isNull():
-                ba = QtCore.QByteArray()
-                buf = QtCore.QBuffer(ba)
-                buf.open(QtCore.QIODevice.WriteOnly)
-                img.save(buf, "PNG")
-                buf.close()
-                additional.append(bytes(ba))
+                additional.append(_encode_thumbnail_bytes(img))
         return additional
 
     def _save_local(self):
@@ -11563,8 +11607,16 @@ class EditAssetDialog(QtWidgets.QDialog):
         thumb_actions.setSpacing(scale(4))
 
         thumb_label = QtWidgets.QLabel("Thumbnail")
+        # Lives on the dialog so _set_preview_from_image can refresh it
+        # whenever the user pastes / browses to a new image. Visible
+        # affordance for "this thumbnail is huge, you should re-grab it."
+        self.thumb_size_label = QtWidgets.QLabel("")
+        self.thumb_size_label.setStyleSheet(
+            f"color: {COLORS['text_dim']}; {sfs(9)} border: none; background: transparent;"
+        )
         thumb_label.setStyleSheet(f"color: {COLORS['text']}; {sfs(11)} font-weight: 600; border: none; background: transparent;")
         thumb_actions.addWidget(thumb_label)
+        thumb_actions.addWidget(self.thumb_size_label)
 
         btn_style = f"""
             QPushButton {{
@@ -11782,12 +11834,7 @@ class EditAssetDialog(QtWidgets.QDialog):
         """Update preview from a QImage and store the data."""
         if image.isNull():
             return
-        ba = QtCore.QByteArray()
-        buf = QtCore.QBuffer(ba)
-        buf.open(QtCore.QIODevice.WriteOnly)
-        image.save(buf, "PNG")
-        buf.close()
-        self._new_thumbnail = bytes(ba)
+        self._new_thumbnail = _encode_thumbnail_bytes(image)
 
         pixmap = QtGui.QPixmap.fromImage(image)
         scaled = pixmap.scaled(
@@ -11795,6 +11842,11 @@ class EditAssetDialog(QtWidgets.QDialog):
             QtCore.Qt.SmoothTransformation
         )
         self.thumb_preview.setPixmap(scaled)
+        # Surface the byte size so publishers see what they're about to
+        # ship — large thumbnails dominate the team library cold-load
+        # transfer time.
+        if hasattr(self, 'thumb_size_label'):
+            self.thumb_size_label.setText(_format_bytes(len(self._new_thumbnail)))
 
     def _paste_clipboard(self):
         try:
