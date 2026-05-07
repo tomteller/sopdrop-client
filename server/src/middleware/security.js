@@ -259,11 +259,19 @@ export const passwordChangeLimiter = buildLimiter({
 // General API: Fallback limit applied app-wide. Skipped for trust-LAN
 // requests so a busy team (5+ artists pasting from the team library)
 // doesn't hit 429s on reads. Public-internet traffic still throttled.
+//
+// /library/* is the static-file mount serving thumbnails / asset blobs
+// straight off disk (or R2 in cloud mode). These aren't a meaningful
+// abuse vector — they're cacheable image/binary data the panel hits in
+// natural bursts: a 20-asset grid on cache-miss fires 20 GETs in <1s,
+// scrolling adds more, and admin tooling like optimize-thumbnails.py
+// trips the cap on any library >50 assets. Skip these regardless of
+// who's calling.
 export const generalLimiter = buildLimiter({
   windowMs: RATE_GENERAL_WINDOW_MS,
   max: RATE_GENERAL_MAX,
   keyGenerator: (req) => req.ip,
-  skip: skipForAdminsOrTrustLan,
+  skip: (req) => req.path.startsWith('/library/') || skipForAdminsOrTrustLan(req),
 });
 
 // ============================================

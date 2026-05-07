@@ -66,22 +66,33 @@ def _absolute_url(maybe_url: str | None) -> str | None:
 _etag_cache_lock = threading.Lock()
 _etag_cache: dict[tuple, tuple[str, Any, float]] = {}  # key -> (etag, body, ts)
 _ETAG_CACHE_TTL = 5 * 60  # 5 min — bound stale-on-process-crash exposure
+# Within this many seconds of a successful fetch, skip the 304
+# revalidation round-trip entirely and return the cached body. Sized to
+# absorb the bursty per-asset call patterns the panel/menu hit (TAB
+# menu regen alone fires get_asset_collections per asset, each of which
+# routed through get_all_assets_cached). 5 s is short enough that any
+# fresh activity from another workstation appears on the next user-
+# triggered refresh; longer than the duration of a typical refresh +
+# enrich + render pass.
+_REVALIDATE_AFTER_SEC = 5.0
 
 
 def _cache_key(*parts) -> tuple:
     return (get_team_slug() or "",) + tuple(parts)
 
 
-def _cache_get(key: tuple) -> tuple[str | None, Any]:
+def _cache_get(key: tuple) -> tuple[str | None, Any, float]:
+    """Return (etag, body, age_seconds). age_seconds is +inf on miss."""
     with _etag_cache_lock:
         entry = _etag_cache.get(key)
         if not entry:
-            return None, None
+            return None, None, float("inf")
         etag, body, ts = entry
-        if (time.time() - ts) > _ETAG_CACHE_TTL:
+        age = time.time() - ts
+        if age > _ETAG_CACHE_TTL:
             _etag_cache.pop(key, None)
-            return None, None
-        return etag, body
+            return None, None, float("inf")
+        return etag, body, age
 
 
 def _cache_put(key: tuple, etag: str | None, body: Any) -> None:
@@ -236,8 +247,15 @@ def get_all_assets_cached() -> tuple[list[dict], dict]:
     _t_start = _t.time()
     team = get_team_slug() or ""
     cache_key = _cache_key("library", "all")
-    etag, cached = _cache_get(cache_key)
+    etag, cached, age = _cache_get(cache_key)
     _ram = "hit" if cached is not None else "miss"
+
+    # Freshness shortcut: if we already revalidated within the last few
+    # seconds, skip the conditional GET entirely. This is the difference
+    # between a single panel refresh costing 25 ms and 100+ enrichment
+    # callers each paying their own 22 ms LAN round-trip (~3 s total).
+    if cached is not None and age < _REVALIDATE_AFTER_SEC:
+        return cached
 
     # Tier 2: warm the in-process cache from the disk mirror on cold
     # open. Subsequent calls in this session use the RAM path directly.
@@ -262,6 +280,9 @@ def get_all_assets_cached() -> tuple[list[dict], dict]:
                   f"{int((_t.time()-_tn)*1000)}ms ram={_ram} disk={_disk} "
                   f"304={result.not_modified}")
             if result.not_modified:
+                # Refresh the cache timestamp so the freshness shortcut
+                # above absorbs the burst of follow-up calls.
+                _cache_put(cache_key, etag, cached)
                 print(f"[Sopdrop:perf]   get_all_assets_cached total "
                       f"{int((_t.time()-_t_start)*1000)}ms (304 path)")
                 return cached  # (assets, coll_map)
@@ -408,7 +429,12 @@ def _list_collections_body() -> dict:
     RAM cache from disk so the conditional GET can return 304.
     """
     cache_key = _cache_key("library", "collections")
-    etag, cached = _cache_get(cache_key)
+    etag, cached, age = _cache_get(cache_key)
+
+    # Same freshness shortcut as get_all_assets_cached — repeat callers
+    # within ~5 s skip the round-trip.
+    if cached is not None and age < _REVALIDATE_AFTER_SEC:
+        return cached
 
     # Disk warm-up — the snapshot stores the asset list's etag, which
     # isn't the same as the collections etag, so we don't have one.
@@ -477,10 +503,13 @@ def get_collection(collection_id: str) -> dict | None:
 
 def get_all_tags() -> list[dict]:
     cache_key = _cache_key("library", "tags")
-    etag, cached = _cache_get(cache_key)
+    etag, cached, age = _cache_get(cache_key)
+    if cached is not None and age < _REVALIDATE_AFTER_SEC:
+        return cached
     if etag:
         result = _client().list_tags(if_none_match=etag)
         if result.not_modified:
+            _cache_put(cache_key, etag, cached)
             return cached
     result = _client().list_tags()
     body = result.body or {}
