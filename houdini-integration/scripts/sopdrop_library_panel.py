@@ -5365,9 +5365,25 @@ class LibraryPanel(QtWidgets.QWidget):
             context_filter = self._detect_current_context()
         self._pending_context_filter = context_filter
 
+        # NAS mirror refresh only applies to legacy NAS team mode where
+        # the team library is a shared SQLite on a network share. In
+        # HTTP team mode the canonical store is the on-prem server and
+        # the disk mirror is per-user under ~/.sopdrop/cache, refreshed
+        # lazily by the HTTP path itself. Triggering refresh_team_mirror
+        # in HTTP mode at best does nothing; at worst it hangs trying
+        # to stat() / copy from a stale team_library_path that points
+        # at a NAS share that's gone — which manifested as a 2-3 s
+        # "Loading..." stall on every refresh.
+        do_nas_mirror = False
+        try:
+            from sopdrop.config import get_team_library_mode
+            do_nas_mirror = get_team_library_mode() != 'http'
+        except Exception:
+            do_nas_mirror = True  # safe default for legacy paths
+
         worker = _LibraryWorker(
             query_fn=query_fn,
-            do_mirror_refresh=True,
+            do_mirror_refresh=do_nas_mirror,
             parent=self,
         )
         worker.finished.connect(self._on_worker_finished)
