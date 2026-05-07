@@ -171,6 +171,35 @@ function slugify(text) {
     .substring(0, 100);
 }
 
+
+/**
+ * Resolve to a slug that doesn't collide with any LIVE asset owned by
+ * `ownerId`. Soft-deleted (is_deprecated=true) rows are ignored — the
+ * partial unique index lets us reclaim a slug after a delete.
+ *
+ * Caller passes the slugified base; this helper walks `base`, `base-2`,
+ * `base-3` ... and returns the first free one. We tolerate up to 1000
+ * collisions before giving up; in practice nobody ships more than a
+ * handful of "Rock Material" copies.
+ *
+ * Returns the chosen slug. The displayed `name` stays exactly what the
+ * user typed — only the URL portion gets suffixed.
+ */
+async function resolveUniqueSlug(client, ownerId, baseSlug) {
+  let candidate = baseSlug;
+  for (let n = 2; n < 1000; n++) {
+    const hit = await client.query(
+      `SELECT id FROM assets
+        WHERE owner_id = $1 AND slug = $2
+          AND COALESCE(is_deprecated, false) = false`,
+      [ownerId, candidate]
+    );
+    if (hit.rows.length === 0) return candidate;
+    candidate = `${baseSlug}-${n}`.substring(0, 100);
+  }
+  throw new Error(`Could not find a free slug for ${baseSlug}`);
+}
+
 /**
  * Enrich dependency list with Sopdrop asset links where possible.
  * For each dependency, try to find a matching HDA on Sopdrop by type name.
@@ -833,8 +862,11 @@ router.post('/', authenticate, requireScope('write'), requireVerifiedEmail, uplo
       }
     }
 
-    // Create slug
-    const slug = slugify(name);
+    // Create slug. Auto-suffix on collision so the same user can publish
+    // two assets that share a display name — same semantics as POST
+    // /upload below.
+    let slug = slugify(name);
+    slug = await resolveUniqueSlug(client, req.user.id, slug);
 
     // Generate UUID and save package
     const uuid = uuidv4();
@@ -1071,35 +1103,18 @@ router.post('/upload', authenticate, requireScope('write'), requireVerifiedEmail
     // Create slug
     const slug = slugify(name);
 
-    // Check for slug conflicts among LIVE assets. Scope to the effective
-    // owner — when preserving authorship during migration, two different
-    // artists can each own a "scatter" asset. Soft-deleted (is_deprecated)
-    // rows keep the slug in the table, so without this filter a user
-    // who deletes an asset and tries to re-create one with the same
-    // name gets a confusing "already has an asset with this name" 400.
-    // Pull a few extra fields when there IS a hit so the error message
-    // and server log can name the offending row instead of a generic
-    // "already has an asset" — common cause is a panel filter hiding
-    // the asset locally while it's still live server-side.
-    const existingSlug = await client.query(`
-      SELECT id, name, team_id, asset_id
-        FROM assets
-       WHERE owner_id = $1 AND slug = $2
-         AND COALESCE(is_deprecated, false) = false
-    `, [effectiveOwnerId, slug]);
-
-    if (existingSlug.rows.length > 0) {
-      const hit = existingSlug.rows[0];
-      const who = effectiveOwnerId === req.user.id ? 'You' : effectiveOwnerUsername;
-      const where = hit.team_id ? `team library` : `personal library`;
-      console.error(
-        `[upload] slug conflict: owner=${effectiveOwnerUsername} ` +
-        `slug=${slug} hit_id=${hit.id} hit_name='${hit.name}' ` +
-        `hit_asset_id=${hit.asset_id} hit_team_id=${hit.team_id || 'null'}`
-      );
-      throw new ValidationError(
-        `${who} already have a live asset "${hit.name}" with this slug ` +
-        `in your ${where}. Delete it (or rename it) before re-publishing.`
+    // Two artists can each own a "scatter" (different owner_id is fine);
+    // the same artist publishing two assets with the same display name
+    // is also fine — we just suffix the URL slug so it's unique. The
+    // user-facing `name` stays exactly what they typed. Soft-deleted
+    // rows are ignored thanks to the partial unique index, so a delete
+    // also reclaims the slug for the next publish.
+    const baseSlug = slug;
+    slug = await resolveUniqueSlug(client, effectiveOwnerId, baseSlug);
+    if (slug !== baseSlug) {
+      console.log(
+        `[upload] slug auto-bumped: owner=${effectiveOwnerUsername} ` +
+        `requested=${baseSlug} -> ${slug}`
       );
     }
 
@@ -1376,8 +1391,10 @@ router.post('/hda', authenticate, requireScope('write'), requireVerifiedEmail, u
       throw new ValidationError('HDA file is required');
     }
 
-    // Create slug
-    const slug = slugify(name);
+    // Create slug. Same auto-suffix-on-collision rule as the other
+    // upload paths.
+    let slug = slugify(name);
+    slug = await resolveUniqueSlug(client, req.user.id, slug);
 
     // Calculate file hash from buffer
     const fileHash = calculateHashFromBuffer(req.file.buffer);
