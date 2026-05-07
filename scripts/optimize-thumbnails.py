@@ -101,6 +101,19 @@ def fetch_team_assets(server: str, token: str | None, team: str) -> list[dict]:
     return out
 
 
+def _absolute(url: str | None, server: str) -> str | None:
+    """Server returns relative /library/... paths when storage is local
+    (no R2 configured). The panel handles this via its own _absolute_url
+    helper; this script needs to too."""
+    if not url:
+        return None
+    if url.startswith(("http://", "https://")):
+        return url
+    if url.startswith("/"):
+        return server.rstrip("/") + url
+    return server.rstrip("/") + "/" + url
+
+
 def download_thumbnail(url: str) -> bytes | None:
     """Fetch the current thumbnail bytes. None if missing/unreachable."""
     if not url:
@@ -195,7 +208,7 @@ def main() -> int:
         owner, asset_slug = slug.split("/", 1)
         prefix = f"[{i}/{len(assets)}] {slug}"
 
-        thumb_url = asset.get("thumbnailUrl")
+        thumb_url = _absolute(asset.get("thumbnailUrl"), server)
         if not thumb_url:
             print(f"{prefix} — no thumbnail")
             no_thumb += 1
