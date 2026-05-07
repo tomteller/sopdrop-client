@@ -3774,6 +3774,8 @@ class AssetGridWidget(QtWidgets.QWidget):
             self.set_assets(self._assets)
 
     def set_assets(self, assets):
+        import time as _time
+        _t_set = _time.time()
         self._assets = assets
         self._groups = None  # Clear groups — flat layout
         self.loading_widget.hide()
@@ -3863,6 +3865,11 @@ class AssetGridWidget(QtWidgets.QWidget):
         # for why we fire twice (initial layout pass timing).
         QtCore.QTimer.singleShot(0, self._lazy_load_visible)
         QtCore.QTimer.singleShot(100, self._lazy_load_visible)
+
+        recycled = len(assets) - len(deferred)
+        print(f"[Sopdrop:perf]   set_assets sync "
+              f"{int((_time.time()-_t_set)*1000)}ms "
+              f"(total={len(assets)} recycled={recycled} deferred={len(deferred)})")
 
         # Replace placeholders with real cards over the next ~1-2 s.
         if deferred:
@@ -4249,6 +4256,8 @@ class _LibraryWorker(QtCore.QThread):
     def run(self):
         import time as _time
         _t0 = _time.time()
+        print(f"[Sopdrop:perf]   worker.run start "
+              f"do_nas_mirror={self._do_mirror_refresh}")
         stale = False
         error = None
         result = {}
@@ -4256,10 +4265,13 @@ class _LibraryWorker(QtCore.QThread):
         try:
             # Mirror refresh (team library only)
             if self._do_mirror_refresh and not self._cancelled:
+                _tm = _time.time()
                 try:
                     library.refresh_team_mirror()
                 except Exception as e:
                     print(f"[Sopdrop] Worker: mirror refresh error: {e}")
+                print(f"[Sopdrop:perf]   worker.refresh_team_mirror "
+                      f"{int((_time.time()-_tm)*1000)}ms")
 
             if self._cancelled:
                 return
@@ -4268,7 +4280,10 @@ class _LibraryWorker(QtCore.QThread):
             stale = library.is_mirror_stale()
 
             # Run the query — may return a list or a dict with cache data
+            _tq = _time.time()
             raw = self._query_fn()
+            print(f"[Sopdrop:perf]   worker.query_fn "
+                  f"{int((_time.time()-_tq)*1000)}ms")
             if isinstance(raw, dict):
                 result = raw
             else:
@@ -4281,8 +4296,8 @@ class _LibraryWorker(QtCore.QThread):
 
         assets = result.get('assets', [])
         elapsed = _time.time() - _t0
-        if elapsed > 2.0:
-            print(f"[Sopdrop] Worker completed in {elapsed:.1f}s ({len(assets)} assets)")
+        print(f"[Sopdrop:perf]   worker total "
+              f"{int(elapsed*1000)}ms ({len(assets)} assets)")
 
         if not self._cancelled:
             self.finished.emit({
@@ -5297,6 +5312,11 @@ class LibraryPanel(QtWidgets.QWidget):
             self.asset_grid.set_assets([])
             return
 
+        import time as _time
+        self._refresh_t0 = _time.time()
+        print(f"[Sopdrop:perf] _refresh_assets start "
+              f"cache={'hit' if self._asset_cache is not None else 'miss'}")
+
         from sopdrop.config import get_active_library
         current_library = get_active_library()
         is_team = current_library == "team"
@@ -5316,8 +5336,14 @@ class LibraryPanel(QtWidgets.QWidget):
 
         # --- If cache is valid for this library, filter in-memory (instant) ---
         if self._asset_cache is not None and self._cache_library == current_library:
+            t1 = _time.time()
             assets, context_filter = self._filter_cached_assets()
+            t2 = _time.time()
+            print(f"[Sopdrop:perf]   cache hit, filter={int((t2-t1)*1000)}ms "
+                  f"({len(assets)} assets)")
             self._apply_assets(assets, context_filter)
+            print(f"[Sopdrop:perf] _refresh_assets done "
+                  f"total={int((_time.time()-self._refresh_t0)*1000)}ms (cache hit path)")
             return
 
         # --- Cache miss: load from DB ---
@@ -5356,7 +5382,7 @@ class LibraryPanel(QtWidgets.QWidget):
             return
 
         # --- Team library: load cache on background thread ---
-        print("[Sopdrop] Loading team library (background thread)...")
+        print(f"[Sopdrop:perf]   team load → background worker")
         self.asset_grid.set_loading(True)
 
         # Resolve context filter now on the main thread
@@ -5395,6 +5421,8 @@ class LibraryPanel(QtWidgets.QWidget):
 
         Runs on the main thread (Qt signal delivery).
         """
+        import time as _time
+        _t_main = _time.time()
         # Ignore if this isn't the current worker (superseded by a newer request)
         worker = self.sender()
         if worker is not self._worker:
@@ -5439,8 +5467,17 @@ class LibraryPanel(QtWidgets.QWidget):
         self._cache_library = get_active_library()
 
         # Filter the freshly-loaded cache using current UI state
+        _tf = _time.time()
         assets, context_filter = self._filter_cached_assets()
+        _ta = _time.time()
         self._apply_assets(assets, context_filter)
+        _tend = _time.time()
+        print(f"[Sopdrop:perf] _on_worker_finished filter={int((_ta-_tf)*1000)}ms "
+              f"apply={int((_tend-_ta)*1000)}ms "
+              f"main_thread={int((_tend-_t_main)*1000)}ms")
+        if hasattr(self, '_refresh_t0'):
+            print(f"[Sopdrop:perf] _refresh_assets done "
+                  f"total={int((_tend-self._refresh_t0)*1000)}ms (worker path)")
 
         # Safe to regenerate TAB menu now — worker is done using the DB.
         # (Deferred from __init__ to avoid close_db() racing with the worker.)

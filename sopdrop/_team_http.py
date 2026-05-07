@@ -232,14 +232,20 @@ def get_all_assets_cached() -> tuple[list[dict], dict]:
       3. Server. Hit only when neither cache has a usable ETag, or the
          conditional GET comes back 200 (real change).
     """
+    import time as _t
+    _t_start = _t.time()
     team = get_team_slug() or ""
     cache_key = _cache_key("library", "all")
     etag, cached = _cache_get(cache_key)
+    _ram = "hit" if cached is not None else "miss"
 
     # Tier 2: warm the in-process cache from the disk mirror on cold
     # open. Subsequent calls in this session use the RAM path directly.
+    _disk = "n/a"
     if cached is None and team:
+        _td = _t.time()
         m_assets, m_coll_map, m_etag, _last_synced = _team_mirror.read_snapshot(team)
+        _disk = f"hit({len(m_assets)} in {int((_t.time()-_td)*1000)}ms)" if m_assets else "miss"
         if m_assets and m_etag:
             cached = (m_assets, m_coll_map)
             etag = m_etag
@@ -250,8 +256,14 @@ def get_all_assets_cached() -> tuple[list[dict], dict]:
     # this is the common case for repeat opens.
     if etag:
         try:
+            _tn = _t.time()
             result = _client().list_assets(limit=100, offset=0, if_none_match=etag)
+            print(f"[Sopdrop:perf]     conditional GET "
+                  f"{int((_t.time()-_tn)*1000)}ms ram={_ram} disk={_disk} "
+                  f"304={result.not_modified}")
             if result.not_modified:
+                print(f"[Sopdrop:perf]   get_all_assets_cached total "
+                      f"{int((_t.time()-_t_start)*1000)}ms (304 path)")
                 return cached  # (assets, coll_map)
         except (OfflineError, SopdropError):
             # Network's down or server's unreachable — return what we
@@ -261,7 +273,11 @@ def get_all_assets_cached() -> tuple[list[dict], dict]:
                 return cached
             raise
 
+    print(f"[Sopdrop:perf]     full GET path ram={_ram} disk={_disk}")
+    _tf = _t.time()
     body = _client().list_all_assets()
+    print(f"[Sopdrop:perf]     list_all_assets "
+          f"{int((_t.time()-_tf)*1000)}ms ({len(body.get('assets', []))} rows)")
     assets = [_asset_from_http(a) for a in body.get("assets", [])]
 
     raw_map = body.get("collectionMap") or {}
@@ -311,6 +327,8 @@ def get_all_assets_cached() -> tuple[list[dict], dict]:
                 # doesn't silently rot.
                 print(f"[Sopdrop] team mirror write failed: {e}")
 
+    print(f"[Sopdrop:perf]   get_all_assets_cached total "
+          f"{int((_t.time()-_t_start)*1000)}ms (full path)")
     return assets, coll_map
 
 
