@@ -1636,6 +1636,37 @@ router.put('/:slug(*)', authenticate, async (req, res, next) => {
       values.push(req.body.icon ? String(req.body.icon).slice(0, 64) : null);
     }
 
+    // Move-to-folder. Panel sends folderSlug=<slug> on drag-drop into a
+    // collection, or folderSlug=null when dragged back to the root.
+    // Lookup is scoped to the asset's team (if team-owned) or owner;
+    // a slug that doesn't resolve is a hard error so the client knows
+    // the move didn't take.
+    let folderCountDelta = null; // null = no change, [oldId, newId] = bump counters
+    if (req.body.folderSlug !== undefined) {
+      let nextFolderId = null;
+      if (req.body.folderSlug !== null && req.body.folderSlug !== '') {
+        const lookup = asset.team_id
+          ? await query(
+              'SELECT id FROM user_folders WHERE team_id = $1 AND slug = $2',
+              [asset.team_id, req.body.folderSlug]
+            )
+          : await query(
+              'SELECT id FROM user_folders WHERE user_id = $1 AND slug = $2',
+              [asset.owner_id, req.body.folderSlug]
+            );
+        if (lookup.rows.length === 0) {
+          const scope = asset.team_id ? 'team' : 'this user';
+          throw new NotFoundError(
+            `Folder '${req.body.folderSlug}' not found in ${scope}`
+          );
+        }
+        nextFolderId = lookup.rows[0].id;
+      }
+      updates.push(`folder_id = $${paramIndex++}`);
+      values.push(nextFolderId);
+      folderCountDelta = [asset.folder_id, nextFolderId];
+    }
+
     if (updates.length === 0) {
       throw new ValidationError('No fields to update');
     }
@@ -1648,6 +1679,30 @@ router.put('/:slug(*)', authenticate, async (req, res, next) => {
       WHERE id = $${paramIndex}
       RETURNING *
     `, [...values, asset.id]);
+
+    // Sync user_folders.asset_count when the asset moved between
+    // folders. Decrement the source (if any), increment the
+    // destination (if any). Best-effort — failures here shouldn't
+    // unwind the move; counts can drift and are easy to backfill.
+    if (folderCountDelta) {
+      const [oldFolderId, newFolderId] = folderCountDelta;
+      if (oldFolderId && oldFolderId !== newFolderId) {
+        try {
+          await query(
+            'UPDATE user_folders SET asset_count = GREATEST(asset_count - 1, 0) WHERE id = $1',
+            [oldFolderId]
+          );
+        } catch (e) { /* count drift is recoverable */ }
+      }
+      if (newFolderId && newFolderId !== oldFolderId) {
+        try {
+          await query(
+            'UPDATE user_folders SET asset_count = asset_count + 1 WHERE id = $1',
+            [newFolderId]
+          );
+        } catch (e) { /* count drift is recoverable */ }
+      }
+    }
 
     res.json({
       id: result.rows[0].asset_id,
