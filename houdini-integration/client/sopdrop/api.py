@@ -968,20 +968,29 @@ class SopdropClient:
 
     # === Sharing ===
 
-    def share(self, package, name=None):
+    def share(self, package, name=None, team_slug=None):
         """
         Create a temporary share from a .sopdrop package.
 
         Args:
             package: Exported package dict
             name: Optional display name
+            team_slug: When set, scope the share to a team — workstation
+                B in the same team can fetch via
+                /teams/<slug>/share/latest without needing the code
+                copied across machines. Used by the on-prem Quick Copy
+                flow.
 
         Returns:
             Dict with shareCode, shareUrl, expiresAt
         """
-        token = get_token()
-        if not token:
-            raise AuthError("Please login first: sopdrop.login()")
+        # Identity comes from a token OR trust-LAN auth header.
+        from .config import use_lan_trust_auth
+        if not get_token() and not use_lan_trust_auth():
+            raise AuthError(
+                "No identity available. Either log in (sopdrop.login()) "
+                "or enable local-only mode with HTTP team mode."
+            )
 
         # Normalize legacy format names before upload
         _normalize_package_format(package)
@@ -989,6 +998,8 @@ class SopdropClient:
         data = {"package": package}
         if name:
             data["name"] = name
+        if team_slug:
+            data["teamSlug"] = team_slug
 
         return self._post("share", data=data, auth=True)
 
@@ -1003,6 +1014,22 @@ class SopdropClient:
             Package dict ready for import
         """
         return self._get(f"share/{code}/download", auth=False)
+
+    def fetch_latest_team_share(self, team_slug):
+        """Return the share_code of the most-recent non-expired share
+        in this team, or None when there's no active share.
+
+        The Houdini panel's Quick Paste calls this in HTTP team mode
+        so workstation B doesn't need workstation A's code copied
+        across machines. Auth required (trust-LAN or token); server
+        verifies team membership.
+        """
+        from urllib.parse import quote
+        try:
+            body = self._get(f"teams/{quote(team_slug, safe='')}/share/latest")
+        except NotFoundError:
+            return None
+        return body.get("shareCode") if isinstance(body, dict) else None
 
     def share_info(self, code):
         """

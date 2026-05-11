@@ -1294,3 +1294,22 @@ END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_assets_owner_slug_live
   ON assets(owner_id, slug)
   WHERE COALESCE(is_deprecated, false) = false;
+
+-- Team-scoped temporary shares. The Houdini panel's "Quick Copy"
+-- creates a temp share on the on-prem server; workstation B (same
+-- team) reads /teams/:slug/share/latest to find the most-recent
+-- non-expired team share without having to type the share code.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'temp_shares' AND column_name = 'team_id'
+  ) THEN
+    ALTER TABLE temp_shares ADD COLUMN team_id INTEGER REFERENCES teams(id) ON DELETE CASCADE;
+  END IF;
+END $$;
+
+-- Fast "latest non-expired team share" lookups.
+CREATE INDEX IF NOT EXISTS idx_temp_shares_team_latest
+  ON temp_shares(team_id, created_at DESC)
+  WHERE team_id IS NOT NULL;

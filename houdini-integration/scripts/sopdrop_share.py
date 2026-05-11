@@ -100,25 +100,43 @@ def main():
     # Check if local-only mode is enabled (no cloud features)
     local_only = get_local_only()
 
-    # Check if team library is configured
+    # Check if team library is configured. HTTP team mode (on-prem
+    # server) routes share creation through the same POST /share
+    # endpoint the cloud uses — server now accepts `teamSlug` and
+    # exposes /teams/:slug/share/latest for the receiving workstation
+    # to find the package without copying the share code across
+    # machines.
     team_path = get_team_library_path()
-    has_team = team_path is not None and team_path.exists()
+    has_nas_team = team_path is not None and team_path.exists()
+    try:
+        from sopdrop.config import get_team_library_mode, get_team_slug
+        has_http_team = (
+            get_team_library_mode() == 'http' and bool(get_team_slug())
+        )
+    except Exception:
+        has_http_team = False
 
     if local_only:
-        # Local-only mode: only team share is available
-        if not has_team:
-            hou.ui.displayMessage(
-                "Local-only mode is enabled and no team library is configured.\n\n"
-                "To use Quick Share, either:\n"
-                "- Configure a team library in Settings\n"
-                "- Disable local-only mode in Settings",
-                title="Sopdrop - Share Unavailable",
-                severity=hou.severityType.Warning,
-            )
+        if has_http_team:
+            _do_http_team_share(items, nodes)
             return
-        # Team available — go straight to team share (no choice dialog)
-        _do_team_share(items, nodes, team_path)
+        if has_nas_team:
+            _do_team_share(items, nodes, team_path)
+            return
+        hou.ui.displayMessage(
+            "Local-only mode is enabled and no team library is configured.\n\n"
+            "To use Quick Share, either:\n"
+            "- Configure a team library in Settings\n"
+            "- Disable local-only mode in Settings",
+            title="Sopdrop - Share Unavailable",
+            severity=hou.severityType.Warning,
+        )
         return
+
+    # Below this point: cloud features available (not local_only). The
+    # NAS-style "team share" only applies when team_library_path is set;
+    # HTTP team libraries reuse the cloud-share flow.
+    has_team = has_nas_team
 
     if has_team and PYSIDE_VERSION > 0:
         # Show choice dialog: Cloud vs Team
@@ -553,6 +571,68 @@ def _create_cloud_share(package):
     from sopdrop.api import SopdropClient
     client = SopdropClient()
     return client.share(package)
+
+
+def _do_http_team_share(items, nodes):
+    """Quick-share into an HTTP team library (on-prem server).
+
+    Uses the same POST /share endpoint the cloud share uses — server
+    now accepts `teamSlug` so workstation B can find this share via
+    /teams/<slug>/share/latest without having to type the share code.
+    Trust-LAN auth supplies identity; no token required.
+    """
+    from sopdrop.export import export_items
+    from sopdrop.config import get_token, use_lan_trust_auth, get_team_slug
+
+    if not get_token() and not use_lan_trust_auth():
+        hou.ui.displayMessage(
+            "No identity available. Either log in or enable local-only "
+            "mode with HTTP team mode (trust-LAN) before sharing.",
+            title="Sopdrop - Identity Required",
+        )
+        return
+
+    team_slug = get_team_slug()
+    try:
+        with hou.InterruptableOperation("Exporting nodes...", open_interrupt_dialog=True):
+            package = export_items(items)
+        with hou.InterruptableOperation("Sharing...", open_interrupt_dialog=True):
+            from sopdrop.api import SopdropClient
+            result = SopdropClient().share(package, team_slug=team_slug)
+    except hou.OperationInterrupted:
+        hou.ui.displayMessage("Share cancelled.", title="Sopdrop")
+        return
+    except Exception as e:
+        hou.ui.displayMessage(
+            f"Team share failed:\n\n{e}",
+            title="Sopdrop - Error",
+            severity=hou.severityType.Error,
+        )
+        return
+
+    if result.get("error"):
+        hou.ui.displayMessage(
+            f"Team share failed:\n\n{result['error']}",
+            title="Sopdrop - Error",
+            severity=hou.severityType.Error,
+        )
+        return
+
+    share_code = result.get("shareCode", "")
+    paste_cmd = f'sopdrop.paste("s/{share_code}")'
+    _copy_to_clipboard(paste_cmd)
+    node_count = len(nodes)
+    hou.ui.displayMessage(
+        f"Shared to team — anyone on the team can paste from any "
+        f"workstation.\n\n"
+        f"Code: {share_code}\n"
+        f"Nodes: {node_count}\n\n"
+        f"On another workstation just hit Paste (the panel auto-fetches "
+        f"the latest team share). The share code is also on your "
+        f"clipboard if you need it explicitly.\n\n"
+        f"Expires in 24 hours.",
+        title="Sopdrop - Shared (Team)",
+    )
 
 
 def _copy_to_clipboard(text):

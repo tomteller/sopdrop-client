@@ -97,15 +97,58 @@ def main():
     if clipboard:
         # Quick paste from local clipboard (already fetched)
         _quick_paste(clipboard, pane)
-    else:
-        # No clipboard - show search/browse dialog
+        return
+
+    # Cross-workstation Quick Copy: in HTTP team mode the server tracks
+    # team-scoped temporary shares. Walking to another workstation and
+    # hitting Paste should find the most recent team share so the user
+    # doesn't have to copy the share code across machines (system
+    # clipboards don't sync over LAN by default). Falls through to the
+    # browse dialog when no active share or not configured.
+    team_share = _try_fetch_latest_team_share()
+    if team_share:
+        slug = f"s/{team_share}"
         if PYSIDE_VERSION > 0:
             try:
-                _show_browse_dialog_modern(pane)
+                _show_paste_dialog(slug, pane)
                 return
             except Exception as e:
                 print(f"Modern UI failed: {e}")
-        _show_browse_dialog_fallback()
+        _confirm_and_paste_fallback(slug, pane)
+        return
+
+    # No clipboard - show search/browse dialog
+    if PYSIDE_VERSION > 0:
+        try:
+            _show_browse_dialog_modern(pane)
+            return
+        except Exception as e:
+            print(f"Modern UI failed: {e}")
+    _show_browse_dialog_fallback()
+
+
+def _try_fetch_latest_team_share():
+    """Return the share_code of the latest non-expired team share if
+    HTTP team mode is configured, otherwise None. Best-effort — any
+    failure (offline, no team configured, no active share) returns
+    None so the paste flow falls through cleanly."""
+    try:
+        from sopdrop.config import (
+            get_team_library_mode, get_team_slug, get_active_library,
+        )
+        # Only try this when team mode is the current focus AND HTTP-
+        # backed; otherwise the user's NAS team or personal library
+        # paths handle their own clipboard story.
+        if get_team_library_mode() != 'http':
+            return None
+        team_slug = get_team_slug()
+        if not team_slug:
+            return None
+        from sopdrop.api import SopdropClient
+        return SopdropClient().fetch_latest_team_share(team_slug)
+    except Exception as e:
+        print(f"[Sopdrop] latest team share lookup failed: {e}")
+        return None
 
 
 def _check_system_clipboard():

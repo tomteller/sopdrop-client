@@ -50,7 +50,7 @@ function generateShareCode() {
  */
 router.post('/', authenticate, requireScope('write'), shareLimiter, async (req, res, next) => {
   try {
-    const { package: chopPackage, name } = req.body;
+    const { package: chopPackage, name, teamSlug } = req.body;
 
     if (!chopPackage) {
       throw new ValidationError('Package data is required');
@@ -68,6 +68,30 @@ router.post('/', authenticate, requireScope('write'), shareLimiter, async (req, 
     validateChopPackage(packageData);
 
     const assetMeta = extractAssetMetadata(packageData);
+
+    // Resolve team scope. When teamSlug is set the share is visible to
+    // the team via /teams/:slug/share/latest — that's how the on-prem
+    // "Quick Copy" workflow lets workstation B paste without needing
+    // workstation A's share code copied across machines. Caller must
+    // be a member of the team they're sharing into.
+    let teamId = null;
+    if (teamSlug) {
+      const team = await query(
+        'SELECT id FROM teams WHERE slug = $1',
+        [String(teamSlug).toLowerCase()]
+      );
+      if (team.rows.length === 0) {
+        throw new ValidationError(`Team '${teamSlug}' not found`);
+      }
+      teamId = team.rows[0].id;
+      const member = await query(
+        'SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2',
+        [teamId, req.user.id]
+      );
+      if (member.rows.length === 0 && !req.user.isAdmin) {
+        throw new ValidationError('You are not a member of this team');
+      }
+    }
 
     // Generate unique share code (retry on collision)
     let shareCode;
@@ -102,9 +126,9 @@ router.post('/', authenticate, requireScope('write'), shareLimiter, async (req, 
       INSERT INTO temp_shares (
         share_code, file_path, file_hash,
         name, houdini_context, node_count, node_names,
-        created_by, expires_at
+        created_by, team_id, expires_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     `, [
       shareCode,
       filePath,
@@ -114,6 +138,7 @@ router.post('/', authenticate, requireScope('write'), shareLimiter, async (req, 
       assetMeta.nodeCount,
       assetMeta.nodeNames,
       req.user.id,
+      teamId,
       expiresAt,
     ]);
 

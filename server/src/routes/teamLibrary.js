@@ -757,6 +757,50 @@ router.delete('/:slug/library/assets/:assetId/purge', authenticate, requireTeamM
   }
 });
 
+// ─── GET /:slug/share/latest ────────────────────────────────────────────
+//
+// Returns the most-recent non-expired team-scoped share. The Houdini
+// panel's Quick Copy on workstation A POSTs to /share with teamSlug;
+// workstation B (in the same team) hits this endpoint when its local
+// clipboard is empty so the user doesn't have to copy the 8-char
+// share code across machines. Walks the index
+// idx_temp_shares_team_latest.
+
+router.get('/:slug/share/latest', authenticate, requireTeamMember, async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT share_code, name, houdini_context, node_count, node_names,
+              created_by, expires_at, created_at
+         FROM temp_shares
+        WHERE team_id = $1 AND expires_at > NOW()
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [req.team.id]
+    );
+    if (result.rows.length === 0) {
+      throw new NotFoundError('No active team share');
+    }
+    const s = result.rows[0];
+    let createdByUsername = null;
+    if (s.created_by) {
+      const u = await query('SELECT username FROM users WHERE id = $1', [s.created_by]);
+      if (u.rows.length) createdByUsername = u.rows[0].username;
+    }
+    res.json({
+      shareCode: s.share_code,
+      name: s.name,
+      context: s.houdini_context,
+      nodeCount: s.node_count,
+      nodeNames: s.node_names || [],
+      createdBy: createdByUsername,
+      createdAt: s.created_at,
+      expiresAt: s.expires_at,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ─── GET /:slug/library/stats ───────────────────────────────────────────
 //
 // Footer stats: asset count, total size, collection count.
