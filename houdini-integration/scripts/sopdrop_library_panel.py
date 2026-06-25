@@ -11717,6 +11717,7 @@ class EditAssetDialog(QtWidgets.QDialog):
         paste_btn.setFixedHeight(scale(22))
         paste_btn.setCursor(QtCore.Qt.PointingHandCursor)
         paste_btn.setStyleSheet(btn_style)
+        paste_btn.setAutoDefault(False)
         paste_btn.clicked.connect(self._paste_clipboard)
         thumb_actions.addWidget(paste_btn)
 
@@ -11724,6 +11725,7 @@ class EditAssetDialog(QtWidgets.QDialog):
         browse_btn.setFixedHeight(scale(22))
         browse_btn.setCursor(QtCore.Qt.PointingHandCursor)
         browse_btn.setStyleSheet(btn_style)
+        browse_btn.setAutoDefault(False)
         browse_btn.clicked.connect(self._browse_image)
         thumb_actions.addWidget(browse_btn)
 
@@ -11772,6 +11774,7 @@ class EditAssetDialog(QtWidgets.QDialog):
         change_icon_btn.setFixedHeight(scale(22))
         change_icon_btn.setCursor(QtCore.Qt.PointingHandCursor)
         change_icon_btn.setStyleSheet(btn_style)
+        change_icon_btn.setAutoDefault(False)
         change_icon_btn.clicked.connect(self._show_icon_browser)
         icon_btns.addWidget(change_icon_btn)
 
@@ -11779,6 +11782,7 @@ class EditAssetDialog(QtWidgets.QDialog):
         clear_icon_btn.setFixedHeight(scale(22))
         clear_icon_btn.setCursor(QtCore.Qt.PointingHandCursor)
         clear_icon_btn.setStyleSheet(btn_style)
+        clear_icon_btn.setAutoDefault(False)
         clear_icon_btn.clicked.connect(self._clear_icon)
         icon_btns.addWidget(clear_icon_btn)
 
@@ -11873,6 +11877,7 @@ class EditAssetDialog(QtWidgets.QDialog):
                 border-color: {COLORS['border_light']};
             }}
         """)
+        cancel.setAutoDefault(False)
         cancel.clicked.connect(self.reject)
         btns.addWidget(cancel)
 
@@ -11891,6 +11896,8 @@ class EditAssetDialog(QtWidgets.QDialog):
                 background-color: {COLORS['accent_hover']};
             }}
         """)
+        save.setAutoDefault(True)
+        save.setDefault(True)
         save.clicked.connect(self._save)
         btns.addWidget(save)
 
