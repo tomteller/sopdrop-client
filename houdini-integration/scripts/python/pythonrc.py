@@ -3,12 +3,25 @@ Sopdrop Houdini Startup Script
 
 Initializes the Sopdrop TAB menu with your library assets on startup.
 
-On fresh Houdini:
-  - If a shelf file already exists from a previous session, load it immediately
-    (fast — no DB or NAS access).
-  - Regenerate using personal library only (fast, local SQLite).
-  - Team assets are added later when the Library panel opens and the
-    background mirror refresh completes.
+Why this runs synchronously and never calls hou.shelves.loadFile() at startup
+----------------------------------------------------------------------------
+The shelf file lives in toolbar/ under a HOUDINI_PATH entry (see sopdrop.json),
+so Houdini's own startup toolbar scan loads it natively and binds the tools as
+first-class, droppable TAB-menu tools. We just have to make sure the file is
+written to disk *before* that scan runs — hence this regenerates the file
+synchronously at interpreter init (skip_reload=True → content only, no live
+shelf manipulation, no UI calls).
+
+We deliberately do NOT call hou.shelves.loadFile() here. The previous version
+deferred a loadFile() (plus a destroy()+reload) to the first event-loop tick,
+before the shelf subsystem had finished initializing. That registered the tools
+as searchable but left them *unbound* — they showed up in the TAB menu but
+dropping them did nothing until opening the Library panel forced a second, late
+reload. Letting the native scan own the binding fixes that at the source.
+
+Personal assets (local SQLite) are written synchronously. Team assets (NAS) are
+folded in later by a background mirror refresh, which does the only in-session
+loadFile — safely, after the UI has fully settled.
 """
 
 import sys
@@ -27,32 +40,27 @@ if _sopdrop_houdini:
 
 
 def _init_sopdrop_menu():
-    """Initialize the Sopdrop TAB menu on startup."""
+    """Write the TAB-menu shelf file so Houdini's native toolbar scan binds it.
+
+    Content-only regeneration (skip_reload=True): reads the local SQLite
+    personal library and writes the shelf file. No hou.shelves calls, no UI
+    access — safe to run synchronously at interpreter init, which is what lets
+    the file land on disk before Houdini scans the toolbar/ directory.
+    """
     try:
         from sopdrop import menu
-        from sopdrop.config import get_active_library, get_team_library_path
+        from sopdrop.config import get_team_library_path
 
-        shelf_file = menu.get_shelf_file()
+        # Regenerate CONTENT ONLY with personal library (fast, local SQLite).
+        # skip_reload=True → do not touch the live shelf; the native toolbar
+        # scan loads + binds the file. skip_team=True avoids NAS access here.
+        menu.regenerate_menu(quiet=True, skip_reload=True, skip_team=True)
 
-        # If a shelf file already exists from a previous session, load it
-        # immediately — no DB or NAS access needed.  This covers the common
-        # "restart Houdini" case instantly.
-        if shelf_file.exists():
-            try:
-                import hou
-                hou.shelves.loadFile(str(shelf_file))
-                print(f"[Sopdrop] TAB menu loaded from previous session")
-            except Exception:
-                pass
-
-        # Regenerate with personal library only (fast, local SQLite).
-        # skip_team=True avoids NAS/mirror access on the main thread.
-        menu.regenerate_menu(quiet=True, skip_team=True)
-        print("[Sopdrop] TAB menu ready (type 'sopdrop' in TAB)")
-
-        # If a team library is configured, kick off a background mirror
-        # refresh + menu regen so team assets show up in the TAB menu
-        # without requiring the user to open the library panel first.
+        # If a NAS team library is configured, kick off a background mirror
+        # refresh + menu regen so team assets show up in the TAB menu without
+        # requiring the user to open the Library panel first. That regen does
+        # the only in-session loadFile — after the UI has fully settled, so the
+        # tools bind correctly (the same path the Library panel uses).
         if get_team_library_path():
             import threading
             threading.Thread(target=_deferred_team_sync, daemon=True).start()
@@ -88,7 +96,6 @@ def _deferred_team_sync():
             try:
                 from sopdrop import menu
                 menu.regenerate_menu(quiet=True, skip_team=False)
-                print("[Sopdrop] TAB menu updated with team assets")
             except Exception as e:
                 print(f"[Sopdrop] Team menu regen failed: {e}")
             finally:
@@ -102,20 +109,23 @@ def _deferred_team_sync():
         print(f"[Sopdrop] Team sync error: {e}")
 
 
-# Defer initialization until UI is ready
+# The TAB menu is a UI-only feature. In hython / `houdini -b` (render farm,
+# scene-processing tools, headless pipelines) there is no TAB menu, and running
+# the startup work there is pure liability: it touches the library DB, can spawn
+# a NAS team-sync thread, and prints to stdout — any of which can hang, error,
+# or corrupt output that a wrapping tool parses, breaking the headless launch.
+# hou.isUIAvailable() reflects the *launch mode* (True only for graphical
+# Houdini) and is valid this early in startup, so it's the right gate.
+#
+# When the UI is available, run synchronously at interpreter init so the shelf
+# file lands on disk BEFORE Houdini's toolbar scan — the native scan then loads
+# and binds the tools as droppable TAB-menu tools. skip_reload=True means no
+# UI/shelf work, so it's safe to run here without waiting for the event loop.
 try:
     import hou
-
-    def _deferred_init():
-        _init_sopdrop_menu()
-        try:
-            hou.ui.removeEventLoopCallback(_deferred_init)
-        except:
-            pass
-
-    hou.ui.addEventLoopCallback(_deferred_init)
-
-except ImportError:
-    _init_sopdrop_menu()
+    _ui_available = hou.isUIAvailable()
 except Exception:
+    _ui_available = False
+
+if _ui_available:
     _init_sopdrop_menu()

@@ -128,7 +128,9 @@ if _sp:
             sys.path.insert(0, _p)
 try:
     import sopdrop.menu
-    sopdrop.menu.paste_asset("{asset_id}")
+    # Pass Houdini's tool kwargs through so a dragged wire (TAB on an
+    # extended connector) auto-connects to the pasted recipe's entry node.
+    sopdrop.menu.paste_asset("{asset_id}", kwargs=globals().get("kwargs"))
 except ImportError:
     import hou
     hou.ui.displayMessage(
@@ -417,6 +419,131 @@ def cleanup_menu() -> bool:
 
 
 # ==============================================================================
+# Wire auto-connect (dragged-wire TAB menu paste)
+# ==============================================================================
+
+def _find_entry_node(nodes):
+    """Pick the recipe's entry node — the one a dragged output wire should feed.
+
+    The most-upstream node that accepts an input and has its first input free:
+    prefer true sources (all inputs empty), then the topmost (highest Y), then
+    the leftmost. Returns None if nothing in the recipe can take an input.
+    """
+    candidates = []
+    for n in nodes:
+        try:
+            if n.type().maxNumInputs() <= 0:
+                continue
+            if n.input(0) is not None:
+                continue
+        except Exception:
+            continue
+        candidates.append(n)
+
+    if not candidates:
+        return None
+
+    def sort_key(n):
+        try:
+            connected = sum(1 for i in n.inputs() if i is not None)
+        except Exception:
+            connected = 0
+        try:
+            pos = n.position()
+            return (connected, -pos[1], pos[0])
+        except Exception:
+            return (connected, 0, 0)
+
+    candidates.sort(key=sort_key)
+    return candidates[0]
+
+
+def _find_exit_node(nodes):
+    """Pick the recipe's exit node — the one whose output a dragged input wire
+    should connect to.
+
+    A node with an output that isn't already feeding another node in the recipe
+    (a sink), preferring the bottommost (lowest Y) then leftmost. Returns None
+    if nothing qualifies.
+    """
+    node_set = set(nodes)
+    candidates = []
+    for n in nodes:
+        try:
+            if n.type().maxNumOutputs() <= 0:
+                continue
+        except Exception:
+            pass
+        try:
+            downstream = [c.outputNode() for c in n.outputConnections()]
+        except Exception:
+            downstream = []
+        feeds_recipe = any(d in node_set for d in downstream if d is not None)
+        if not feeds_recipe:
+            candidates.append(n)
+
+    if not candidates:
+        return None
+
+    def sort_key(n):
+        try:
+            pos = n.position()
+            return (pos[1], pos[0])
+        except Exception:
+            return (0, 0)
+
+    candidates.sort(key=sort_key)
+    return candidates[0]
+
+
+def _autowire_from_kwargs(kwargs, created_items, target):
+    """Connect a dragged network-editor wire to the just-pasted recipe.
+
+    Houdini populates the TAB tool's kwargs with the pending connection:
+      - dragging from an output: ``inputnodename`` + ``outputindex`` — wire that
+        output into the recipe's entry node (forward, the common case).
+      - dragging from an input: ``outputnodename`` + ``inputindex`` — wire the
+        recipe's exit node into that input (reverse).
+    Best-effort: any failure is logged and ignored so paste still succeeds.
+    """
+    if not kwargs:
+        return
+    try:
+        import hou
+    except ImportError:
+        return
+
+    try:
+        nodes = [it for it in (created_items or [])
+                 if isinstance(it, hou.Node) and it.parent() == target]
+        if not nodes:
+            return
+
+        # Forward: dragged from a node's output (extending a wire down).
+        in_name = kwargs.get('inputnodename')
+        if in_name:
+            src = target.node(in_name)
+            if src is not None:
+                entry = _find_entry_node(nodes)
+                if entry is not None:
+                    out_idx = int(kwargs.get('outputindex', 0) or 0)
+                    entry.setInput(0, src, out_idx)
+                    return
+
+        # Reverse: dragged from a node's input (extending a wire up).
+        out_name = kwargs.get('outputnodename')
+        if out_name:
+            dst = target.node(out_name)
+            if dst is not None:
+                exit_node = _find_exit_node(nodes)
+                if exit_node is not None:
+                    in_idx = int(kwargs.get('inputindex', 0) or 0)
+                    dst.setInput(in_idx, exit_node, 0)
+    except Exception as e:
+        print(f"[Sopdrop] Auto-wire skipped: {e}")
+
+
+# ==============================================================================
 # Menu Actions (called from tool scripts)
 # ==============================================================================
 
@@ -442,10 +569,18 @@ def _wait_for_library_worker(timeout_ms=2000):
                 worker.wait(timeout_ms)
 
 
-def paste_asset(asset_id: str):
+def paste_asset(asset_id: str, kwargs=None):
     """
     Paste an asset from the library into the current network.
     Called from TAB menu tools.
+
+    Args:
+        asset_id: Library asset UUID to paste.
+        kwargs: Houdini tool kwargs from the network-editor TAB menu. When the
+            tool is invoked by dragging a wire, this carries the source/target
+            node + connector index so the dragged wire can auto-connect to the
+            pasted recipe (mirroring native node creation). None when pasted
+            without a dragged wire.
     """
     try:
         import hou
@@ -510,7 +645,8 @@ def paste_asset(asset_id: str):
         try:
             # Handle HDA assets differently to avoid UTF-8 issues
             if asset and asset.get('asset_type') == 'hda':
-                _paste_hda(asset, target, pane)
+                created = _paste_hda(asset, target, pane)
+                _autowire_from_kwargs(kwargs, created, target)
                 try:
                     record_asset_use(asset_id)
                 except Exception:
@@ -586,7 +722,12 @@ def paste_asset(asset_id: str):
             cursor_pos = pane.cursorPosition()
 
             # Import the nodes
-            import_items(package, target, position=cursor_pos)
+            created = import_items(package, target, position=cursor_pos)
+
+            # If the tool was invoked by dragging a wire in the network editor,
+            # connect that wire to the pasted recipe — same QoL behavior as
+            # creating a native node on an extended connector.
+            _autowire_from_kwargs(kwargs, created, target)
 
             # Record usage (non-critical — paste already succeeded)
             try:
@@ -611,14 +752,18 @@ def paste_asset(asset_id: str):
 
 
 def _paste_hda(asset, target, pane):
-    """Paste an HDA asset, handling binary file correctly to avoid UTF-8 errors."""
+    """Paste an HDA asset, handling binary file correctly to avoid UTF-8 errors.
+
+    Returns a list with the created node (for auto-wiring), or None.
+    """
     import hou
 
     file_path = asset.get('file_path', '')
     if not file_path or not os.path.exists(file_path):
         hou.ui.displayMessage("HDA file not found")
-        return
+        return None
 
+    node = None
     try:
         # Install the HDA definition
         hou.hda.installFile(file_path)
@@ -673,6 +818,8 @@ def _paste_hda(asset, target, pane):
             )
     except Exception as e:
         hou.ui.displayMessage(f"Failed to install HDA: {e}")
+
+    return [node] if node is not None else None
 
 
 def open_library_panel():

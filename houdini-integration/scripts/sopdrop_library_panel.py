@@ -11854,19 +11854,6 @@ class EditAssetDialog(QtWidgets.QDialog):
 
         layout.addStretch()
 
-    def _add_coll_tree_to_combo(self, items, depth=0):
-        """Recursively populate the collection dropdown with indentation."""
-        for coll in items:
-            if coll.get('source') == 'cloud':
-                continue
-            indent = "\u2003" * depth  # em-space for indentation
-            prefix = "\u25B8 " if depth > 0 else ""
-            self.coll_combo.addItem(
-                f"{indent}{prefix}{coll['name']}", coll['id']
-            )
-            if coll.get('children'):
-                self._add_coll_tree_to_combo(coll['children'], depth + 1)
-
         # -- Buttons --
         btns = QtWidgets.QHBoxLayout()
         btns.setSpacing(scale(10))
@@ -11908,6 +11895,19 @@ class EditAssetDialog(QtWidgets.QDialog):
         btns.addWidget(save)
 
         layout.addLayout(btns)
+
+    def _add_coll_tree_to_combo(self, items, depth=0):
+        """Recursively populate the collection dropdown with indentation."""
+        for coll in items:
+            if coll.get('source') == 'cloud':
+                continue
+            indent = " " * depth  # em-space for indentation
+            prefix = "▸ " if depth > 0 else ""
+            self.coll_combo.addItem(
+                f"{indent}{prefix}{coll['name']}", coll['id']
+            )
+            if coll.get('children'):
+                self._add_coll_tree_to_combo(coll['children'], depth + 1)
 
     def _load_current_thumbnail(self):
         # HTTP team mode: thumbnail comes over the network. Reuse the
