@@ -606,16 +606,13 @@ def _do_http_team_share(items, nodes):
     paste_cmd = f'sopdrop.paste("s/{share_code}")'
     _copy_to_clipboard(paste_cmd)
     node_count = len(nodes)
-    hou.ui.displayMessage(
-        f"Shared to team — anyone on the team can paste from any "
-        f"workstation.\n\n"
-        f"Code: {share_code}\n"
-        f"Nodes: {node_count}\n\n"
-        f"On another workstation just hit Paste (the panel auto-fetches "
-        f"the latest team share). The share code is also on your "
-        f"clipboard if you need it explicitly.\n\n"
-        f"Expires in 24 hours.",
-        title="Sopdrop - Shared (Team)",
+    # Non-blocking confirmation — the paste link is already on the clipboard
+    # and other workstations auto-fetch the latest team share, so a modal
+    # dialog on every copy is just noise.
+    hou.ui.setStatusMessage(
+        f"Sopdrop: shared {node_count} node{'s' if node_count != 1 else ''} "
+        f"to team — paste link on clipboard ({share_code}, expires 24h)",
+        severity=hou.severityType.ImportantMessage,
     )
 
 

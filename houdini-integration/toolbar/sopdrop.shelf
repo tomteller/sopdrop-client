@@ -6,8 +6,8 @@
  a single file. -->
 
   <toolshelf name="sopdrop" label="Sopdrop">
-    <memberTool name="sopdrop_save"/>
     <memberTool name="sopdrop_library"/>
+    <memberTool name="sopdrop_save"/>
     <memberTool name="sopdrop_share"/>
     <memberTool name="sopdrop_save_curves"/>
     <memberTool name="sopdrop_paste"/>
@@ -123,7 +123,7 @@ except Exception as e:
     <helpText><![CDATA[
 Share selected nodes with a colleague.
 
-Select nodes, click Share  a temporary link is created and
+Select nodes, click Share — a temporary link is created and
 copied to your clipboard. Send it to a colleague. They click
 Paste in Houdini and get the nodes.
 
@@ -172,7 +172,7 @@ Select channels in the Animation Editor (or select a node with
 keyframed parameters), then click this tool to save the curves.
 
 Curves are saved by channel order, so they can be applied to any
-parameters  not just the ones they came from.
+parameters — not just the ones they came from.
     ]]></helpText>
     <script scriptType="python"><![CDATA[
 import sys
