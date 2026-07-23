@@ -378,21 +378,13 @@ def _do_cloud_share(items, nodes):
         paste_cmd = f'sopdrop.paste("s/{share_code}")'
         _copy_to_clipboard(paste_cmd)
 
-        # Show success
+        # Non-blocking confirmation — the paste command is already on the
+        # clipboard, so a modal dialog is just noise on every copy.
         node_count = len(nodes)
-        msg = (
-            f"Link copied to clipboard!\n\n"
-            f"Code: {share_code}\n"
-            f"Nodes: {node_count}\n\n"
-            f"Your colleague can paste with:\n"
-            f"  {paste_cmd}\n\n"
-            f"Or click Paste with this in their clipboard.\n\n"
-            f"Expires in 24 hours."
-        )
-
-        hou.ui.displayMessage(
-            msg,
-            title="Sopdrop - Shared (Cloud)",
+        hou.ui.setStatusMessage(
+            f"Sopdrop: copied {node_count} node{'s' if node_count != 1 else ''} "
+            f"— paste link on clipboard ({share_code}, expires 24h)",
+            severity=hou.severityType.ImportantMessage,
         )
 
     except hou.OperationInterrupted:
@@ -426,21 +418,13 @@ def _do_team_share(items, nodes, team_path):
         paste_cmd = f'sopdrop.paste("t/{share_code}")'
         _copy_to_clipboard(paste_cmd)
 
-        # Show success
+        # Non-blocking confirmation — the paste command is already on the
+        # clipboard, so a modal dialog is just noise on every copy.
         node_count = len(nodes)
-        msg = (
-            f"Link copied to clipboard!\n\n"
-            f"Code: {share_code}\n"
-            f"Nodes: {node_count}\n\n"
-            f"Your colleague can paste with:\n"
-            f"  {paste_cmd}\n\n"
-            f"Or click Paste with this in their clipboard.\n\n"
-            f"Saved locally (no expiry)."
-        )
-
-        hou.ui.displayMessage(
-            msg,
-            title="Sopdrop - Shared (Team)",
+        hou.ui.setStatusMessage(
+            f"Sopdrop: copied {node_count} node{'s' if node_count != 1 else ''} "
+            f"— paste link on clipboard ({share_code})",
+            severity=hou.severityType.ImportantMessage,
         )
 
     except hou.OperationInterrupted:
