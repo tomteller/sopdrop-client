@@ -49,19 +49,24 @@ def _init_sopdrop_menu():
     """
     try:
         from sopdrop import menu
-        from sopdrop.config import get_team_library_path
+        from sopdrop.config import is_team_library_configured
 
         # Regenerate CONTENT ONLY with personal library (fast, local SQLite).
         # skip_reload=True → do not touch the live shelf; the native toolbar
-        # scan loads + binds the file. skip_team=True avoids NAS access here.
+        # scan loads + binds the file. skip_team=True avoids NAS/network here.
+        # (When native TAB recipes are disabled — the default, Shift+Tab menu
+        # instead — this writes a browse-only shelf.)
         menu.regenerate_menu(quiet=True, skip_reload=True, skip_team=True)
 
-        # If a NAS team library is configured, kick off a background mirror
-        # refresh + menu regen so team assets show up in the TAB menu without
-        # requiring the user to open the Library panel first. That regen does
-        # the only in-session loadFile — after the UI has fully settled, so the
+        # If a team library is configured (NAS path OR HTTP mode + slug),
+        # kick off a background sync + menu regen so team assets are
+        # available without requiring the user to open the Library panel
+        # first. Previously this was gated on get_team_library_path() only,
+        # so HTTP-mode teams never synced at startup — team recipes didn't
+        # load/work until the Library panel was opened. The regen does the
+        # only in-session loadFile — after the UI has fully settled, so the
         # tools bind correctly (the same path the Library panel uses).
-        if get_team_library_path():
+        if is_team_library_configured():
             import threading
             threading.Thread(target=_deferred_team_sync, daemon=True).start()
 
@@ -73,18 +78,40 @@ def _init_sopdrop_menu():
 
 
 def _deferred_team_sync():
-    """Background: refresh team mirror, then schedule menu regen on main thread.
+    """Background: warm the team library, then schedule menu regen on main thread.
 
-    Mirror refresh is NAS I/O and must stay off the main thread.  Menu
-    regeneration calls hou.shelves.loadFile which must run on the main thread,
-    so it is posted via hou.ui.addEventLoopCallback as a one-shot.
+    NAS mode: mirror refresh is NAS I/O and must stay off the main thread.
+    HTTP mode: fetch the team snapshot over HTTP (network I/O, also off the
+    main thread) — this primes both the in-process ETag cache and the
+    persistent disk mirror, so the later main-thread menu regen (and the
+    Shift+Tab menu) are served from cache instead of blocking on the network.
+
+    Menu regeneration calls hou.shelves.loadFile which must run on the main
+    thread, so it is posted via hou.ui.addEventLoopCallback as a one-shot.
     """
     try:
-        from sopdrop import library
-        try:
-            library.refresh_team_mirror()
-        except Exception as e:
-            print(f"[Sopdrop] Team mirror refresh failed: {e}")
+        from sopdrop.config import get_team_library_mode
+        if get_team_library_mode() == 'http':
+            try:
+                # Direct fetch — does NOT touch the active-library global,
+                # so it can't race user actions on the main thread.
+                from sopdrop import _team_http
+                _team_http.get_all_assets_cached()
+            except Exception as e:
+                print(f"[Sopdrop] Team library warm-up failed: {e}")
+                return
+        else:
+            from sopdrop import library
+            try:
+                library.refresh_team_mirror()
+            except Exception as e:
+                print(f"[Sopdrop] Team mirror refresh failed: {e}")
+                return
+
+        # Nothing to fold into the native TAB menu when recipes are disabled
+        # there — the Shift+Tab menu reads the (now warm) caches directly.
+        from sopdrop.config import get_tab_menu_enabled
+        if not get_tab_menu_enabled():
             return
 
         try:

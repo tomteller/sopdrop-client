@@ -106,6 +106,13 @@ Convenience wrapper: `import_at_cursor(package)` — calculates cursor or view c
    - Clear its default children
    - Load saved children into the container
 7. Call `loadItemsFromFile()` on the target (or container)
+   - **`hou.LoadWarning` is caught and ignored**: Houdini raises it for
+     non-fatal issues (unknown channels/parameters from version skew,
+     spare-parm conversion) *after* the items are already in the network.
+     The warning text is printed to the console and the paste proceeds —
+     item detection falls back to the before/after diff (step 8). The same
+     tolerance applies to `hou.hda.installFile()` in the HDA paste path
+     (`menu._paste_hda`).
 8. Detect new items via before/after set comparison + return value
 9. Filter network boxes into top-level vs nested (see below)
 10. Reposition and select

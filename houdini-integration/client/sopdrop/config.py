@@ -303,6 +303,40 @@ def set_team_library_path(path):
     save_config(config)
 
 
+def is_team_library_configured():
+    """True if a team library is configured in EITHER mode.
+
+    - NAS mode: `team_library_path` points at a shared SQLite directory.
+    - HTTP mode: `team_library_mode` == 'http' and `team_slug` is set
+      (there is no local path in HTTP mode).
+
+    Use this instead of `get_team_library_path()` when gating team-library
+    work — gating on the path alone silently excludes HTTP-mode teams.
+    """
+    if get_team_library_path():
+        return True
+    return get_team_library_mode() == "http" and bool(get_team_slug())
+
+
+def get_tab_menu_enabled():
+    """Whether Sopdrop recipes are injected into Houdini's NATIVE TAB menu.
+
+    Default False: recipes live in Sopdrop's own Shift+Tab menu (see
+    sopdrop/tabmenu.py) so they don't clutter the native TAB menu search.
+    Users who prefer the old behavior can re-enable via the Settings
+    dialog or set_tab_menu_enabled(True).
+    """
+    val = get_config().get("tab_menu_enabled")
+    return bool(val) if val is not None else False
+
+
+def set_tab_menu_enabled(enabled):
+    """Enable/disable Sopdrop recipes in Houdini's native TAB menu."""
+    config = get_config()
+    config["tab_menu_enabled"] = bool(enabled)
+    save_config(config)
+
+
 def get_personal_library_path():
     """Get the personal library path. Returns custom path or default ~/.sopdrop/library/."""
     config = get_config()

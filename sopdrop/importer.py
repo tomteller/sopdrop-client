@@ -416,8 +416,18 @@ def _import_v2(
         # Track items before import to detect new ones
         items_before = set(target_node.allItems())
 
-        # Load items using Houdini's native method
-        result = load_target.loadItemsFromFile(temp_path)
+        # Load items using Houdini's native method.
+        # loadItemsFromFile() raises hou.LoadWarning for NON-FATAL issues
+        # (unknown channels/parameters from Houdini version skew, spare-parm
+        # conversion, etc.) — but by the time it raises, the items are
+        # already in the network. Treat warnings as a successful load:
+        # print them for the console and fall back to the before/after
+        # item-diff detection below (result stays None).
+        try:
+            result = load_target.loadItemsFromFile(temp_path)
+        except hou.LoadWarning as e:
+            print(f"[Sopdrop] Paste completed with load warnings (ignored):\n{e}")
+            result = None
 
         # Debug: see what we got back
         print(f"[Sopdrop] loadItemsFromFile returned: {type(result)}")

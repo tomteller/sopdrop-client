@@ -9920,14 +9920,18 @@ class SettingsDialog(QtWidgets.QDialog):
         tab_layout = QtWidgets.QVBoxLayout(tab_group)
         tab_layout.setSpacing(scale(8))
 
-        self.tab_menu_checkbox = QtWidgets.QCheckBox("Show library assets in TAB menu")
+        self.tab_menu_checkbox = QtWidgets.QCheckBox("Also show library assets in Houdini's native TAB menu")
         self.tab_menu_checkbox.setToolTip(
-            "When enabled, your library assets appear in Houdini's TAB menu.\n"
-            "Disable this if you prefer to only use the Library panel."
+            "Recipes are always available in Sopdrop's own menu:\n"
+            "press Shift+Tab in any network editor.\n\n"
+            "Enable this to ALSO inject them into Houdini's native TAB menu\n"
+            "(they'll show up in TAB search results with an (SD) prefix)."
         )
         tab_layout.addWidget(self.tab_menu_checkbox)
 
-        tab_note = QtWidgets.QLabel("Changes take effect after restarting Houdini.")
+        tab_note = QtWidgets.QLabel(
+            "Shift+Tab in the network editor opens the Sopdrop recipe menu.\n"
+            "Native TAB menu changes take effect after restarting Houdini.")
         tab_note.setStyleSheet(f"color: {COLORS['text_dim']}; {sfs(10)}")
         tab_layout.addWidget(tab_note)
 
@@ -10409,8 +10413,9 @@ class SettingsDialog(QtWidgets.QDialog):
                 self.login_status.setText("Not logged in")
                 self.login_btn.setText("Login")
 
-            # TAB menu setting
-            tab_menu_enabled = config.get('tab_menu_enabled', True)
+            # TAB menu setting (default False — recipes live in the
+            # Shift+Tab menu; must match config.get_tab_menu_enabled())
+            tab_menu_enabled = bool(config.get('tab_menu_enabled', False))
             self.tab_menu_checkbox.setChecked(tab_menu_enabled)
 
             # Thumbnails setting
@@ -10460,7 +10465,7 @@ class SettingsDialog(QtWidgets.QDialog):
         else:
             self.login_status.setText("Sopdrop not installed")
             self.login_btn.setEnabled(False)
-            self.tab_menu_checkbox.setChecked(True)
+            self.tab_menu_checkbox.setChecked(False)
             self.show_thumbnails_checkbox.setChecked(True)
             self.local_only_checkbox.setEnabled(False)
             self.personal_path_input.setEnabled(False)

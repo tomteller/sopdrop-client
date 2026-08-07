@@ -243,12 +243,76 @@ def generate_shelf_xml(personal_assets: List[Dict[str, Any]], team_assets: List[
 # Main Functions
 # ==============================================================================
 
+def collect_menu_assets(skip_team: bool = False, quiet: bool = True):
+    """Collect (personal_assets, team_assets) for menu display.
+
+    Shared by the native TAB-menu shelf generation (regenerate_menu) and
+    Sopdrop's own Shift+Tab menu (tabmenu.py).
+
+    Handles active-library switching safely: waits for any in-flight
+    Library-panel worker before close_db() (docs/crash-safety.md #13/#16)
+    and always restores the original active library.
+
+    Team assets:
+      - HTTP mode: served by the mirror-backed get_all_assets_cached()
+        (ETag cache + persistent disk mirror) — works offline and without
+        the Library panel ever having been opened. Assets arrive with
+        'collections' already populated.
+      - NAS mode: search_assets() against the local mirror SQLite.
+    """
+    from .library import search_assets, close_db, get_all_assets_cached
+    from .config import (
+        get_active_library, set_active_library,
+        get_team_library_mode, is_team_library_configured,
+    )
+
+    def _switch(lib):
+        _wait_for_library_worker()
+        close_db()
+        set_active_library(lib)
+
+    original_library = get_active_library()
+    personal_assets, team_assets = [], []
+
+    try:
+        if original_library != 'personal':
+            _switch('personal')
+
+        personal_assets = search_assets(limit=500)
+        _enrich_with_collections(personal_assets)
+
+        if is_team_library_configured() and not skip_team:
+            try:
+                _switch('team')
+                if get_team_library_mode() == 'http':
+                    team_assets, _ = get_all_assets_cached()
+                else:
+                    team_assets = search_assets(limit=500)
+                    _enrich_with_collections(team_assets)
+            except Exception as e:
+                if not quiet:
+                    print(f"[Sopdrop] Could not load team assets for menu: {e}")
+    finally:
+        try:
+            if get_active_library() != original_library:
+                _switch(original_library)
+        except Exception:
+            pass
+
+    return personal_assets, team_assets
+
+
 def regenerate_menu(quiet: bool = False, skip_reload: bool = False, skip_team: bool = False) -> bool:
     """
     Regenerate the TAB menu shelf file from the library.
 
     This creates a shelf file with tools for each library asset.
     The tools appear in the TAB menu under Sopdrop/[Personal|Team]/[Collection]/[Name].
+
+    When the native TAB menu is disabled (config `tab_menu_enabled`, the
+    default — recipes live in the Shift+Tab menu instead), the shelf is
+    written with only the "Browse Library..." tools and any stale per-asset
+    tools are destroyed.
 
     Args:
         quiet: If True, suppress print output
@@ -259,48 +323,16 @@ def regenerate_menu(quiet: bool = False, skip_reload: bool = False, skip_team: b
         True if successful
     """
     try:
-        from .library import search_assets, get_asset_collections, close_db
-        from .config import (
-            get_team_library_path, get_active_library, set_active_library,
-            get_team_library_mode, get_team_slug,
-        )
+        from .config import get_tab_menu_enabled
 
-        original_library = get_active_library()
-
-        # Ensure we read personal library first
-        if original_library != 'personal':
-            close_db()
-            set_active_library('personal')
-
-        personal_assets = search_assets(limit=500)
-        _enrich_with_collections(personal_assets)
-
-        # Team library is "configured" in either mode:
-        #   - NAS mode: team_library_path points at a shared SQLite
-        #   - HTTP mode: team_library_mode=='http' and team_slug is set
-        # In HTTP mode there's no local path; gating the load on team_path
-        # would silently drop the entire team library from the TAB menu.
-        team_configured = bool(get_team_library_path()) or (
-            get_team_library_mode() == 'http' and bool(get_team_slug())
-        )
-
-        team_assets = []
-        if team_configured and not skip_team:
-            try:
-                close_db()
-                set_active_library('team')
-                team_assets = search_assets(limit=500)
-                _enrich_with_collections(team_assets)
-            except Exception as e:
-                if not quiet:
-                    print(f"[Sopdrop] Could not load team assets for TAB menu: {e}")
-            finally:
-                close_db()
-                set_active_library(original_library)
-        elif original_library != 'personal':
-            # Restore original library if team isn't configured
-            close_db()
-            set_active_library(original_library)
+        tab_enabled = get_tab_menu_enabled()
+        personal_assets, team_assets = [], []
+        if tab_enabled:
+            personal_assets, team_assets = collect_menu_assets(
+                skip_team=skip_team, quiet=quiet)
+        elif not quiet:
+            print("[Sopdrop] Native TAB menu recipes disabled — use Shift+Tab "
+                  "in the network editor (enable in Settings to restore)")
 
         total = len(personal_assets) + len(team_assets)
         if not quiet:
@@ -316,7 +348,10 @@ def regenerate_menu(quiet: bool = False, skip_reload: bool = False, skip_team: b
         if not quiet:
             print(f"[Sopdrop] Created {total} tools in TAB menu")
             print(f"[Sopdrop] Shelf file: {shelf_file}")
-            print("[Sopdrop] Press TAB and type 'sopdrop' to find your assets")
+            if tab_enabled:
+                print("[Sopdrop] Press TAB and type 'sopdrop' to find your assets")
+            else:
+                print("[Sopdrop] Press Shift+Tab in a network editor to browse recipes")
 
         # Try to reload shelves in Houdini (skip during modal
         # dialog saves — hou.shelves.loadFile modifies UI state which
@@ -569,10 +604,10 @@ def _wait_for_library_worker(timeout_ms=2000):
                 worker.wait(timeout_ms)
 
 
-def paste_asset(asset_id: str, kwargs=None):
+def paste_asset(asset_id: str, kwargs=None, pane=None, position=None):
     """
     Paste an asset from the library into the current network.
-    Called from TAB menu tools.
+    Called from TAB menu tools and the Shift+Tab menu (tabmenu.py).
 
     Args:
         asset_id: Library asset UUID to paste.
@@ -581,6 +616,12 @@ def paste_asset(asset_id: str, kwargs=None):
             node + connector index so the dragged wire can auto-connect to the
             pasted recipe (mirroring native node creation). None when pasted
             without a dragged wire.
+        pane: Target hou.NetworkEditor. Defaults to the first network editor
+            found. The Shift+Tab menu passes the editor the key was pressed
+            in so multi-editor layouts paste into the right network.
+        position: (x, y) network coords to paste at. Defaults to the pane's
+            current cursor position. The Shift+Tab menu passes the position
+            captured at keypress (the mouse moves to use the popup).
     """
     try:
         import hou
@@ -589,7 +630,9 @@ def paste_asset(asset_id: str, kwargs=None):
 
     try:
         from .library import load_asset_package, record_asset_use, get_asset, close_db
-        from .config import get_active_library, set_active_library, get_team_library_path
+        from .config import (
+            get_active_library, set_active_library, is_team_library_configured,
+        )
         from .importer import import_items
     except ImportError as e:
         hou.ui.displayMessage(
@@ -599,7 +642,8 @@ def paste_asset(asset_id: str, kwargs=None):
 
     try:
         # Get current network editor
-        pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
+        if pane is None:
+            pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
         if not pane:
             hou.ui.displayMessage("No network editor found")
             return
@@ -615,8 +659,10 @@ def paste_asset(asset_id: str, kwargs=None):
         switched = False
         if asset is None:
             other = 'team' if original_library == 'personal' else 'personal'
-            # Only try team if a team path is configured
-            if other == 'team' and not get_team_library_path():
+            # Only try team if a team library is configured (NAS path OR
+            # HTTP mode + slug — gating on the path alone silently broke
+            # team pastes for HTTP-mode teams until the panel was opened)
+            if other == 'team' and not is_team_library_configured():
                 pass
             else:
                 try:
@@ -645,7 +691,7 @@ def paste_asset(asset_id: str, kwargs=None):
         try:
             # Handle HDA assets differently to avoid UTF-8 issues
             if asset and asset.get('asset_type') == 'hda':
-                created = _paste_hda(asset, target, pane)
+                created = _paste_hda(asset, target, pane, position=position)
                 _autowire_from_kwargs(kwargs, created, target)
                 try:
                     record_asset_use(asset_id)
@@ -718,8 +764,9 @@ def paste_asset(asset_id: str, kwargs=None):
                 if result == 1:
                     return
 
-            # Get cursor position for placement
-            cursor_pos = pane.cursorPosition()
+            # Get placement position (explicit position from the Shift+Tab
+            # menu wins; otherwise the pane's live cursor position)
+            cursor_pos = position if position is not None else pane.cursorPosition()
 
             # Import the nodes
             created = import_items(package, target, position=cursor_pos)
@@ -751,12 +798,17 @@ def paste_asset(asset_id: str, kwargs=None):
         traceback.print_exc()
 
 
-def _paste_hda(asset, target, pane):
+def _paste_hda(asset, target, pane, position=None):
     """Paste an HDA asset, handling binary file correctly to avoid UTF-8 errors.
 
     Returns a list with the created node (for auto-wiring), or None.
     """
     import hou
+
+    def _place_pos():
+        if position is not None:
+            return hou.Vector2(position[0], position[1])
+        return pane.cursorPosition()
 
     file_path = asset.get('file_path', '')
     if not file_path or not os.path.exists(file_path):
@@ -765,8 +817,13 @@ def _paste_hda(asset, target, pane):
 
     node = None
     try:
-        # Install the HDA definition
-        hou.hda.installFile(file_path)
+        # Install the HDA definition. installFile() can raise
+        # hou.LoadWarning for non-fatal issues even though the definition
+        # was installed — log and continue instead of failing the paste.
+        try:
+            hou.hda.installFile(file_path)
+        except hou.LoadWarning as e:
+            print(f"[Sopdrop] HDA installed with warnings (ignored):\n{e}")
 
         # Get the type name from asset metadata
         hda_type_name = asset.get('hda_type_name', '')
@@ -794,7 +851,7 @@ def _paste_hda(asset, target, pane):
             try:
                 # Extract base type name (strip version namespace)
                 base_type = hda_type_name.split('::')[0] if '::' in hda_type_name else hda_type_name
-                cursor_pos = pane.cursorPosition()
+                cursor_pos = _place_pos()
                 node = target.createNode(hda_type_name)
                 if node:
                     node.setPosition(cursor_pos)
@@ -804,7 +861,7 @@ def _paste_hda(asset, target, pane):
                 try:
                     node = target.createNode(base_type)
                     if node:
-                        node.setPosition(pane.cursorPosition())
+                        node.setPosition(_place_pos())
                 except Exception as e2:
                     hou.ui.displayMessage(
                         f"HDA installed but could not create node.\n"

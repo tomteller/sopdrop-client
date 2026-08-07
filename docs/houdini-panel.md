@@ -58,9 +58,19 @@ Status probe is best-effort with a 5s timeout. Error messages distinguish trust-
 
 ## Startup & TAB Menu
 
-### TAB Menu System (`menu.py`)
+### Shift+Tab Recipe Menu (`tabmenu.py` + `nodegraphhooks.py`) — the default
 
-Assets from the library appear in Houdini's TAB menu as tools under `Sopdrop/Personal/[Collection]/[Name]` and `Sopdrop/Team/[Collection]/[Name]`. Each tool calls `sopdrop.menu.paste_asset(asset_id)` to paste the asset into the current network.
+Sopdrop ships its own TAB menu: pressing **Shift+Tab** in any network editor opens a searchable Qt popup listing every personal + team recipe for the current network context. This is the default paste entry point — recipes are **no longer injected into Houdini's native TAB menu** unless the user opts back in (Settings → "Also show library assets in Houdini's native TAB menu", config key `tab_menu_enabled`, default `False` via `config.get_tab_menu_enabled()`).
+
+Plumbing:
+
+- `sopdrop-houdini/scripts/python/nodegraphhooks.py` — Houdini's network editor imports the first `nodegraphhooks` module on the Python path and calls `createEventHandler(uievent, pending_actions)` per UI event. On a `keyhit` of `Shift+Tab` (or `Shift+Backtab`/`Backtab` on some Qt platforms) it calls `sopdrop.tabmenu.show_tab_menu(editor=uievent.editor)` and returns `(None, True)` to swallow the event. Everything else returns `(None, False)`. Studios that already ship their own `nodegraphhooks.py` must merge the handler (Houdini imports only one).
+- `sopdrop-client/sopdrop/tabmenu.py` — the popup itself (`_RecipeMenu`, a `Qt.Popup` frame): search field + list, Up/Down/Enter navigation, Esc/outside-click dismiss. Recipes come from `menu.collect_menu_assets()` and are filtered through `CONTEXT_TO_NETTYPE` so cop/cop2 and out/rop aliases match. The paste position is captured from `editor.cursorPosition()` **at keypress** (the mouse then moves to the popup) and passed to `paste_asset(asset_id, pane=..., position=...)`.
+- Crash safety: module-level strong ref while shown (cleared in `closeEvent`), `WA_DeleteOnClose`, paste deferred via a 0 ms single-shot timer whose closure captures only plain data, no `processEvents()`/`exec_()`.
+
+### Native TAB Menu System (`menu.py`) — opt-in
+
+When `tab_menu_enabled` is on, assets also appear in Houdini's native TAB menu as tools under `Sopdrop/Personal/[Collection]/[Name]` and `Sopdrop/Team/[Collection]/[Name]`. Each tool calls `sopdrop.menu.paste_asset(asset_id)` to paste the asset into the current network.
 
 The TAB menu is a shelf file (`sopdrop_library.shelf`) with one `<tool>` per asset:
 - Tools are context-filtered (SOP assets only appear in SOP networks, etc.)
@@ -68,25 +78,37 @@ The TAB menu is a shelf file (`sopdrop_library.shelf`) with one `<tool>` per ass
 - VEX snippets are excluded from the TAB menu (not pasteable into networks)
 - Each tool has keywords for TAB search: asset name, tags, context
 
+When `tab_menu_enabled` is off, `regenerate_menu()` writes a browse-only shelf (just the "Browse Library..." tools) and destroys any stale per-asset tools.
+
+Asset collection is shared between both menus via `menu.collect_menu_assets(skip_team=...)`: it switches active libraries safely (waits for panel workers before `close_db()` — crash-safety #13/#16), always restores the original library, and sources team assets from `get_all_assets_cached()` in HTTP mode (ETag cache + persistent disk mirror — works offline and without the panel ever having been opened) or `search_assets()` against the mirror SQLite in NAS mode.
+
 ### Startup Flow (`pythonrc.py`)
 
 ```
-Houdini launches
-  └── hou.ui.addEventLoopCallback(_deferred_init)  [waits for UI]
-        └── _init_sopdrop_menu()
-              ├── Load existing shelf file if present (instant, no DB)
-              └── regenerate_menu(skip_team=True)
-                    └── Query personal library only (fast, local SQLite)
-                    └── Write shelf XML + hou.shelves.loadFile()
+Houdini launches (UI mode only — hou.isUIAvailable() gate)
+  └── _init_sopdrop_menu()  [synchronous, before Houdini's toolbar scan]
+        ├── regenerate_menu(skip_reload=True, skip_team=True)
+        │     └── Personal library only (fast, local SQLite); content-only,
+        │         the native toolbar scan loads + binds the shelf file
+        └── if is_team_library_configured():   ← NAS path OR http mode + slug
+              └── background thread: _deferred_team_sync()
+                    ├── NAS mode:  library.refresh_team_mirror()
+                    ├── HTTP mode: _team_http.get_all_assets_cached()
+                    │              (warms ETag cache + disk mirror over HTTP;
+                    │               does NOT touch the active-library global)
+                    └── if tab_menu_enabled:
+                          hou.ui.addEventLoopCallback → regenerate_menu()
+                          (the only in-session loadFile, after UI settles)
 ```
 
-**Key design**: Startup never touches the NAS. `skip_team=True` means only personal library assets are in the TAB menu initially. Team assets are added later when the Library panel opens and the background mirror refresh completes (`_on_worker_finished` → `_regenerate_tab_menu()`).
+**Key design**: Startup never blocks on NAS or network — team I/O runs on a background thread. The startup sync covers **both** team modes; it was previously gated on `get_team_library_path()` alone, which silently skipped HTTP-mode teams — team recipes didn't load (and TAB pastes of team assets failed) until the Library panel was opened. The HTTP warm-up also primes the caches the Shift+Tab menu reads, so the first Shift+Tab is instant even with the native TAB menu disabled.
 
 ### TAB Menu Regeneration Triggers
 
 | Trigger | Includes team? | Reload shelf? |
 |---------|---------------|---------------|
-| Houdini startup (`pythonrc.py`) | No (`skip_team`) | Yes |
+| Houdini startup (`pythonrc.py`) | No (`skip_team`); team folded in by background sync | No (native toolbar scan binds) |
+| Startup background team sync | Yes | Yes (only if `tab_menu_enabled`) |
 | Library panel opens (`__init__`) | Yes (after worker) | Yes |
 | Ctrl+R refresh | Yes (after worker) | Yes |
 | Save/delete/rename asset | Yes | No (skip_reload during modal dialogs) |
