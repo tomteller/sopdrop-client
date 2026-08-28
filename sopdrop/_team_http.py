@@ -384,6 +384,25 @@ def get_asset(asset_id: str) -> dict | None:
     return _asset_from_http(result.body)
 
 
+def get_asset_by_slug(slug: str) -> dict | None:
+    """Find an asset by its shareable slug.
+
+    The server has no slug lookup endpoint, but the full asset list is
+    already ETag-cached for the panel, so match against that rather than
+    adding a round trip.
+    """
+    assets, _ = get_all_assets_cached()
+    for asset in assets:
+        if asset.get("slug") == slug:
+            return asset
+    # Fall back to the owner-qualified remote slug ("owner/name")
+    for asset in assets:
+        remote = asset.get("_remote_slug") or ""
+        if remote == slug or remote.split("/", 1)[-1] == slug:
+            return asset
+    return None
+
+
 def load_asset_package(asset_id: str) -> dict | None:
     """Download the .sopdrop package by hitting /assets/:slug/download/latest.
 

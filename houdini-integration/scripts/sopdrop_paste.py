@@ -22,6 +22,14 @@ except ImportError:
         QtWidgets = None
         PYSIDE_VERSION = 0
 
+# Verbose tracing, off unless SOPDROP_DEBUG is set. The client may not be
+# installed yet — this tool reports that itself, so tracing just goes quiet.
+try:
+    from sopdrop._log import debug
+except ImportError:
+    def debug(message):
+        pass
+
 
 # Houdini-matching dark theme colors
 COLORS = {
@@ -230,7 +238,7 @@ def _get_paste_position(pane):
         bounds = pane.visibleBounds()
         center = bounds.center()
         position = (center[0], center[1])
-        print(f"[Sopdrop] Paste position: view center ({position[0]:.1f}, {position[1]:.1f})")
+        debug(f"Paste position: view center ({position[0]:.1f}, {position[1]:.1f})")
         return position
     except Exception:
         pass
@@ -970,8 +978,8 @@ def _paste_by_slug(slug, pane=None):
         if slug.startswith("lib/"):
             # Library asset — load from local library by slug
             lib_slug = slug[4:]
-            package = _fetch_library_asset(lib_slug)
-            if package is None:
+            asset = _find_library_asset(lib_slug)
+            if asset is None:
                 hou.ui.displayMessage(
                     f"Library asset not found: {lib_slug}\n\n"
                     "The asset may have been deleted or renamed.",
@@ -983,6 +991,29 @@ def _paste_by_slug(slug, pane=None):
             position = _get_paste_position(pane) if pane else (0, 0)
             target_node = pane.pwd() if pane else None
 
+            # HDAs are installed, not pasted — they have no .sopdrop package.
+            if asset.get("asset_type") == "hda":
+                from sopdrop.menu import paste_hda
+                paste_hda(asset, target_node, pane)
+                try:
+                    from sopdrop.library import record_asset_use
+                    record_asset_use(asset["id"])
+                except Exception:
+                    pass
+                return
+
+            from sopdrop.library import load_asset_package
+            package = load_asset_package(asset["id"])
+            if package is None:
+                hou.ui.displayMessage(
+                    f"Could not load '{asset.get('name', lib_slug)}'.\n\n"
+                    "The asset is in your library but its package file could "
+                    "not be read.",
+                    title="Sopdrop - Load Failed",
+                    severity=hou.severityType.Error,
+                )
+                return
+
             if _offer_placeholders_and_paste(package, target_node, position):
                 meta = package.get("metadata", {})
                 node_count = meta.get("node_count", "?")
@@ -990,10 +1021,8 @@ def _paste_by_slug(slug, pane=None):
 
                 # Record usage
                 try:
-                    from sopdrop.library import get_asset_by_slug, record_asset_use
-                    asset = get_asset_by_slug(lib_slug)
-                    if asset:
-                        record_asset_use(asset['id'])
+                    from sopdrop.library import record_asset_use
+                    record_asset_use(asset['id'])
                 except Exception:
                     pass
             return
@@ -1125,41 +1154,45 @@ def _get_library_asset_info(slug):
     return None
 
 
-def _fetch_library_asset(slug):
-    """Load library asset package by slug. Returns package dict or None."""
+def _find_library_asset(slug):
+    """Find a library asset by slug, checking both libraries.
+
+    Returns the asset dict, or None. Looks in the active library first, then
+    the other one — a link can be shared between someone's personal library
+    and the team library.
+    """
     try:
-        from sopdrop.library import get_asset_by_slug, load_asset_package
-        from sopdrop.config import get_active_library
-        print(f"[Sopdrop] Looking up library asset: {slug} (library={get_active_library()})")
+        from sopdrop.library import get_asset_by_slug, close_db
+        from sopdrop.config import (get_active_library, set_active_library,
+                                    get_team_library_path)
+
+        current = get_active_library()
+        debug(f"Looking up library asset: {slug} (library={current})")
         asset = get_asset_by_slug(slug)
         if asset:
-            return load_asset_package(asset['id'])
-        print(f"[Sopdrop] Asset not found by slug: {slug}")
+            return asset
 
-        # Try the other library if not found
-        from sopdrop.library import close_db
-        from sopdrop.config import set_active_library, get_team_library_path
-        current = get_active_library()
+        debug(f"Asset not found by slug in {current} library: {slug}")
+
         other = 'team' if current == 'personal' else 'personal'
         if other == 'team' and not get_team_library_path():
             return None
+
         try:
-            print(f"[Sopdrop] Trying {other} library...")
+            debug(f"Trying {other} library...")
             close_db()
             set_active_library(other)
             asset = get_asset_by_slug(slug)
             if asset:
-                pkg = load_asset_package(asset['id'])
-                if pkg:
-                    print(f"[Sopdrop] Found in {other} library")
-                    return pkg
-        except Exception:
-            pass
+                debug(f"Found in {other} library")
+                return asset
+        except Exception as e:
+            debug(f"Could not check {other} library: {e}")
         finally:
             close_db()
             set_active_library(current)
     except Exception as e:
-        print(f"[Sopdrop] Could not load library asset '{slug}': {e}")
+        print(f"[Sopdrop] Could not look up library asset '{slug}': {e}")
         import traceback
         traceback.print_exc()
     return None

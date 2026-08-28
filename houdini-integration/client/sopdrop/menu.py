@@ -15,10 +15,13 @@ Usage:
 """
 
 import os
+import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 from xml.sax.saxutils import escape
+
+from ._log import debug
 
 
 # ==============================================================================
@@ -40,7 +43,104 @@ CONTEXT_TO_NETTYPE = {
     'out': 'ROP',
 }
 
+# Network type -> the hou attribute that proves the running Houdini has it.
+# Houdini 20.5 introduced Copernicus (COP) alongside the legacy compositing
+# network (COP2), and COP2 is being retired — so which one exists depends on
+# the version we happen to be running in.
+NETTYPE_PROBES = {
+    'SOP': 'sopNodeTypeCategory',
+    'VOP': 'vopNodeTypeCategory',
+    'DOP': 'dopNodeTypeCategory',
+    'COP2': 'cop2NodeTypeCategory',
+    'COP': 'copNodeTypeCategory',
+    'TOP': 'topNodeTypeCategory',
+    'LOP': 'lopNodeTypeCategory',
+    'CHOP': 'chopNodeTypeCategory',
+    'OBJ': 'objNodeTypeCategory',
+    'ROP': 'ropNodeTypeCategory',
+}
+
 SHELF_FILE_NAME = "sopdrop_library.shelf"
+
+
+# ==============================================================================
+# Houdini Version Compatibility
+# ==============================================================================
+
+def _supported_net_types():
+    """The set of contextNetType values the running Houdini understands.
+
+    Returns None when we're not inside Houdini and have nothing to check
+    against.
+    """
+    try:
+        import hou
+    except ImportError:
+        return None
+
+    supported = {net_type for net_type, probe in NETTYPE_PROBES.items()
+                 if hasattr(hou, probe)}
+    return supported or None
+
+
+def get_context_net_types():
+    """Map our contexts to contextNetType values valid in this Houdini.
+
+    Houdini's shelf loader rejects a tool whose network type it doesn't
+    recognise, and a single bad tool can take the whole shelf file down with
+    it — and with it every Sopdrop entry in the TAB menu.  So contexts this
+    Houdini can't host are dropped rather than emitted, and COP assets fall
+    back to Copernicus on versions where the legacy COP2 network is gone.
+    """
+    supported = _supported_net_types()
+    if supported is None:
+        return dict(CONTEXT_TO_NETTYPE)
+
+    resolved = {}
+    for context, net_type in CONTEXT_TO_NETTYPE.items():
+        if net_type == 'COP2' and 'COP2' not in supported:
+            net_type = 'COP'
+        if net_type in supported:
+            resolved[context] = net_type
+    return resolved
+
+
+def node_type_category(context: str):
+    """Return the hou node type category for one of our contexts, or None.
+
+    Probes are ordered most- to least-preferred so that 'cop' resolves to the
+    legacy COP2 category where it still exists and to Copernicus where it
+    doesn't.  Never raises — a context this Houdini doesn't have is None.
+    """
+    probes = {
+        'sop': ('sopNodeTypeCategory',),
+        'obj': ('objNodeTypeCategory',),
+        'object': ('objNodeTypeCategory',),
+        'vop': ('vopNodeTypeCategory',),
+        'dop': ('dopNodeTypeCategory',),
+        'cop': ('cop2NodeTypeCategory', 'copNodeTypeCategory'),
+        'cop2': ('cop2NodeTypeCategory', 'copNodeTypeCategory'),
+        'top': ('topNodeTypeCategory',),
+        'lop': ('lopNodeTypeCategory',),
+        'chop': ('chopNodeTypeCategory',),
+        'rop': ('ropNodeTypeCategory',),
+        'out': ('ropNodeTypeCategory',),
+    }.get((context or '').lower(), ())
+
+    try:
+        import hou
+    except ImportError:
+        return None
+
+    for probe in probes:
+        getter = getattr(hou, probe, None)
+        if getter is None:
+            continue
+        try:
+            return getter()
+        except Exception:
+            continue
+    return None
 
 
 # ==============================================================================
@@ -61,7 +161,14 @@ def get_shelf_dir() -> Path:
         import hou
         shelf_dir = Path(hou.homeHoudiniDirectory()) / "toolbar"
     except ImportError:
-        shelf_dir = Path.home() / "Library" / "Preferences" / "houdini" / "20.5" / "toolbar"
+        # Outside Houdini: use the newest Houdini prefs directory we can find.
+        from .houdini_paths import newest_prefs_dir
+        prefs = newest_prefs_dir()
+        if prefs is None:
+            raise RuntimeError(
+                "Could not find a Houdini preferences directory. "
+                "Set SOPDROP_HOUDINI_PATH or run this from inside Houdini.")
+        shelf_dir = prefs / "toolbar"
 
     shelf_dir.mkdir(parents=True, exist_ok=True)
     return shelf_dir
@@ -72,11 +179,27 @@ def get_shelf_file() -> Path:
     return get_shelf_dir() / SHELF_FILE_NAME
 
 
+def _load_shelf_file(shelf_file: Path) -> None:
+    """Load a shelf file into the running Houdini session.
+
+    hou.shelves.loadFile is the targeted call, but it has historically been
+    the first thing to break across Houdini versions, so fall back to a full
+    reload of every shelf file before giving up.
+    """
+    import hou
+
+    try:
+        hou.shelves.loadFile(str(shelf_file))
+    except Exception:
+        hou.shelves.reloadFiles()
+
+
 # ==============================================================================
 # XML Generation
 # ==============================================================================
 
-def generate_tool_xml(asset: Dict[str, Any], library_type: str = 'personal') -> str:
+def generate_tool_xml(asset: Dict[str, Any], library_type: str = 'personal',
+                      net_types: Optional[Dict[str, str]] = None) -> str:
     """Generate XML for a single tool."""
     asset_id = asset.get('id', '')
     name = asset.get('name', 'Untitled')
@@ -90,8 +213,15 @@ def generate_tool_xml(asset: Dict[str, Any], library_type: str = 'personal') -> 
     if context == 'path':
         return ''
 
-    # Get Houdini network type
-    net_type = CONTEXT_TO_NETTYPE.get(context, 'SOP')
+    # Get Houdini network type. Contexts this Houdini can't host are skipped
+    # rather than written out with a network type the shelf loader will reject.
+    if net_types is None:
+        net_types = get_context_net_types()
+    net_type = net_types.get(context)
+    if net_type is None:
+        net_type = net_types.get('sop')
+        if net_type is None:
+            return ''
 
     # Tool name (must be unique, valid identifier)
     safe_id = asset_id.replace('-', '_')
@@ -166,9 +296,12 @@ except Exception as e:
   </tool>'''
 
 
-def generate_browse_tool_xml(context: str) -> str:
+def generate_browse_tool_xml(context: str, net_type: Optional[str] = None) -> str:
     """Generate XML for a 'Browse Library...' tool."""
-    net_type = CONTEXT_TO_NETTYPE.get(context, 'SOP')
+    if net_type is None:
+        net_type = get_context_net_types().get(context)
+        if net_type is None:
+            return ''
     tool_name = f"sopdrop_browse_{context}"
 
     return f'''
@@ -204,28 +337,49 @@ except Exception as e:
   </tool>'''
 
 
-def generate_shelf_xml(personal_assets: List[Dict[str, Any]], team_assets: List[Dict[str, Any]] = None) -> str:
-    """Generate the complete shelf XML document."""
+def build_shelf(personal_assets: List[Dict[str, Any]],
+                team_assets: List[Dict[str, Any]] = None):
+    """Build the shelf XML document and the set of tool names it defines.
+
+    The names come back with the XML so callers never have to re-derive them
+    and drift from what was actually written.
+    """
+    # Resolve network types once — they depend on the running Houdini version
+    net_types = get_context_net_types()
+
     # Generate tool XML for each asset
     tool_xmls = []
+    tool_names = set()
+
     for asset in personal_assets:
-        xml = generate_tool_xml(asset, 'personal')
+        xml = generate_tool_xml(asset, 'personal', net_types)
         if xml:
             tool_xmls.append(xml)
+            tool_names.add(f"sopdrop_lib_{asset.get('id', '').replace('-', '_')}")
 
     if team_assets:
         for asset in team_assets:
-            xml = generate_tool_xml(asset, 'team')
+            xml = generate_tool_xml(asset, 'team', net_types)
             if xml:
                 tool_xmls.append(xml)
+                tool_names.add(f"sopdrop_lib_{asset.get('id', '').replace('-', '_')}")
 
-    # Add browse tools for each context
-    for context in CONTEXT_TO_NETTYPE.keys():
-        tool_xmls.append(generate_browse_tool_xml(context))
+    # Add one browse tool per network type. Several of our contexts share a
+    # network type (rop/out, and cop/cop2 once the legacy COP2 network is
+    # gone), and duplicates would just clutter the TAB menu.
+    seen_net_types = set()
+    for context, net_type in net_types.items():
+        if net_type in seen_net_types:
+            continue
+        xml = generate_browse_tool_xml(context, net_type)
+        if xml:
+            seen_net_types.add(net_type)
+            tool_xmls.append(xml)
+            tool_names.add(f"sopdrop_browse_{context}")
 
     tools_xml = '\n'.join(tool_xmls)
 
-    return f'''<?xml version="1.0" encoding="UTF-8"?>
+    xml_content = f'''<?xml version="1.0" encoding="UTF-8"?>
 <!--
   Sopdrop Library TAB Menu Tools
   Auto-generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
@@ -237,6 +391,12 @@ def generate_shelf_xml(personal_assets: List[Dict[str, Any]], team_assets: List[
 {tools_xml}
 </shelfDocument>
 '''
+    return xml_content, tool_names
+
+
+def generate_shelf_xml(personal_assets: List[Dict[str, Any]], team_assets: List[Dict[str, Any]] = None) -> str:
+    """Generate the complete shelf XML document."""
+    return build_shelf(personal_assets, team_assets)[0]
 
 
 # ==============================================================================
@@ -339,7 +499,8 @@ def regenerate_menu(quiet: bool = False, skip_reload: bool = False, skip_team: b
             print(f"[Sopdrop] Regenerating TAB menu with {total} assets...")
 
         # Generate XML
-        xml_content = generate_shelf_xml(personal_assets, team_assets if team_assets else None)
+        xml_content, valid_tools = build_shelf(
+            personal_assets, team_assets if team_assets else None)
 
         # Write shelf file
         shelf_file = get_shelf_file()
@@ -360,18 +521,6 @@ def regenerate_menu(quiet: bool = False, skip_reload: bool = False, skip_team: b
             try:
                 import hou
 
-                # Build set of valid tool names from the new shelf
-                valid_tools = set()
-                for asset in personal_assets:
-                    safe_id = asset.get('id', '').replace('-', '_')
-                    valid_tools.add(f"sopdrop_lib_{safe_id}")
-                if team_assets:
-                    for asset in team_assets:
-                        safe_id = asset.get('id', '').replace('-', '_')
-                        valid_tools.add(f"sopdrop_lib_{safe_id}")
-                for ctx in CONTEXT_TO_NETTYPE:
-                    valid_tools.add(f"sopdrop_browse_{ctx}")
-
                 # Destroy orphaned tools (e.g. deleted assets still in memory)
                 for tool_name in list(hou.shelves.tools().keys()):
                     if tool_name.startswith('sopdrop_lib_') or tool_name.startswith('sopdrop_browse_'):
@@ -381,14 +530,17 @@ def regenerate_menu(quiet: bool = False, skip_reload: bool = False, skip_team: b
                             except Exception:
                                 pass
 
-                hou.shelves.loadFile(str(shelf_file))
-                if not quiet:
-                    print("[Sopdrop] Shelf reloaded - tools should appear in TAB menu")
+                _load_shelf_file(shelf_file)
+                debug("Shelf reloaded - tools should appear in TAB menu")
             except ImportError:
                 pass
             except Exception as e:
-                if not quiet:
-                    print(f"[Sopdrop] Note: Restart Houdini to see changes ({e})")
+                # A shelf that won't load means an empty TAB menu, which is
+                # otherwise indistinguishable from an empty library — always
+                # say so, even in quiet mode.
+                print(f"[Sopdrop] Could not load the TAB menu shelf: {e}")
+                print(f"[Sopdrop] Shelf file: {shelf_file}")
+                print("[Sopdrop] Run sopdrop.menu.diagnose() for details.")
 
         return True
 
@@ -423,6 +575,73 @@ def remove_menu() -> bool:
     except Exception as e:
         print(f"[Sopdrop] Failed to remove menu: {e}")
         return False
+
+
+def diagnose() -> None:
+    """Print why the Sopdrop TAB menu might not be showing up.
+
+    Almost every way the TAB menu can fail is silent by design — a missing
+    env var, a shelf file Houdini declined to parse, a library that came back
+    empty.  This walks the same path and says what it finds.
+    """
+    print("=== Sopdrop TAB menu diagnostics ===")
+
+    try:
+        import hou
+        print(f"Houdini:               {hou.applicationVersionString()}")
+        print(f"Python:                {sys.version.split()[0]}")
+    except ImportError:
+        print("Houdini:               not running inside Houdini")
+        hou = None
+
+    sopdrop_path = os.environ.get('SOPDROP_HOUDINI_PATH', '')
+    print(f"SOPDROP_HOUDINI_PATH:  {sopdrop_path or '(not set)'}")
+    if not sopdrop_path:
+        print("  -> Houdini can't find the Sopdrop package. Re-run install.py,")
+        print("     or point a Houdini package file at the integration folder.")
+
+    print(f"HOUDINI_TOOLBAR_PATH:  {os.environ.get('HOUDINI_TOOLBAR_PATH', '(default)')}")
+
+    net_types = get_context_net_types()
+    print(f"Network types in use:  {', '.join(sorted(set(net_types.values())))}")
+    dropped = sorted(set(CONTEXT_TO_NETTYPE) - set(net_types))
+    if dropped:
+        print(f"Contexts unavailable:  {', '.join(dropped)} (not in this Houdini)")
+
+    try:
+        shelf_file = get_shelf_file()
+    except Exception as e:
+        print(f"Shelf file:            could not resolve ({e})")
+        return
+
+    print(f"Shelf file:            {shelf_file}")
+    if not shelf_file.exists():
+        print("  -> Not written yet. Run sopdrop.menu.regenerate_menu().")
+        return
+
+    try:
+        import xml.etree.ElementTree as ET
+        root = ET.parse(str(shelf_file)).getroot()
+        tools = root.findall('tool')
+        print(f"Tools in shelf file:   {len(tools)}")
+    except Exception as e:
+        print(f"  -> Shelf file is not valid XML: {e}")
+        print("     Run sopdrop.menu.cleanup_menu() to rebuild it.")
+        return
+
+    if hou is None:
+        return
+
+    loaded = [name for name in hou.shelves.tools()
+              if name.startswith('sopdrop_lib_') or name.startswith('sopdrop_browse_')]
+    print(f"Tools loaded by Houdini: {len(loaded)}")
+    if not loaded:
+        print("  -> Houdini did not load the shelf file. Trying now...")
+        try:
+            _load_shelf_file(shelf_file)
+            print("     Loaded. Press TAB and type 'sopdrop'.")
+        except Exception as e:
+            print(f"     Failed: {e}")
 
 
 def cleanup_menu() -> bool:
@@ -691,7 +910,7 @@ def paste_asset(asset_id: str, kwargs=None, pane=None, position=None):
         try:
             # Handle HDA assets differently to avoid UTF-8 issues
             if asset and asset.get('asset_type') == 'hda':
-                created = _paste_hda(asset, target, pane, position=position)
+                created = paste_hda(asset, target, pane, position=position)
                 _autowire_from_kwargs(kwargs, created, target)
                 try:
                     record_asset_use(asset_id)
@@ -750,7 +969,7 @@ def paste_asset(asset_id: str, kwargs=None, pane=None, position=None):
 
             # Check context compatibility (case-insensitive)
             target_ctx = target.childTypeCategory().name().upper()
-            expected_ctx = CONTEXT_TO_NETTYPE.get(pkg_ctx_raw, '').upper()
+            expected_ctx = get_context_net_types().get(pkg_ctx_raw, '').upper()
 
             if expected_ctx and target_ctx != expected_ctx:
                 name = asset.get('name', 'Asset') if asset else 'Asset'
@@ -798,7 +1017,7 @@ def paste_asset(asset_id: str, kwargs=None, pane=None, position=None):
         traceback.print_exc()
 
 
-def _paste_hda(asset, target, pane, position=None):
+def paste_hda(asset, target, pane, position=None):
     """Paste an HDA asset, handling binary file correctly to avoid UTF-8 errors.
 
     Returns a list with the created node (for auto-wiring), or None.
@@ -827,26 +1046,8 @@ def _paste_hda(asset, target, pane, position=None):
 
         # Get the type name from asset metadata
         hda_type_name = asset.get('hda_type_name', '')
-        hda_category = asset.get('hda_category', asset.get('context', 'Sop'))
 
         if hda_type_name:
-            # Map category to Houdini type category
-            category_map = {
-                'sop': hou.sopNodeTypeCategory,
-                'obj': hou.objNodeTypeCategory,
-                'object': hou.objNodeTypeCategory,
-                'dop': hou.dopNodeTypeCategory,
-                'cop': hou.cop2NodeTypeCategory,
-                'cop2': hou.cop2NodeTypeCategory,
-                'vop': hou.vopNodeTypeCategory,
-                'top': hou.topNodeTypeCategory,
-                'lop': hou.lopNodeTypeCategory,
-                'chop': hou.chopNodeTypeCategory,
-                'rop': hou.ropNodeTypeCategory,
-                'out': hou.ropNodeTypeCategory,
-            }
-            cat_func = category_map.get(hda_category.lower(), hou.sopNodeTypeCategory)
-
             # Try to create a node of this type
             try:
                 # Extract base type name (strip version namespace)

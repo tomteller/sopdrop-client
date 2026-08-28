@@ -11,6 +11,13 @@ import tempfile
 import os
 from typing import Dict, Any, List, Optional, Tuple
 
+from ._log import debug
+
+
+def _release(version: str) -> str:
+    """The major.minor part of a Houdini version string ("22.0.422" -> "22.0")."""
+    return ".".join(version.split(".")[:2])
+
 
 class ImportError(Exception):
     """Error during import."""
@@ -352,11 +359,13 @@ def _import_v2(
                 "The data may be corrupted or tampered with."
             )
 
-    # Check Houdini version (warn only)
+    # Check Houdini version (warn only). Only major.minor matters — .cpio data
+    # travels fine between builds of the same release, so comparing full
+    # version strings just means a note on every paste.
     package_version = package.get("houdini_version", "unknown")
     current_version = hou.applicationVersionString()
-    if package_version != "unknown" and package_version != current_version:
-        print(f"Note: Package was created in Houdini {package_version}, "
+    if package_version != "unknown" and _release(package_version) != _release(current_version):
+        print(f"[Sopdrop] Note: package was created in Houdini {package_version}, "
               f"you are using {current_version}.")
 
     # Write binary data to temp file
@@ -371,7 +380,7 @@ def _import_v2(
     try:
         # Debug: print file size
         file_size = os.path.getsize(temp_path)
-        print(f"[Sopdrop] Loading {file_size} bytes from temp file...")
+        debug(f"Loading {file_size} bytes from temp file...")
 
         # Check if this package came from a container HDA (e.g. SOP Create).
         # If so, create the container first and load children into it.
@@ -393,7 +402,7 @@ def _import_v2(
                         for child in list(container_node.children()):
                             child.destroy()
                         load_target = container_node
-                        print(f"[Sopdrop] Created container '{type_name}', loading children into it")
+                        debug(f"Created container '{type_name}', loading children into it")
                     else:
                         # Custom HDA (SOP Create LOP, custom subnet HDAs, etc.)
                         # OR a non-subnet — we can't safely insert children
@@ -411,7 +420,7 @@ def _import_v2(
                               f"To preserve the wrapper, distribute the HDA itself.")
                 except hou.OperationFailed:
                     container_node = None
-                    print(f"[Sopdrop] Could not create container '{type_name}' (type not available), loading flat")
+                    debug(f"Could not create container '{type_name}' (type not available), loading flat")
 
         # Track items before import to detect new ones
         items_before = set(target_node.allItems())
@@ -430,7 +439,7 @@ def _import_v2(
             result = None
 
         # Debug: see what we got back
-        print(f"[Sopdrop] loadItemsFromFile returned: {type(result)}")
+        debug(f"loadItemsFromFile returned: {type(result)}")
 
         # Get items from return value
         items_from_return = []
@@ -452,7 +461,7 @@ def _import_v2(
             container_node.layoutChildren()
             target_node.setSelected(False, clear_all_selected=True)
             container_node.setSelected(True, clear_all_selected=False)
-            print(f"[Sopdrop] Loaded into container '{container_node.type().name()}' with {len(container_node.children())} children")
+            debug(f"Loaded into container '{container_node.type().name()}' with {len(container_node.children())} children")
             return [container_node]
 
         # Collect items to move and items to select
@@ -503,7 +512,7 @@ def _import_v2(
                 top_level_netboxes.append(netbox)
 
         if nested_netboxes:
-            print(f"[Sopdrop] {len(nested_netboxes)} nested netbox(es) will move with parent — skipping independent move")
+            debug(f"{len(nested_netboxes)} nested netbox(es) will move with parent — skipping independent move")
 
         network_boxes = top_level_netboxes
         # all_netboxes used for selection includes everything
@@ -516,7 +525,7 @@ def _import_v2(
                 for node in netbox.nodes():
                     nodes_in_boxes.add(node.path())
             except Exception as e:
-                print(f"[Sopdrop] Error getting netbox nodes: {e}")
+                debug(f"Error getting netbox nodes: {e}")
 
         # Filter to nodes NOT in network boxes
         nodes_to_move = [n for n in all_nodes if n.path() not in nodes_in_boxes]
@@ -533,11 +542,11 @@ def _import_v2(
                     stickies_to_move.append(sticky)
                 else:
                     stickies_in_boxes.append(sticky)
-                    print(f"[Sopdrop] Sticky '{(sticky.text() or '')[:20]}...' is inside netbox, will move with box")
+                    debug(f"Sticky '{(sticky.text() or '')[:20]}...' is inside netbox, will move with box")
             except Exception as e:
                 # If we can't check, assume it needs moving
                 stickies_to_move.append(sticky)
-                print(f"[Sopdrop] Could not check sticky parent box: {e}")
+                debug(f"Could not check sticky parent box: {e}")
 
         # Capture network box sizes and positions BEFORE any operations
         netbox_data = {}
@@ -551,9 +560,9 @@ def _import_v2(
                     'pos': (pos[0], pos[1]),
                     'comment': comment
                 }
-                print(f"[Sopdrop] Captured netbox '{comment}': pos=({pos[0]:.2f}, {pos[1]:.2f}), size=({size[0]:.2f}, {size[1]:.2f})")
+                debug(f"Captured netbox '{comment}': pos=({pos[0]:.2f}, {pos[1]:.2f}), size=({size[0]:.2f}, {size[1]:.2f})")
             except Exception as e:
-                print(f"[Sopdrop] Error capturing netbox data: {e}")
+                debug(f"Error capturing netbox data: {e}")
 
         # Capture sticky note sizes and positions ONLY for stickies NOT in boxes
         # Stickies inside boxes will be moved by the box automatically
@@ -568,14 +577,14 @@ def _import_v2(
                     'pos': (pos[0], pos[1]),
                     'text': text_preview
                 }
-                print(f"[Sopdrop] Captured loose sticky '{text_preview}...': pos=({pos[0]:.2f}, {pos[1]:.2f}), size=({size[0]:.2f}, {size[1]:.2f})")
+                debug(f"Captured loose sticky '{text_preview}...': pos=({pos[0]:.2f}, {pos[1]:.2f}), size=({size[0]:.2f}, {size[1]:.2f})")
             except Exception as e:
-                print(f"[Sopdrop] Error capturing sticky data: {e}")
+                debug(f"Error capturing sticky data: {e}")
 
         # For selection, we want all items (including nested boxes)
         all_top_level = all_nodes + all_netboxes + sticky_notes + new_dots
 
-        print(f"[Sopdrop] Found {len(all_nodes)} nodes ({len(nodes_to_move)} outside boxes), {len(all_netboxes)} netboxes ({len(network_boxes)} top-level), {len(sticky_notes)} sticky notes ({len(stickies_to_move)} outside boxes), {len(new_dots)} dots")
+        debug(f"Found {len(all_nodes)} nodes ({len(nodes_to_move)} outside boxes), {len(all_netboxes)} netboxes ({len(network_boxes)} top-level), {len(sticky_notes)} sticky notes ({len(stickies_to_move)} outside boxes), {len(new_dots)} dots")
 
         # If no items found, return empty
         if not all_top_level:
@@ -587,10 +596,10 @@ def _import_v2(
         # - Network boxes: move the box (contents move with it)
         items_to_move = nodes_to_move + stickies_to_move + new_dots
         if position and (items_to_move or network_boxes):
-            print(f"[Sopdrop] Repositioning {len(items_to_move)} loose items + {len(network_boxes)} netboxes to ({position[0]:.1f}, {position[1]:.1f})")
+            debug(f"Repositioning {len(items_to_move)} loose items + {len(network_boxes)} netboxes to ({position[0]:.1f}, {position[1]:.1f})")
             _reposition_items(items_to_move, position, network_boxes, netbox_data, sticky_data)
         else:
-            print("[Sopdrop] No position specified, items at original location")
+            debug("No position specified, items at original location")
 
         # Clear existing selection, then select all new items
         target_node.setSelected(False, clear_all_selected=True)
@@ -809,7 +818,7 @@ def _import_v1(
                     for child in list(container_node.children()):
                         child.destroy()
                     target_node = container_node
-                    print(f"[Sopdrop] Created container '{type_name}', loading children into it")
+                    debug(f"Created container '{type_name}', loading children into it")
                 else:
                     # Custom HDA or non-subnet — never unlock; fall back
                     # to loading flat in the parent. See _import_v2 for
@@ -823,7 +832,7 @@ def _import_v1(
                           f"To preserve the wrapper, distribute the HDA itself.")
             except hou.OperationFailed:
                 container_node = None
-                print(f"[Sopdrop] Could not create container '{type_name}' (type not available), loading flat")
+                debug(f"Could not create container '{type_name}' (type not available), loading flat")
 
     # Track items before import
     items_before = set(target_node.allItems())
@@ -853,7 +862,7 @@ def _import_v1(
             container_node.setPosition(hou.Vector2(position[0], position[1]))
         original_target.setSelected(False, clear_all_selected=True)
         container_node.setSelected(True, clear_all_selected=False)
-        print(f"[Sopdrop] Loaded into container '{container_node.type().name()}' with {len(container_node.children())} children")
+        debug(f"Loaded into container '{container_node.type().name()}' with {len(container_node.children())} children")
         return [container_node]
 
     return result
@@ -1101,7 +1110,7 @@ def import_at_cursor(package: Dict[str, Any], allow_placeholders: bool = False) 
         bounds = pane.visibleBounds()
         if bounds.contains(cursor_pos):
             position = (cursor_pos[0], cursor_pos[1])
-            print(f"Pasting at cursor: ({position[0]:.1f}, {position[1]:.1f})")
+            debug(f"Pasting at cursor: ({position[0]:.1f}, {position[1]:.1f})")
     except Exception:
         pass
 
@@ -1111,11 +1120,11 @@ def import_at_cursor(package: Dict[str, Any], allow_placeholders: bool = False) 
             bounds = pane.visibleBounds()
             center = bounds.center()
             position = (center[0], center[1])
-            print(f"Pasting at view center: ({position[0]:.1f}, {position[1]:.1f})")
+            debug(f"Pasting at view center: ({position[0]:.1f}, {position[1]:.1f})")
         except Exception:
             # Last resort - use origin offset
             position = (0, 0)
-            print("Pasting at origin")
+            debug("Pasting at origin")
 
     return import_items(package, target_node, position, allow_placeholders=allow_placeholders)
 
@@ -1231,9 +1240,9 @@ def _check_missing_hdas(dependencies: List[Dict]) -> List[Dict]:
             if close:
                 # Case or namespace variant exists — treat as found
                 found = True
-                print(f"[Sopdrop] HDA '{name}' matched via case-insensitive: {close[:3]}")
+                debug(f"HDA '{name}' matched via case-insensitive: {close[:3]}")
             else:
-                print(f"[Sopdrop] HDA '{name}' (category '{category_name}') not found in {len(all_types)} registered types")
+                debug(f"HDA '{name}' (category '{category_name}') not found in {len(all_types)} registered types")
 
         if not found:
             missing.append(dep)
@@ -1270,7 +1279,7 @@ def _reposition_items(items, target_position: Tuple[float, float], network_boxes
     import hou
 
     if not items and not network_boxes:
-        print("[Sopdrop] _reposition_items: No items to reposition")
+        debug("_reposition_items: No items to reposition")
         return
 
     if network_boxes is None:
@@ -1334,7 +1343,7 @@ def _reposition_items(items, target_position: Tuple[float, float], network_boxes
                 max_y = max(max_y, y + 1)
 
         except Exception as e:
-            print(f"[Sopdrop] Error getting position for {item}: {e}")
+            debug(f"Error getting position for {item}: {e}")
 
     # Include network boxes in bounds (use saved data for accurate sizes)
     for netbox in network_boxes:
@@ -1357,11 +1366,11 @@ def _reposition_items(items, target_position: Tuple[float, float], network_boxes
                 max_x = max(max_x, pos[0] + size[0])
                 max_y = max(max_y, pos[1] + size[1])
         except Exception as e:
-            print(f"[Sopdrop] Error getting netbox bounds: {e}")
+            debug(f"Error getting netbox bounds: {e}")
 
     # Check if we found valid positions
     if min_x == float('inf') or min_y == float('inf'):
-        print("[Sopdrop] _reposition_items: Could not calculate bounding box")
+        debug("_reposition_items: Could not calculate bounding box")
         return
 
     # Calculate center of bounding box
@@ -1372,9 +1381,9 @@ def _reposition_items(items, target_position: Tuple[float, float], network_boxes
     offset_x = target_position[0] - center_x
     offset_y = target_position[1] - center_y
 
-    print(f"[Sopdrop] Bounding box: ({min_x:.1f}, {min_y:.1f}) to ({max_x:.1f}, {max_y:.1f})")
-    print(f"[Sopdrop] Center: ({center_x:.1f}, {center_y:.1f}) -> Target: ({target_position[0]:.1f}, {target_position[1]:.1f})")
-    print(f"[Sopdrop] Offset: ({offset_x:.1f}, {offset_y:.1f})")
+    debug(f"Bounding box: ({min_x:.1f}, {min_y:.1f}) to ({max_x:.1f}, {max_y:.1f})")
+    debug(f"Center: ({center_x:.1f}, {center_y:.1f}) -> Target: ({target_position[0]:.1f}, {target_position[1]:.1f})")
+    debug(f"Offset: ({offset_x:.1f}, {offset_y:.1f})")
 
     offset_vec = hou.Vector2(offset_x, offset_y)
 
@@ -1397,7 +1406,7 @@ def _reposition_items(items, target_position: Tuple[float, float], network_boxes
                     if saved_size:
                         item.setSize(hou.Vector2(saved_size[0], saved_size[1]))
                     text_preview = data.get('text', '')
-                    print(f"[Sopdrop] Moved sticky '{text_preview}...' to ({new_x:.1f}, {new_y:.1f}), size: {saved_size}")
+                    debug(f"Moved sticky '{text_preview}...' to ({new_x:.1f}, {new_y:.1f}), size: {saved_size}")
                 else:
                     # Fallback - just use move
                     item.move(offset_vec)
@@ -1406,7 +1415,7 @@ def _reposition_items(items, target_position: Tuple[float, float], network_boxes
                 item.move(offset_vec)
             moved_count += 1
         except Exception as e:
-            print(f"[Sopdrop] Error moving {item}: {e}")
+            debug(f"Error moving {item}: {e}")
 
     # Move network boxes - use saved data from BEFORE any operations
     for netbox in network_boxes:
@@ -1426,12 +1435,12 @@ def _reposition_items(items, target_position: Tuple[float, float], network_boxes
                 netbox.setSize(hou.Vector2(saved_size[0], saved_size[1]))
 
             new_pos = netbox.position()
-            print(f"[Sopdrop] Moved netbox '{comment}' from ({old_pos[0]:.1f}, {old_pos[1]:.1f}) to ({new_pos[0]:.1f}, {new_pos[1]:.1f}), restored size: {saved_size}")
+            debug(f"Moved netbox '{comment}' from ({old_pos[0]:.1f}, {old_pos[1]:.1f}) to ({new_pos[0]:.1f}, {new_pos[1]:.1f}), restored size: {saved_size}")
             moved_count += 1
         except Exception as e:
-            print(f"[Sopdrop] Error moving netbox: {e}")
+            debug(f"Error moving netbox: {e}")
 
-    print(f"[Sopdrop] Moved {moved_count} items total")
+    debug(f"Moved {moved_count} items total")
 
 
 # Legacy function for backwards compatibility

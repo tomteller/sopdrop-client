@@ -1,77 +1,37 @@
 """
-Sopdrop network editor event hooks.
+Sopdrop network editor hook — loader shim.
 
-Houdini's network editor imports a module named `nodegraphhooks` (first
-one found on the Python path) and calls createEventHandler() for every
-UI event before its default handling. This file lives in
-$SOPDROP_HOUDINI_PATH/scripts/python, which Houdini puts on sys.path via
-the sopdrop package's HOUDINI_PATH entry.
+Houdini's network editor resolves `import nodegraphhooks` against sys.path,
+which reliably includes the `pythonX.Ylibs` directory of every HOUDINI_PATH
+entry but NOT `scripts/python` (Houdini *executes* startup scripts from there
+without guaranteeing the directory is importable). So a copy has to exist per
+Houdini Python version:
 
-Sopdrop uses it for exactly one binding:
+    H19.5 = 3.9    H20.0 = 3.10    H20.5/21 = 3.11    H22 = 3.13
 
-    Shift+Tab  →  open the Sopdrop recipe menu (sopdrop/tabmenu.py), a
-                  searchable popup of all personal + team recipes for the
-                  current network context. This is Sopdrop's own TAB menu,
-                  so recipes no longer need to pollute the native TAB menu.
+These files are loader shims rather than copies of the handler, so there is
+only ever one implementation to change — supporting a new Houdini Python
+version means dropping this same shim into a new pythonX.Ylibs directory.
 
-IMPORTANT — file placement: Houdini's network editor resolves
-`import nodegraphhooks` against sys.path, which reliably includes the
-`pythonX.Ylibs` directories of every HOUDINI_PATH entry but NOT
-necessarily `scripts/python` (Houdini *executes* startup scripts from
-here without guaranteeing the directory is importable). Identical
-copies of this file therefore live in python3.9libs/ .. python3.12libs/
-at the package root — one per Houdini Python version (H19.5=3.9,
-H20.0=3.10, H20.5/21=3.11) — and THOSE are the copies Houdini actually
-loads. Keep all copies in sync with this one.
-
-NOTE for studios with their own nodegraphhooks.py: Houdini only imports
-ONE nodegraphhooks module (first on the path). If you already ship one,
-merge this handler into yours — it's just the Shift+Tab branch below
-calling sopdrop.tabmenu.show_tab_menu(editor).
-
-Everything is wrapped defensively: any failure falls through to
-(None, False) so Houdini's default event handling is never broken by a
-Sopdrop problem.
+The implementation lives in ../scripts/python/nodegraphhooks.py, located
+relative to this file so no environment variable has to be set for the lookup
+to work.
 """
 
 import os
-import sys
+import runpy
 import traceback
 
-# Shift+Tab arrives as 'Shift+Tab' on most platforms; some Qt platforms
-# report the shifted Tab key as Backtab. Compared case-insensitively.
-_SOPDROP_MENU_KEYS = ("shift+tab", "shift+backtab", "backtab")
+_CANONICAL = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "scripts", "python", "nodegraphhooks.py",
+)
 
+try:
+    createEventHandler = runpy.run_path(_CANONICAL)["createEventHandler"]
+except Exception:
+    # Never break the network editor over a Sopdrop problem.
+    traceback.print_exc()
 
-def _ensure_sopdrop_on_path():
-    """Same path setup as the shelf tools/pypanel — makes `import sopdrop`
-    work even if pythonrc hasn't run (e.g. stripped-down launch configs)."""
-    sopdrop_path = os.environ.get("SOPDROP_HOUDINI_PATH", "")
-    if sopdrop_path:
-        for subdir in ("scripts", "client"):
-            p = os.path.join(sopdrop_path, subdir)
-            if p not in sys.path:
-                sys.path.insert(0, p)
-
-
-def createEventHandler(uievent, pending_actions):
-    """Houdini nodegraph hook entry point.
-
-    Returns (handler, handled). We never install a persistent handler —
-    the Shift+Tab popup is fire-and-forget — so handler is always None.
-    """
-    try:
-        key = getattr(uievent, "key", None)
-        if (
-            getattr(uievent, "eventtype", None) == "keyhit"
-            and key
-            and key.lower() in _SOPDROP_MENU_KEYS
-        ):
-            _ensure_sopdrop_on_path()
-            from sopdrop import tabmenu
-            tabmenu.show_tab_menu(editor=getattr(uievent, "editor", None))
-            return None, True
-    except Exception:
-        # Never break the network editor over a Sopdrop error.
-        traceback.print_exc()
-    return None, False
+    def createEventHandler(uievent, pending_actions):
+        return None, False

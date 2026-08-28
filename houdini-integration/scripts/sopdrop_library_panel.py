@@ -47,6 +47,7 @@ try:
         pass
 
     from sopdrop import library
+    from sopdrop import menu
     from sopdrop.config import (
         get_token,
         get_library_ui_state,
@@ -6761,9 +6762,10 @@ class LibraryPanel(QtWidgets.QWidget):
                     node_type = hou.nodeType(hou.sopNodeTypeCategory(), hda_type_name)
                     if node_type is None:
                         # Try other categories
-                        for cat in [hou.objNodeTypeCategory(), hou.dopNodeTypeCategory(),
-                                    hou.cop2NodeTypeCategory(), hou.topNodeTypeCategory(),
-                                    hou.lopNodeTypeCategory(), hou.chopNodeTypeCategory()]:
+                        for ctx in ('obj', 'dop', 'cop', 'top', 'lop', 'chop'):
+                            cat = menu.node_type_category(ctx)
+                            if cat is None:
+                                continue
                             node_type = hou.nodeType(cat, hda_type_name)
                             if node_type:
                                 break
@@ -6820,18 +6822,7 @@ class LibraryPanel(QtWidgets.QWidget):
                 # HDA might be for a different context
                 hda_context = asset.get('context', '').lower()
                 if hda_context:
-                    ctx_to_category = {
-                        'sop': hou.sopNodeTypeCategory(),
-                        'obj': hou.objNodeTypeCategory(),
-                        'dop': hou.dopNodeTypeCategory(),
-                        'cop': hou.cop2NodeTypeCategory(),
-                        'cop2': hou.cop2NodeTypeCategory(),
-                        'top': hou.topNodeTypeCategory(),
-                        'lop': hou.lopNodeTypeCategory(),
-                        'chop': hou.chopNodeTypeCategory(),
-                        'vop': hou.vopNodeTypeCategory(),
-                    }
-                    expected_category = ctx_to_category.get(hda_context)
+                    expected_category = menu.node_type_category(hda_context)
                     if expected_category and expected_category != target_category:
                         self.show_toast(f"HDA is {hda_context.upper()}, navigate to a {hda_context.upper()} network first", 'warning', 3000)
                         return

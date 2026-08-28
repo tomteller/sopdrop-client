@@ -6,10 +6,11 @@ Shelf tools for integrating Sopdrop with Houdini.
 
 ### Method A: Houdini Packages (Recommended)
 
-1. Copy the `sopdrop.json` file to your Houdini packages directory:
-   - **Windows:** `C:\Users\<username>\Documents\houdini20.5\packages\`
-   - **macOS:** `~/Library/Preferences/houdini/20.5/packages/`
-   - **Linux:** `~/houdini20.5/packages/`
+1. Copy the `sopdrop.json` file to your Houdini packages directory
+   (replace `22.0` with the Houdini version you run):
+   - **Windows:** `C:\Users\<username>\Documents\houdini22.0\packages\`
+   - **macOS:** `~/Library/Preferences/houdini/22.0/packages/`
+   - **Linux:** `~/houdini22.0/packages/`
 
 2. Edit `sopdrop.json` and change the `SOPDROP` path to point to this `houdini-integration` folder:
    ```json
@@ -28,9 +29,9 @@ Shelf tools for integrating Sopdrop with Houdini.
 Add the following to your `houdini.env` file:
 
 **Location of houdini.env:**
-- **Windows:** `C:\Users\<username>\Documents\houdini20.5\houdini.env`
-- **macOS:** `~/Library/Preferences/houdini/20.5/houdini.env`
-- **Linux:** `~/houdini20.5/houdini.env`
+- **Windows:** `C:\Users\<username>\Documents\houdini22.0\houdini.env`
+- **macOS:** `~/Library/Preferences/houdini/22.0/houdini.env`
+- **Linux:** `~/houdini22.0/houdini.env`
 
 **Add these lines:**
 
@@ -47,7 +48,8 @@ Replace the path with the actual path to the `houdini-integration` folder.
 ### Method C: Automatic Installer
 
 ```bash
-python install.py
+python install.py           # newest Houdini found
+python install.py --all     # every Houdini found
 ```
 
 This auto-detects your Houdini preferences and configures `houdini.env`.
@@ -148,6 +150,27 @@ Add the environment variable to your `houdini.env` file and restart Houdini.
 2. Restart Houdini
 3. Right-click on the shelf bar → "Shelves..." → Check "Sopdrop"
 
+### Assets missing from the TAB menu
+```python
+import sopdrop
+sopdrop.diagnose()
+```
+
+This reports the Houdini version, whether `SOPDROP_HOUDINI_PATH` is set, which
+network types are in use, where the generated shelf file is, and whether
+Houdini actually loaded it. If the shelf file looks stale or malformed,
+rebuild it with `sopdrop.regenerate_menu()`.
+
+### Verbose logging
+Sopdrop is quiet by default. To trace what it's doing in the Houdini Console:
+
+```python
+import sopdrop
+sopdrop.set_debug(True)
+```
+
+Or set `SOPDROP_DEBUG=1` in `houdini.env` to have it on from startup.
+
 ### Login issues
 1. Make sure you can access the Sopdrop website in your browser
 2. Check your firewall settings
@@ -194,3 +217,16 @@ SOPDROP_SERVER_URL = "http://your-server:4800"
 ```
 
 Or use the Settings tool to change the server URL per-user.
+
+## Houdini Version Support
+
+Tested on Houdini 19.5 through 22.0. Sopdrop adapts to the running version at
+startup rather than assuming one:
+
+- **Qt** — PySide6 where available (Houdini 20+, and the only option in 22),
+  PySide2 on older versions.
+- **Network contexts** — the TAB menu is generated only for network types the
+  running Houdini actually has. COP assets target the legacy compositing
+  network (COP2) where it still exists and Copernicus (COP) where it doesn't.
+- **Preferences** — `install.py` discovers the Houdini versions on the machine
+  instead of matching against a hardcoded list.

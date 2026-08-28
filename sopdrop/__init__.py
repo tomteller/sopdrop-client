@@ -28,12 +28,17 @@ Usage in Houdini Python shell:
     # Publish from Houdini
     # Select nodes, then use the Publish shelf tool
     # Or: sopdrop.preview_export() to see what would be exported
+
+    # Troubleshooting
+    sopdrop.set_debug(True)       # verbose tracing in the Houdini Console
+    sopdrop.diagnose()            # why isn't the TAB menu showing up?
 """
 
-__version__ = "0.1.6"
+__version__ = "0.1.7"
 
 from .api import SopdropClient, SopdropError, AuthError, NotFoundError
 from .config import get_config, set_server_url, get_clipboard, set_clipboard, clear_clipboard
+from ._log import set_debug, is_debug
 
 # Global client instance
 _client = None
@@ -257,8 +262,12 @@ def paste_from_clipboard(trust=False):
     # Get clipboard content
     try:
         import hou
-        # Use Qt clipboard (available in Houdini)
-        from PySide2.QtWidgets import QApplication
+        # Use Qt clipboard (available in Houdini).
+        # PySide6 from Houdini 20; PySide2 on older versions.
+        try:
+            from PySide6.QtWidgets import QApplication
+        except ImportError:
+            from PySide2.QtWidgets import QApplication
         clipboard = QApplication.clipboard()
         text = clipboard.text().strip()
     except ImportError:
@@ -406,6 +415,18 @@ def regenerate_menu(quiet=False):
     """
     from .menu import regenerate_menu as _regen
     return _regen(quiet=quiet)
+
+
+def diagnose():
+    """
+    Print why the Sopdrop TAB menu might not be showing up.
+
+    Reports the Houdini version, the environment Sopdrop was given, the
+    network types available in this Houdini, and whether Houdini actually
+    loaded the generated shelf file.
+    """
+    from .menu import diagnose as _diagnose
+    return _diagnose()
 
 
 def remove_menu():

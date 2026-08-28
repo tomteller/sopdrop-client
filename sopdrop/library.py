@@ -1516,6 +1516,8 @@ def get_asset(asset_id: str) -> Optional[Dict[str, Any]]:
 
 def get_asset_by_slug(slug: str) -> Optional[Dict[str, Any]]:
     """Get an asset by its shareable slug."""
+    if _http_mode():
+        return _team_http.get_asset_by_slug(slug)
     db = get_db()
     row = db.execute("SELECT * FROM library_assets WHERE slug = ?", (slug,)).fetchone()
     if row is None:

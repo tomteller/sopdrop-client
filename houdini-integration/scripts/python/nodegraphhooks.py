@@ -18,11 +18,12 @@ IMPORTANT — file placement: Houdini's network editor resolves
 `import nodegraphhooks` against sys.path, which reliably includes the
 `pythonX.Ylibs` directories of every HOUDINI_PATH entry but NOT
 necessarily `scripts/python` (Houdini *executes* startup scripts from
-here without guaranteeing the directory is importable). Identical
-copies of this file therefore live in python3.9libs/ .. python3.12libs/
-at the package root — one per Houdini Python version (H19.5=3.9,
-H20.0=3.10, H20.5/21=3.11) — and THOSE are the copies Houdini actually
-loads. Keep all copies in sync with this one.
+here without guaranteeing the directory is importable). Loader shims
+therefore live in python3.9libs/ .. python3.14libs/ at the package root
+— one per Houdini Python version (H19.5=3.9, H20.0=3.10, H20.5/21=3.11,
+H22=3.13) — and those shims run THIS file. Supporting a new Houdini
+Python version means copying a shim into a new pythonX.Ylibs directory;
+the handler itself only exists here.
 
 NOTE for studios with their own nodegraphhooks.py: Houdini only imports
 ONE nodegraphhooks module (first on the path). If you already ship one,

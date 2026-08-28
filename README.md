@@ -20,13 +20,13 @@ Cloning the repo makes updating easy — just `git pull` to get the latest versi
 
    ```
    # macOS
-   ~/Library/Preferences/houdini/20.5/packages/
+   ~/Library/Preferences/houdini/22.0/packages/
 
    # Windows
-   %USERPROFILE%/Documents/houdini20.5/packages/
+   %USERPROFILE%/Documents/houdini22.0/packages/
 
    # Linux
-   ~/houdini20.5/packages/
+   ~/houdini22.0/packages/
    ```
 
    Create the `packages` folder if it doesn't exist.
